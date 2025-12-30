@@ -86,7 +86,7 @@ uint16_t calWet = 0;
 bool calInverted = false; // Whether higher raw means "more water"
 
 uint16_t lastRawValue = 0;
-float percentEma = NAN;
+static float percentEma = NAN; // Smoothed percent (EMA)
 bool discoverySent = false;
 String lastStatus = "";
 
@@ -186,34 +186,16 @@ static uint16_t readTouchAverage(uint8_t samples)
 
 static float computePercent(uint16_t raw)
 {
-  if (!hasCalibration())
+  if (!hasCalibration() || calDry == calWet)
   {
-    percentEma = NAN;
     return NAN;
   }
 
-  float percent = 0.0f;
-  if (calInverted)
-  {
-    percent = ((float)raw - (float)calDry) / ((float)calWet - (float)calDry) * 100.0f;
-  }
-  else
-  {
-    percent = ((float)calDry - (float)raw) / ((float)calDry - (float)calWet) * 100.0f;
-  }
+  const float inputStart = calInverted ? (float)calWet : (float)calDry;
+  const float inputEnd = calInverted ? (float)calDry : (float)calWet;
+  const float percent = ((float)raw - inputStart) * 100.0f / (inputEnd - inputStart);
 
-  percent = constrain(percent, 0.0f, 100.0f);
-
-  if (isnan(percentEma))
-  {
-    percentEma = percent;
-  }
-  else
-  {
-    percentEma = (PERCENT_EMA_ALPHA * percent) + ((1.0f - PERCENT_EMA_ALPHA) * percentEma);
-  }
-
-  return percentEma;
+  return constrain(percent, 0.0f, 100.0f);
 }
 
 static void handleSerialCommands()
@@ -441,28 +423,38 @@ void loop()
   if (now - lastPercentPublish >= PERCENT_PUBLISH_MS)
   {
     lastPercentPublish = now;
-    const float percent = computePercent(lastRawValue);
+    const float rawPercent = computePercent(lastRawValue);
 
-    if (mqtt.connected())
+    if (!isnan(rawPercent))
     {
-      if (hasCalibration())
+      if (isnan(percentEma))
       {
-        mqtt.publish(TOPIC_TANK_PERCENT, String(percent, 1).c_str());
+        percentEma = rawPercent;
       }
       else
       {
-        mqtt.publish(TOPIC_TANK_PERCENT, "unknown");
+        percentEma = (PERCENT_EMA_ALPHA * rawPercent) + ((1.0f - PERCENT_EMA_ALPHA) * percentEma);
       }
+      publishStatus(STATUS_OK);
+
+      if (mqtt.connected())
+      {
+        mqtt.publish(TOPIC_TANK_PERCENT, String(percentEma, 1).c_str());
+      }
+    }
+    else
+    {
+      publishStatus(STATUS_NEEDS_CAL);
     }
 
     Serial.print("[PERCENT] ");
-    if (isnan(percent))
+    if (isnan(rawPercent))
     {
       Serial.println("N/A");
     }
     else
     {
-      Serial.println(percent, 1);
+      Serial.println(percentEma, 1);
     }
   }
 }
