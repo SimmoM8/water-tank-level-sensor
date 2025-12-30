@@ -1,10 +1,10 @@
 /* water-tank-card.js
- * Minimal custom Home Assistant Lovelace card (no build step).
- * v0.1: renders state machine (OK / SETUP / ERROR / OFFLINE) using entity states only.
+ * Custom Home Assistant Lovelace card (no build step).
+ * v0.3: arc gauge + error-only view + warning footer + Browser Mod settings modal.
  */
 
 const CARD_TAG = "water-tank-card";
-const VERSION = "0.1.0";
+const VERSION = "0.3.0";
 
 class WaterTankCard extends HTMLElement {
     constructor() {
@@ -15,7 +15,6 @@ class WaterTankCard extends HTMLElement {
     }
 
     setConfig(config) {
-        // Required fields (keep this strict so it fails loudly)
         const required = [
             "percent_entity",
             "liters_entity",
@@ -28,13 +27,18 @@ class WaterTankCard extends HTMLElement {
         ];
 
         for (const key of required) {
-            if (!config[key]) {
-                throw new Error(`Missing required config key: ${key}`);
-            }
+            if (!config[key]) throw new Error(`Missing required config key: ${key}`);
         }
 
+        // Optional entities for modal controls (strongly recommended)
         this._config = {
             title: "Water Tank",
+            // modal entities (optional)
+            tank_volume_entity: null,
+            rod_length_entity: null,
+            calibrate_dry_entity: null,
+            calibrate_wet_entity: null,
+            clear_calibration_entity: null,
             ...config,
         };
 
@@ -64,6 +68,14 @@ class WaterTankCard extends HTMLElement {
         return this._state(entityId) === "on";
     }
 
+    _isOff(entityId) {
+        return this._state(entityId) === "off";
+    }
+
+    _isUnknownState(s) {
+        return s === null || s === undefined || s === "unknown" || s === "unavailable";
+    }
+
     _safeText(v, fallback = "—") {
         if (v === null || v === undefined) return fallback;
         if (typeof v === "number" && !Number.isFinite(v)) return fallback;
@@ -71,39 +83,155 @@ class WaterTankCard extends HTMLElement {
         return s.length ? s : fallback;
     }
 
+    _clamp(n, min, max) {
+        return Math.max(min, Math.min(max, n));
+    }
+
+    // ---------- state model ----------
     _computeUiState() {
-        // Online/offline is based on your status topic entity
-        const status = this._state(this._config.status_entity);
+        const status = this._state(this._config.status_entity); // "online" expected
+        const offline = this._isUnknownState(status) || status === "offline";
 
-        // Treat only explicit offline / unavailable as offline
-        const offline =
-            status === "offline" ||
-            status === "unavailable" ||
-            status === "unknown";
-
-        const probeConnected = this._isOn(this._config.probe_entity);
-        const percentValid = this._isOn(this._config.percent_valid_entity);
+        const probeState = this._state(this._config.probe_entity); // on/off/unknown
+        const percentValidState = this._state(this._config.percent_valid_entity); // on/off/unknown
         const calState = this._state(this._config.calibration_entity); // needs_calibration | calibrating | calibrated
 
-        // Priority rules:
+        const probeUnknown = this._isUnknownState(probeState);
+        const probeConnected = probeState === "on";
+        const probeDisconnected = probeState === "off";
+
+        const percentValid = percentValidState === "on";
+        const percentValidUnknown = this._isUnknownState(percentValidState);
+
         // 1) Offline overrides everything
-        if (offline) {
-            return { mode: "OFFLINE", msg: "Device offline", status };
-        }
+        if (offline) return { mode: "OFFLINE", msg: "Device offline", status };
 
-        // 2) Probe disconnected (or unreliable) → error-only view
-        if (!probeConnected) {
-            return { mode: "ERROR", msg: "Probe disconnected", status };
-        }
+        // 2) Probe disconnected → error-only view (no values shown)
+        if (probeDisconnected) return { mode: "ERROR", msg: "Probe disconnected", status };
 
-        // 3) Not valid percent → setup/calibration view
-        if (!percentValid || calState === "needs_calibration") {
-            const m = calState === "calibrating" ? "Calibrating…" : "Needs calibration";
+        // 3) Probe status unknown → setup (not error) so it doesn’t look “broken”
+        if (probeUnknown) return { mode: "SETUP", msg: "Waiting for probe data…", status };
+
+        // 4) Calibration / validity
+        if (!percentValid || calState === "needs_calibration" || percentValidUnknown) {
+            const m =
+                calState === "calibrating"
+                    ? "Calibrating…"
+                    : calState === "needs_calibration"
+                        ? "Needs calibration"
+                        : "Readings not valid";
             return { mode: "SETUP", msg: m, status };
         }
 
-        // 4) OK
+        // 5) OK
         return { mode: "OK", msg: "OK", status };
+    }
+
+    // ---------- modal ----------
+    _openSettingsModal() {
+        const hasBrowserMod = !!this._hass?.services?.browser_mod?.popup;
+
+        // Build a “best effort” modal. If optional entities are missing, we omit that section.
+        const statusEntities = [
+            this._config.status_entity,
+            this._config.calibration_entity,
+            this._config.probe_entity,
+            this._config.percent_valid_entity,
+            this._config.raw_entity,
+        ];
+
+        const configEntities = [];
+        if (this._config.tank_volume_entity) configEntities.push(this._config.tank_volume_entity);
+        if (this._config.rod_length_entity) configEntities.push(this._config.rod_length_entity);
+
+        const calEntities = [];
+        if (this._config.calibrate_dry_entity) calEntities.push(this._config.calibrate_dry_entity);
+        if (this._config.calibrate_wet_entity) calEntities.push(this._config.calibrate_wet_entity);
+        if (this._config.clear_calibration_entity) calEntities.push(this._config.clear_calibration_entity);
+
+        if (hasBrowserMod) {
+            const cards = [
+                {
+                    type: "entities",
+                    title: "Status",
+                    entities: statusEntities,
+                },
+            ];
+
+            if (configEntities.length) {
+                cards.push({
+                    type: "entities",
+                    title: "Tank Setup",
+                    entities: configEntities,
+                });
+            }
+
+            if (calEntities.length) {
+                cards.push({
+                    type: "entities",
+                    title: "Calibration",
+                    entities: calEntities,
+                });
+            }
+
+            this._hass.callService("browser_mod", "popup", {
+                title: this._config.title || "Water Tank Settings",
+                content: {
+                    type: "vertical-stack",
+                    cards,
+                },
+            });
+            return;
+        }
+
+        // Fallback: open HA More Info for raw entity
+        this.dispatchEvent(
+            new CustomEvent("hass-more-info", {
+                bubbles: true,
+                composed: true,
+                detail: { entityId: this._config.raw_entity },
+            })
+        );
+    }
+
+    // ---------- gauge ----------
+    _renderGaugeArc(percent) {
+        const size = 130;
+        const stroke = 12;
+        const r = (size - stroke) / 2;
+        const cx = size / 2;
+        const cy = size / 2;
+
+        // 270° arc (from 135° to 405°)
+        const startAngle = (135 * Math.PI) / 180;
+        const endAngle = (405 * Math.PI) / 180;
+        const arcLen = endAngle - startAngle;
+
+        const p = this._clamp(percent ?? 0, 0, 100) / 100;
+        const a = startAngle + arcLen * p;
+
+        const polar = (ang) => ({
+            x: cx + r * Math.cos(ang),
+            y: cy + r * Math.sin(ang),
+        });
+
+        const s = polar(startAngle);
+        const e = polar(endAngle);
+        const v = polar(a);
+
+        // Large arc flag for SVG
+        const largeBg = 1; // always > 180° for the full background arc
+        const largeVal = p > 0.5 ? 1 : 0;
+
+        const bgPath = `M ${s.x} ${s.y} A ${r} ${r} 0 ${largeBg} 1 ${e.x} ${e.y}`;
+        const valPath = `M ${s.x} ${s.y} A ${r} ${r} 0 ${largeVal} 1 ${v.x} ${v.y}`;
+
+        return `
+      <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" aria-hidden="true">
+        <path d="${bgPath}" fill="none" stroke="rgba(0,0,0,0.10)" stroke-width="${stroke}" stroke-linecap="round"></path>
+        <path d="${valPath}" fill="none" stroke="var(--primary-color)" stroke-width="${stroke}" stroke-linecap="round"></path>
+      </svg>
+    `;
     }
 
     _render() {
@@ -117,15 +245,27 @@ class WaterTankCard extends HTMLElement {
         const raw = this._state(this._config.raw_entity);
 
         const statusState = this._state(this._config.status_entity);
-        const onlineText =
-            statusState === "online" ? "Online" : "Offline";
+        const onlineText = statusState === "online" ? "Online" : "Offline";
 
-        // Minimal styles (we’ll refine later)
+        // Warning footer logic (only when NOT error-only)
+        const calState = this._state(this._config.calibration_entity);
+        const percentValid = this._isOn(this._config.percent_valid_entity);
+        const probeState = this._state(this._config.probe_entity);
+
+        let warningText = "";
+        if (ui.mode !== "ERROR" && ui.mode !== "OFFLINE") {
+            if (calState === "needs_calibration") warningText = "Calibration required";
+            else if (calState === "calibrating") warningText = "Calibrating…";
+            else if (!percentValid) warningText = "Readings not valid";
+            else if (this._isUnknownState(probeState)) warningText = "Probe status unknown";
+        }
+
         const css = `
       :host { display:block; }
       ha-card {
-        border-radius: 18px;
+        border-radius: 20px;
         padding: 16px;
+        overflow: hidden;
       }
       .header {
         display:flex;
@@ -135,110 +275,165 @@ class WaterTankCard extends HTMLElement {
         margin-bottom: 10px;
       }
       .title {
-        font-size: 16px;
-        font-weight: 700;
+        font-size: 18px;
+        font-weight: 800;
         line-height: 1.2;
       }
       .corner {
         font-size: 12px;
-        opacity: 0.8;
+        opacity: 0.85;
       }
-      .body { display:flex; flex-direction:column; gap: 12px; }
 
-      /* OK state */
-      .pct {
-        font-size: 40px;
-        font-weight: 800;
+      .layout {
+        display:grid;
+        grid-template-columns: 140px 1fr;
+        gap: 14px;
+        align-items:center;
+      }
+
+      .pctText {
+        font-size: 34px;
+        font-weight: 900;
         line-height: 1;
+        margin-top: -4px;
       }
-      .row { display:flex; gap: 18px; align-items:center; }
-      .metric { display:flex; gap: 8px; align-items:center; font-size: 14px; }
-      .metric b { font-size: 16px; }
 
-      /* Simple progress bar (placeholder for gauge, v0.1) */
-      .bar {
-        height: 10px;
+      .metrics {
+        display:flex;
+        flex-direction:column;
+        gap: 10px;
+      }
+
+      .metricRow {
+        display:flex;
+        gap: 10px;
+        align-items:center;
+        font-size: 14px;
+      }
+
+      .metricRow b {
+        font-size: 18px;
+      }
+
+      .footer {
+        display:flex;
+        justify-content:space-between;
+        align-items:center;
+        gap:12px;
+        margin-top: 12px;
+        font-size: 12px;
+        opacity: 0.92;
+      }
+
+      .warn {
+        display:flex;
+        gap: 8px;
+        align-items:center;
+      }
+
+      .btn {
+        cursor:pointer;
+        border:none;
         border-radius: 999px;
-        overflow:hidden;
-        background: rgba(0,0,0,0.10);
-      }
-      .bar > div {
-        height: 10px;
-        width: 0%;
-        background: var(--primary-color);
+        padding: 10px 12px;
+        background: rgba(0,0,0,0.06);
       }
 
-      /* Error/setup box */
       .notice {
         display:flex;
         gap: 10px;
         align-items:center;
-        padding: 12px;
-        border-radius: 14px;
+        padding: 14px;
+        border-radius: 16px;
         background: rgba(255, 170, 0, 0.12);
       }
       .notice.error {
         background: rgba(255, 0, 0, 0.10);
       }
       .notice .msg {
-        font-weight: 700;
+        font-weight: 800;
+        font-size: 16px;
       }
-      .footer {
-        display:flex;
-        justify-content:space-between;
-        align-items:center;
-        gap:12px;
-        opacity:0.9;
-        font-size: 12px;
-      }
-      .btn {
-        cursor:pointer;
-        border:none;
-        border-radius: 999px;
-        padding: 8px 10px;
-        background: rgba(0,0,0,0.06);
+      .rawLine {
+        font-size: 13px;
+        opacity: 0.85;
+        margin-top: 10px;
       }
     `;
 
-        // Build OK content vs setup/error content
-        let mainHtml = "";
+        let bodyHtml = "";
 
-        if (ui.mode === "OK") {
-            const pctText = pct !== null ? `${pct.toFixed(1)}%` : "—%";
-            const pctWidth = pct !== null ? Math.max(0, Math.min(100, pct)) : 0;
-
-            mainHtml = `
-        <div class="pct">${pctText}</div>
-        <div class="bar"><div style="width:${pctWidth}%;"></div></div>
-
-        <div class="row">
-          <div class="metric">
-            <ha-icon icon="mdi:water-outline"></ha-icon>
-            <div><b>${this._safeText(liters !== null ? liters.toFixed(2) : null)}</b> L</div>
-          </div>
-          <div class="metric">
-            <ha-icon icon="mdi:ruler"></ha-icon>
-            <div><b>${this._safeText(cm !== null ? cm.toFixed(1) : null)}</b> cm</div>
+        // ERROR-ONLY view: show only error message + icon (no values)
+        if (ui.mode === "ERROR" || ui.mode === "OFFLINE") {
+            bodyHtml = `
+        <div class="notice error">
+          <ha-icon icon="mdi:alert-circle-outline"></ha-icon>
+          <div class="msg">${ui.msg}</div>
+          <div style="margin-left:auto;">
+            <button class="btn" id="settingsBtn" title="Settings">
+              <ha-icon icon="mdi:cog"></ha-icon>
+            </button>
           </div>
         </div>
+        <div class="rawLine">Raw: ${this._safeText(raw)}</div>
+      `;
+        }
+        // SETUP view: show setup message + settings button, raw line
+        else if (ui.mode === "SETUP") {
+            bodyHtml = `
+        <div class="notice">
+          <ha-icon icon="mdi:alert-outline"></ha-icon>
+          <div class="msg">${ui.msg}</div>
+          <div style="margin-left:auto;">
+            <button class="btn" id="settingsBtn" title="Settings">
+              <ha-icon icon="mdi:cog"></ha-icon>
+            </button>
+          </div>
+        </div>
+        <div class="rawLine">Raw: ${this._safeText(raw)}</div>
 
         <div class="footer">
-          <div>All readings valid</div>
-          <button class="btn" id="settingsBtn" title="Settings">
-            <ha-icon icon="mdi:cog"></ha-icon>
-          </button>
+          <div class="warn">
+            <ha-icon icon="mdi:information-outline"></ha-icon>
+            <div>${warningText || "Configure tank size + calibrate when ready"}</div>
+          </div>
         </div>
       `;
-        } else {
-            const isError = ui.mode === "ERROR" || ui.mode === "OFFLINE";
-            mainHtml = `
-        <div class="notice ${isError ? "error" : ""}">
-          <ha-icon icon="${isError ? "mdi:alert-circle-outline" : "mdi:alert-outline"}"></ha-icon>
-          <div class="msg">${ui.msg}</div>
+        }
+        // OK view: show gauge + liters + cm, plus warning footer if needed
+        else {
+            const pctText = pct !== null ? `${pct.toFixed(1)}%` : "—%";
+            const gauge = this._renderGaugeArc(pct ?? 0);
+
+            bodyHtml = `
+        <div class="layout">
+          <div>
+            ${gauge}
+          </div>
+
+          <div class="metrics">
+            <div class="pctText">${pctText}</div>
+
+            <div class="metricRow">
+              <ha-icon icon="mdi:water-outline"></ha-icon>
+              <div><b>${this._safeText(liters !== null ? liters.toFixed(2) : null)}</b> L</div>
+            </div>
+
+            <div class="metricRow">
+              <ha-icon icon="mdi:ruler"></ha-icon>
+              <div><b>${this._safeText(cm !== null ? cm.toFixed(1) : null)}</b> cm</div>
+            </div>
+          </div>
         </div>
 
         <div class="footer">
-          <div>Raw: ${this._safeText(raw)}</div>
+          <div class="warn">
+            ${warningText
+                    ? `<ha-icon icon="mdi:alert-outline"></ha-icon><div>${warningText}</div>`
+                    : `<ha-icon icon="mdi:check-circle-outline"></ha-icon><div>All readings valid</div>`
+                }
+          </div>
+
           <button class="btn" id="settingsBtn" title="Settings">
             <ha-icon icon="mdi:cog"></ha-icon>
           </button>
@@ -253,27 +448,14 @@ class WaterTankCard extends HTMLElement {
           <div class="title">${this._config.title}</div>
           <div class="corner">${onlineText}</div>
         </div>
-        <div class="body">
-          ${mainHtml}
-        </div>
+        ${bodyHtml}
       </ha-card>
     `;
 
         this.shadowRoot.innerHTML = html;
 
-        // Settings button behavior (modal comes next step; for now open More Info)
         const btn = this.shadowRoot.getElementById("settingsBtn");
-        if (btn) {
-            btn.onclick = () => {
-                // Open HA More Info for raw sensor as a placeholder "settings"
-                const event = new CustomEvent("hass-more-info", {
-                    bubbles: true,
-                    composed: true,
-                    detail: { entityId: this._config.raw_entity },
-                });
-                this.dispatchEvent(event);
-            };
-        }
+        if (btn) btn.onclick = () => this._openSettingsModal();
     }
 }
 
