@@ -1,6 +1,8 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <Preferences.h>
+#include <stdlib.h>
+#include <math.h>
 
 // =============================================================================
 // Dad's Smart Home — Water Level Sensor (ESP32 touch) → MQTT → Home Assistant
@@ -39,9 +41,23 @@ static const int MQTT_PORT = 1883;
 // change this string so they don't clash.
 static const char *MQTT_CLIENT_ID = "water-tank-esp32";
 
+// MQTT Topics for publishing to Home Assistant
 static const char *TOPIC_TANK_RAW = "home/water/tank/raw";
 static const char *TOPIC_TANK_PERCENT = "home/water/tank/percent";
 static const char *TOPIC_TANK_STATUS = "home/water/tank/status";
+static const char *TOPIC_TANK_PROBE = "home/water/tank/probe_connected";
+static const char *TOPIC_TANK_CAL_STATE = "home/water/tank/calibration_state";
+static const char *TOPIC_TANK_RAW_VALID = "home/water/tank/raw_valid";
+static const char *TOPIC_TANK_PERCENT_VALID = "home/water/tank/percent_valid";
+static const char *TOPIC_TANK_LITERS_VALID = "home/water/tank/liters_valid";
+static const char *TOPIC_TANK_CM_VALID = "home/water/tank/centimeters_valid";
+static const char *TOPIC_TANK_LITERS = "home/water/tank/liters";
+static const char *TOPIC_TANK_CM = "home/water/tank/centimeters";
+static const char *TOPIC_CFG_TANK_VOLUME = "home/water/tank/cfg/tank_volume_l";
+static const char *TOPIC_CFG_ROD_LENGTH = "home/water/tank/cfg/rod_length_cm";
+static const char *TOPIC_CMD_CAL_DRY = "home/water/tank/cmd/calibrate_dry";
+static const char *TOPIC_CMD_CAL_WET = "home/water/tank/cmd/calibrate_wet";
+static const char *TOPIC_CMD_CLEAR_CAL = "home/water/tank/cmd/clear_calibration";
 
 static const char *STATUS_ONLINE = "online";
 static const char *STATUS_OFFLINE = "offline";
@@ -53,11 +69,17 @@ static const char *STATUS_NEEDS_CAL = "needs_calibration";
 // Arduino Nano ESP32: A6 is GPIO13 and is touch-capable.
 static const int TOUCH_PIN = A6;
 
-static const uint8_t TOUCH_SAMPLES = 16;          // average N reads to reduce jitter
-static const uint32_t RAW_PUBLISH_MS = 1000;      // publish the raw value once per second
-static const uint32_t PERCENT_PUBLISH_MS = 3000;  // publish the percent value less often
-static const float PERCENT_EMA_ALPHA = 0.2f;      // EMA smoothing factor
-static const uint16_t CAL_MIN_DIFF = 20;          // minimum delta between dry/wet to accept calibration
+static const uint8_t TOUCH_SAMPLES = 16;         // average N reads to reduce jitter
+static const uint32_t RAW_PUBLISH_MS = 1000;     // publish the raw value once per second
+static const uint32_t PERCENT_PUBLISH_MS = 3000; // publish the percent value less often
+static const float PERCENT_EMA_ALPHA = 0.2f;     // EMA smoothing factor
+static const uint16_t CAL_MIN_DIFF = 20;         // minimum delta between dry/wet to accept calibration
+static const uint8_t PROBE_VARIANCE_WINDOW = 20; // rolling window for variance
+static const uint8_t PROBE_VARIANCE_MIN_SAMPLES = 5;
+static const float PROBE_MIN_VARIANCE = 2.0f;     // too-stable readings mean disconnected
+static const float PROBE_MAX_VARIANCE = 50000.0f; // wildly unstable readings mean disconnected
+static const uint16_t PROBE_MIN_RAW = 50;         // plausible minimum raw reading
+static const uint16_t PROBE_MAX_RAW = 4000;       // plausible maximum raw reading
 
 // ===== Network timeouts =====
 static const uint32_t WIFI_TIMEOUT_MS = 20000;
@@ -67,6 +89,8 @@ static const char *PREF_NAMESPACE = "water_level";
 static const char *PREF_KEY_DRY = "dry";
 static const char *PREF_KEY_WET = "wet";
 static const char *PREF_KEY_INV = "inv";
+static const char *PREF_KEY_TANK_VOL = "tank_vol";
+static const char *PREF_KEY_ROD_LEN = "rod_len";
 
 // ===== MQTT Discovery =====
 static const bool ENABLE_DISCOVERY = true;
@@ -75,7 +99,7 @@ static const char *DEVICE_ID = "water_tank_esp32";
 static const char *DEVICE_NAME = "Water Tank Sensor";
 static const char *DEVICE_MANUFACTURER = "DIY";
 static const char *DEVICE_MODEL = "Nano ESP32";
-static const char *DEVICE_SW_VERSION = "1.0";
+static const char *DEVICE_SW_VERSION = "1.0"; // update whenever pushing to main branch
 
 WiFiClient wifiClient;
 PubSubClient mqtt(wifiClient);
@@ -89,8 +113,47 @@ uint16_t lastRawValue = 0;
 static float percentEma = NAN; // Smoothed percent (EMA)
 bool discoverySent = false;
 String lastStatus = "";
+bool probeConnected = false;
+bool rawValid = false;
+bool percentValid = false;
+bool litersValid = false;
+bool centimetersValid = false;
+float tankVolumeLiters = NAN;
+float rodLengthCm = NAN;
+float lastLiters = NAN;
+float lastCentimeters = NAN;
+
+enum CalibrationState
+{
+  CAL_STATE_NEEDS,
+  CAL_STATE_CALIBRATING,
+  CAL_STATE_CALIBRATED
+};
+
+CalibrationState calibrationState = CAL_STATE_NEEDS;
+CalibrationState lastPublishedCalState = CAL_STATE_NEEDS;
+bool calibrationInProgress = false;
+bool publishedCalState = false;
+
+bool lastPublishedProbeConnected = false;
+bool publishedProbeConnected = false;
+bool lastPublishedRawValid = false;
+bool publishedRawValid = false;
+bool lastPublishedPercentValid = false;
+bool publishedPercentValid = false;
+bool lastPublishedLitersValid = false;
+bool publishedLitersValid = false;
+bool lastPublishedCmValid = false;
+bool publishedCmValid = false;
+
+uint16_t probeWindow[PROBE_VARIANCE_WINDOW] = {0};
+uint8_t probeWindowCount = 0;
+uint8_t probeWindowIndex = 0;
 
 // ----------------- Helpers -----------------
+
+static void publishStatus(const char *status, bool retained = true, bool force = false);
+static void refreshValidityFlags(float currentPercent, bool forcePublish = false);
 
 static void logLine(const char *msg)
 {
@@ -108,12 +171,344 @@ static void printHelpMenu()
   Serial.println("  help  -> show this menu");
 }
 
-static bool hasCalibration()
+static bool hasCalibrationValues()
 {
   return calDry > 0 && calWet > 0 && (uint16_t)abs((int)calWet - (int)calDry) >= CAL_MIN_DIFF;
 }
 
-static void publishStatus(const char *status, bool retained = true, bool force = false)
+static const char *calibrationStateToString(CalibrationState state)
+{
+  switch (state)
+  {
+  case CAL_STATE_CALIBRATING:
+    return STATUS_CALIBRATING;
+  case CAL_STATE_CALIBRATED:
+    return "calibrated";
+  case CAL_STATE_NEEDS:
+  default:
+    return STATUS_NEEDS_CAL;
+  }
+}
+
+static void publishBoolState(const char *topic, bool value, bool retained, bool &publishedFlag, bool &lastValue, bool force = false)
+{
+  if (!mqtt.connected())
+    return;
+
+  if (force || !publishedFlag || lastValue != value)
+  {
+    mqtt.publish(topic, value ? "1" : "0", retained);
+    publishedFlag = true;
+    lastValue = value;
+  }
+}
+
+static void publishCalibrationState(bool force = false)
+{
+  if (!mqtt.connected())
+    return;
+
+  if (force || !publishedCalState || lastPublishedCalState != calibrationState)
+  {
+    mqtt.publish(TOPIC_TANK_CAL_STATE, calibrationStateToString(calibrationState), true);
+    publishedCalState = true;
+    lastPublishedCalState = calibrationState;
+  }
+}
+
+static void setCalibrationState(CalibrationState state, bool forcePublish = false)
+{
+  calibrationState = state;
+  publishCalibrationState(forcePublish);
+}
+
+static void refreshStatus(bool force = false)
+{
+  if (calibrationState == CAL_STATE_CALIBRATING)
+  {
+    publishStatus(STATUS_CALIBRATING, true, force);
+    return;
+  }
+
+  if (!probeConnected)
+  {
+    publishStatus(STATUS_ONLINE, true, force);
+    return;
+  }
+
+  if (calibrationState == CAL_STATE_CALIBRATED)
+  {
+    publishStatus(STATUS_OK, true, force);
+  }
+  else
+  {
+    publishStatus(STATUS_NEEDS_CAL, true, force);
+  }
+}
+
+static float clampNonNegative(float value)
+{
+  return value < 0.0f ? 0.0f : value;
+}
+
+static void addProbeSample(uint16_t raw)
+{
+  probeWindow[probeWindowIndex] = raw;
+  probeWindowIndex = (probeWindowIndex + 1) % PROBE_VARIANCE_WINDOW;
+  if (probeWindowCount < PROBE_VARIANCE_WINDOW)
+  {
+    probeWindowCount++;
+  }
+}
+
+static float computeProbeVariance()
+{
+  if (probeWindowCount == 0)
+    return 0.0f;
+
+  float mean = 0.0f;
+  for (uint8_t i = 0; i < probeWindowCount; i++)
+  {
+    mean += (float)probeWindow[i];
+  }
+  mean /= (float)probeWindowCount;
+
+  float variance = 0.0f;
+  for (uint8_t i = 0; i < probeWindowCount; i++)
+  {
+    const float diff = (float)probeWindow[i] - mean;
+    variance += diff * diff;
+  }
+  variance /= (float)probeWindowCount;
+  return variance;
+}
+
+static bool isProbeReadingPlausible(uint16_t raw)
+{
+  return raw >= PROBE_MIN_RAW && raw <= PROBE_MAX_RAW;
+}
+
+static bool evaluateProbeConnected(uint16_t raw)
+{
+  addProbeSample(raw);
+
+  if (!isProbeReadingPlausible(raw))
+  {
+    return false;
+  }
+
+  if (probeWindowCount < PROBE_VARIANCE_MIN_SAMPLES)
+  {
+    return true;
+  }
+
+  const float variance = computeProbeVariance();
+  if (variance < PROBE_MIN_VARIANCE || variance > PROBE_MAX_VARIANCE)
+  {
+    return false;
+  }
+
+  return true;
+}
+
+static void refreshCalibrationState(bool force = false)
+{
+  if (calibrationInProgress)
+  {
+    percentEma = NAN;
+    refreshValidityFlags(NAN, force);
+    setCalibrationState(CAL_STATE_CALIBRATING, force);
+    refreshStatus(force);
+    return;
+  }
+
+  CalibrationState nextState = CAL_STATE_NEEDS;
+  if (probeConnected && hasCalibrationValues())
+  {
+    nextState = CAL_STATE_CALIBRATED;
+  }
+  else
+  {
+    percentEma = NAN;
+    refreshValidityFlags(NAN, force);
+  }
+
+  if (nextState != calibrationState)
+  {
+    calibrationState = nextState;
+  }
+
+  publishCalibrationState(force);
+  refreshStatus(force);
+}
+
+static void refreshValidityFlags(float currentPercent, bool forcePublish)
+{
+  percentValid = probeConnected && calibrationState == CAL_STATE_CALIBRATED && !isnan(currentPercent);
+  litersValid = percentValid && !isnan(tankVolumeLiters);
+  centimetersValid = percentValid && !isnan(rodLengthCm);
+
+  publishBoolState(TOPIC_TANK_PERCENT_VALID, percentValid, false, publishedPercentValid, lastPublishedPercentValid, forcePublish);
+  publishBoolState(TOPIC_TANK_LITERS_VALID, litersValid, false, publishedLitersValid, lastPublishedLitersValid, forcePublish);
+  publishBoolState(TOPIC_TANK_CM_VALID, centimetersValid, false, publishedCmValid, lastPublishedCmValid, forcePublish);
+}
+
+static void publishConfigValues(bool force = false)
+{
+  if (!mqtt.connected())
+    return;
+
+  if (!isnan(tankVolumeLiters))
+  {
+    mqtt.publish(TOPIC_CFG_TANK_VOLUME, String(tankVolumeLiters, 2).c_str(), true);
+  }
+  else if (force)
+  {
+    mqtt.publish(TOPIC_CFG_TANK_VOLUME, "", true);
+  }
+
+  if (!isnan(rodLengthCm))
+  {
+    mqtt.publish(TOPIC_CFG_ROD_LENGTH, String(rodLengthCm, 2).c_str(), true);
+  }
+  else if (force)
+  {
+    mqtt.publish(TOPIC_CFG_ROD_LENGTH, "", true);
+  }
+}
+
+static void updateProbeStatus(uint16_t raw, bool forcePublish = false)
+{
+  const bool connected = evaluateProbeConnected(raw);
+  if (connected != probeConnected)
+  {
+    probeConnected = connected;
+    if (!probeConnected)
+    {
+      percentEma = NAN;
+    }
+  }
+
+  rawValid = probeConnected;
+
+  publishBoolState(TOPIC_TANK_PROBE, probeConnected, false, publishedProbeConnected, lastPublishedProbeConnected, forcePublish);
+  publishBoolState(TOPIC_TANK_RAW_VALID, rawValid, false, publishedRawValid, lastPublishedRawValid, forcePublish);
+
+  if (!probeConnected && !calibrationInProgress)
+  {
+    setCalibrationState(CAL_STATE_NEEDS);
+  }
+  if (!probeConnected)
+  {
+    refreshValidityFlags(NAN, true);
+  }
+
+  refreshCalibrationState(forcePublish);
+}
+
+static void publishPercentAndDerived(float percent, bool force = false)
+{
+  refreshValidityFlags(percent, force);
+
+  if (!mqtt.connected())
+    return;
+
+  if (percentValid)
+  {
+    mqtt.publish(TOPIC_TANK_PERCENT, String(percent, 1).c_str());
+  }
+
+  if (litersValid)
+  {
+    const float liters = clampNonNegative(tankVolumeLiters * percent / 100.0f);
+    if (force || isnan(lastLiters) || fabs(lastLiters - liters) > 0.01f)
+    {
+      lastLiters = liters;
+      mqtt.publish(TOPIC_TANK_LITERS, String(liters, 2).c_str());
+    }
+  }
+  else
+  {
+    lastLiters = NAN;
+  }
+
+  if (centimetersValid)
+  {
+    const float centimeters = clampNonNegative(rodLengthCm * percent / 100.0f);
+    if (force || isnan(lastCentimeters) || fabs(lastCentimeters - centimeters) > 0.01f)
+    {
+      lastCentimeters = centimeters;
+      mqtt.publish(TOPIC_TANK_CM, String(centimeters, 1).c_str());
+    }
+  }
+  else
+  {
+    lastCentimeters = NAN;
+  }
+}
+
+static void recomputeDerivedFromPercent(bool force = false)
+{
+  if (isnan(percentEma))
+  {
+    refreshValidityFlags(NAN, force);
+    return;
+  }
+
+  publishPercentAndDerived(percentEma, force);
+}
+
+static void loadConfigValues()
+{
+  tankVolumeLiters = prefs.getFloat(PREF_KEY_TANK_VOL, NAN);
+  rodLengthCm = prefs.getFloat(PREF_KEY_ROD_LEN, NAN);
+
+  Serial.print("[CFG] Tank volume (L): ");
+  if (isnan(tankVolumeLiters))
+  {
+    Serial.println("unset");
+  }
+  else
+  {
+    Serial.println(tankVolumeLiters, 2);
+  }
+
+  Serial.print("[CFG] Rod length (cm): ");
+  if (isnan(rodLengthCm))
+  {
+    Serial.println("unset");
+  }
+  else
+  {
+    Serial.println(rodLengthCm, 2);
+  }
+}
+
+static void updateTankVolume(float value, bool forcePublish = false)
+{
+  if (isnan(value))
+    return;
+  tankVolumeLiters = clampNonNegative(value);
+  prefs.putFloat(PREF_KEY_TANK_VOL, tankVolumeLiters);
+  Serial.print("[CFG] Tank volume set to ");
+  Serial.println(tankVolumeLiters, 2);
+  publishConfigValues(forcePublish);
+  recomputeDerivedFromPercent(true);
+}
+
+static void updateRodLength(float value, bool forcePublish = false)
+{
+  if (isnan(value))
+    return;
+  rodLengthCm = clampNonNegative(value);
+  prefs.putFloat(PREF_KEY_ROD_LEN, rodLengthCm);
+  Serial.print("[CFG] Rod length set to ");
+  Serial.println(rodLengthCm, 2);
+  publishConfigValues(forcePublish);
+  recomputeDerivedFromPercent(true);
+}
+
+static void publishStatus(const char *status, bool retained, bool force)
 {
   String newStatus(status);
   bool changed = newStatus != lastStatus;
@@ -131,18 +526,6 @@ static void publishStatus(const char *status, bool retained = true, bool force =
   }
 }
 
-static void publishCalibrationStatus()
-{
-  if (hasCalibration())
-  {
-    publishStatus(STATUS_OK);
-  }
-  else
-  {
-    publishStatus(STATUS_NEEDS_CAL);
-  }
-}
-
 static void loadCalibration()
 {
   calDry = prefs.getUShort(PREF_KEY_DRY, 0);
@@ -156,7 +539,7 @@ static void loadCalibration()
   Serial.print(" Inverted=");
   Serial.println(calInverted ? "true" : "false");
 
-  if (!hasCalibration())
+  if (!hasCalibrationValues())
   {
     Serial.println("[CAL] Calibration missing or too close. Use 'dry' and 'wet' commands.");
   }
@@ -164,13 +547,18 @@ static void loadCalibration()
 
 static void clearCalibration()
 {
-  prefs.clear();
+  prefs.remove(PREF_KEY_DRY);
+  prefs.remove(PREF_KEY_WET);
+  prefs.remove(PREF_KEY_INV);
   calDry = 0;
   calWet = 0;
   calInverted = false;
   percentEma = NAN;
+  calibrationInProgress = false;
+  setCalibrationState(CAL_STATE_NEEDS, true);
+  refreshValidityFlags(NAN, true);
+  refreshStatus(true);
   Serial.println("[CAL] Cleared calibration.");
-  publishCalibrationStatus();
 }
 
 static uint16_t readTouchAverage(uint8_t samples)
@@ -186,7 +574,7 @@ static uint16_t readTouchAverage(uint8_t samples)
 
 static float computePercent(uint16_t raw)
 {
-  if (!hasCalibration() || calDry == calWet)
+  if (!hasCalibrationValues() || calDry == calWet || !probeConnected)
   {
     return NAN;
   }
@@ -196,6 +584,57 @@ static float computePercent(uint16_t raw)
   const float percent = ((float)raw - inputStart) * 100.0f / (inputEnd - inputStart);
 
   return constrain(percent, 0.0f, 100.0f);
+}
+
+static void beginCalibrationCapture()
+{
+  calibrationInProgress = true;
+  setCalibrationState(CAL_STATE_CALIBRATING, true);
+  refreshStatus(true);
+}
+
+static void finishCalibrationCapture()
+{
+  calibrationInProgress = false;
+  refreshCalibrationState(true);
+  refreshValidityFlags(NAN, true);
+}
+
+static void captureCalibrationPoint(bool isDry)
+{
+  beginCalibrationCapture();
+  const uint16_t sample = readTouchAverage(TOUCH_SAMPLES);
+  lastRawValue = sample;
+  updateProbeStatus(sample, true);
+
+  if (isDry)
+  {
+    calDry = sample;
+    prefs.putUShort(PREF_KEY_DRY, calDry);
+    Serial.print("[CAL] Captured dry=");
+    Serial.println(calDry);
+  }
+  else
+  {
+    calWet = sample;
+    prefs.putUShort(PREF_KEY_WET, calWet);
+    Serial.print("[CAL] Captured wet=");
+    Serial.println(calWet);
+  }
+
+  percentEma = NAN;
+  finishCalibrationCapture();
+}
+
+static void handleInvertCalibration()
+{
+  calInverted = !calInverted;
+  prefs.putBool(PREF_KEY_INV, calInverted);
+  percentEma = NAN;
+  Serial.print("[CAL] Inverted set to ");
+  Serial.println(calInverted ? "true" : "false");
+  refreshCalibrationState(true);
+  refreshValidityFlags(NAN, true);
 }
 
 static void handleSerialCommands()
@@ -209,25 +648,11 @@ static void handleSerialCommands()
 
   if (cmd == "dry")
   {
-    publishStatus(STATUS_CALIBRATING);
-    const uint16_t sample = readTouchAverage(TOUCH_SAMPLES);
-    calDry = sample;
-    prefs.putUShort(PREF_KEY_DRY, calDry);
-    percentEma = NAN;
-    Serial.print("[CAL] Captured dry=");
-    Serial.println(calDry);
-    publishCalibrationStatus();
+    captureCalibrationPoint(true);
   }
   else if (cmd == "wet")
   {
-    publishStatus(STATUS_CALIBRATING);
-    const uint16_t sample = readTouchAverage(TOUCH_SAMPLES);
-    calWet = sample;
-    prefs.putUShort(PREF_KEY_WET, calWet);
-    percentEma = NAN;
-    Serial.print("[CAL] Captured wet=");
-    Serial.println(calWet);
-    publishCalibrationStatus();
+    captureCalibrationPoint(false);
   }
   else if (cmd == "show")
   {
@@ -238,7 +663,7 @@ static void handleSerialCommands()
     Serial.print(" Inverted=");
     Serial.println(calInverted ? "true" : "false");
     Serial.print("[CAL] Valid=");
-    Serial.println(hasCalibration() ? "yes" : "no");
+    Serial.println(hasCalibrationValues() ? "yes" : "no");
   }
   else if (cmd == "clear")
   {
@@ -246,17 +671,82 @@ static void handleSerialCommands()
   }
   else if (cmd == "invert")
   {
-    calInverted = !calInverted;
-    prefs.putBool(PREF_KEY_INV, calInverted);
-    percentEma = NAN;
-    Serial.print("[CAL] Inverted set to ");
-    Serial.println(calInverted ? "true" : "false");
-    publishCalibrationStatus();
+    handleInvertCalibration();
   }
   else if (cmd == "help" || cmd.length() > 0)
   {
     printHelpMenu();
   }
+}
+
+static bool tryParseFloat(const String &input, float &outValue)
+{
+  if (input.length() == 0)
+    return false;
+
+  char *endPtr = nullptr;
+  outValue = strtof(input.c_str(), &endPtr);
+  return endPtr != nullptr && endPtr != input.c_str();
+}
+
+static void handleConfigCommand(const String &topic, const String &message)
+{
+  if (topic == TOPIC_CFG_TANK_VOLUME)
+  {
+    float value = NAN;
+    if (!tryParseFloat(message, value))
+      return;
+    updateTankVolume(value, true);
+  }
+  else if (topic == TOPIC_CFG_ROD_LENGTH)
+  {
+    float value = NAN;
+    if (!tryParseFloat(message, value))
+      return;
+    updateRodLength(value, true);
+  }
+}
+
+static void mqttCallback(char *topic, byte *payload, unsigned int length)
+{
+  String message;
+  for (unsigned int i = 0; i < length; i++)
+  {
+    message += (char)payload[i];
+  }
+  message.trim();
+
+  const String topicStr(topic);
+
+  if (topicStr == TOPIC_CMD_CAL_DRY)
+  {
+    captureCalibrationPoint(true);
+    return;
+  }
+  if (topicStr == TOPIC_CMD_CAL_WET)
+  {
+    captureCalibrationPoint(false);
+    return;
+  }
+  if (topicStr == TOPIC_CMD_CLEAR_CAL)
+  {
+    clearCalibration();
+    return;
+  }
+
+  handleConfigCommand(topicStr, message);
+}
+
+static void subscribeTopics()
+{
+  if (!mqtt.connected())
+    return;
+
+  mqtt.subscribe(TOPIC_CMD_CAL_DRY);
+  mqtt.subscribe(TOPIC_CMD_CAL_WET);
+  mqtt.subscribe(TOPIC_CMD_CLEAR_CAL);
+  mqtt.subscribe(TOPIC_CFG_TANK_VOLUME);
+  mqtt.subscribe(TOPIC_CFG_ROD_LENGTH);
 }
 
 static void publishDiscovery()
@@ -265,24 +755,88 @@ static void publishDiscovery()
     return;
 
   String deviceJson = String("{\"name\":\"") + DEVICE_NAME + "\",\"identifiers\":[\"" + DEVICE_ID +
-                       "\"],\"manufacturer\":\"" + DEVICE_MANUFACTURER + "\",\"model\":\"" + DEVICE_MODEL +
-                       "\",\"sw_version\":\"" + DEVICE_SW_VERSION + "\"}";
+                      "\"],\"manufacturer\":\"" + DEVICE_MANUFACTURER + "\",\"model\":\"" + DEVICE_MODEL +
+                      "\",\"sw_version\":\"" + DEVICE_SW_VERSION + "\"}";
 
-  const String availability = String("\"availability_topic\":\"") + TOPIC_TANK_STATUS + "\"";
+  const String availability = String("\"availability_topic\":\"") + TOPIC_TANK_STATUS + "\",\"payload_available\":\"" + STATUS_ONLINE +
+                              "\",\"payload_not_available\":\"" + STATUS_OFFLINE + "\"";
 
   String rawConfig = String("{\"name\":\"Water Tank Raw\",\"state_topic\":\"") + TOPIC_TANK_RAW +
-                     "\",\"unique_id\":\"water_tank_raw\"," + availability + ",\"device\":" + deviceJson + "}";
+                     "\",\"unique_id\":\"water_tank_raw\"," + availability + ",\"state_class\":\"measurement\",\"device\":" + deviceJson + "}";
   mqtt.publish((String(DISCOVERY_PREFIX) + "/sensor/water_tank_raw/config").c_str(), rawConfig.c_str(), true);
 
   String percentConfig = String("{\"name\":\"Water Tank Level\",\"state_topic\":\"") + TOPIC_TANK_PERCENT +
                          "\",\"unique_id\":\"water_tank_percent\",\"unit_of_measurement\":\"%\"," + availability +
-                         ",\"device\":" + deviceJson + "}";
+                         ",\"state_class\":\"measurement\",\"device\":" + deviceJson + "}";
   mqtt.publish((String(DISCOVERY_PREFIX) + "/sensor/water_tank_percent/config").c_str(), percentConfig.c_str(), true);
+
+  String litersConfig = String("{\"name\":\"Water Tank Liters\",\"state_topic\":\"") + TOPIC_TANK_LITERS +
+                        "\",\"unique_id\":\"water_tank_liters\",\"unit_of_measurement\":\"L\"," + availability +
+                        ",\"state_class\":\"measurement\",\"device\":" + deviceJson + "}";
+  mqtt.publish((String(DISCOVERY_PREFIX) + "/sensor/water_tank_liters/config").c_str(), litersConfig.c_str(), true);
+
+  String cmConfig = String("{\"name\":\"Water Tank Height\",\"state_topic\":\"") + TOPIC_TANK_CM +
+                    "\",\"unique_id\":\"water_tank_height_cm\",\"unit_of_measurement\":\"cm\"," + availability +
+                    ",\"state_class\":\"measurement\",\"device\":" + deviceJson + "}";
+  mqtt.publish((String(DISCOVERY_PREFIX) + "/sensor/water_tank_height/config").c_str(), cmConfig.c_str(), true);
+
+  String calStateConfig = String("{\"name\":\"Water Tank Calibration State\",\"state_topic\":\"") + TOPIC_TANK_CAL_STATE +
+                          "\",\"unique_id\":\"water_tank_cal_state\"," + availability + ",\"device\":" + deviceJson + "}";
+  mqtt.publish((String(DISCOVERY_PREFIX) + "/sensor/water_tank_cal_state/config").c_str(), calStateConfig.c_str(), true);
 
   String statusConfig = String("{\"name\":\"Water Tank Status\",\"state_topic\":\"") + TOPIC_TANK_STATUS +
                         "\",\"unique_id\":\"water_tank_status\"," + availability + ",\"entity_category\":\"diagnostic\",\"device\":" +
                         deviceJson + "}";
   mqtt.publish((String(DISCOVERY_PREFIX) + "/sensor/water_tank_status/config").c_str(), statusConfig.c_str(), true);
+
+  String probeConfig = String("{\"name\":\"Probe Connected\",\"state_topic\":\"") + TOPIC_TANK_PROBE +
+                       "\",\"unique_id\":\"water_tank_probe_connected\",\"payload_on\":\"1\",\"payload_off\":\"0\"," + availability +
+                       ",\"device_class\":\"connectivity\",\"device\":" + deviceJson + "}";
+  mqtt.publish((String(DISCOVERY_PREFIX) + "/binary_sensor/water_tank_probe_connected/config").c_str(), probeConfig.c_str(), true);
+
+  String percentValidConfig = String("{\"name\":\"Percent Valid\",\"state_topic\":\"") + TOPIC_TANK_PERCENT_VALID +
+                              "\",\"unique_id\":\"water_tank_percent_valid\",\"payload_on\":\"1\",\"payload_off\":\"0\"," + availability +
+                              ",\"device\":" + deviceJson + "}";
+  mqtt.publish((String(DISCOVERY_PREFIX) + "/binary_sensor/water_tank_percent_valid/config").c_str(), percentValidConfig.c_str(), true);
+
+  String rawValidConfig = String("{\"name\":\"Raw Valid\",\"state_topic\":\"") + TOPIC_TANK_RAW_VALID +
+                          "\",\"unique_id\":\"water_tank_raw_valid\",\"payload_on\":\"1\",\"payload_off\":\"0\"," + availability +
+                          ",\"entity_category\":\"diagnostic\",\"device\":" + deviceJson + "}";
+  mqtt.publish((String(DISCOVERY_PREFIX) + "/binary_sensor/water_tank_raw_valid/config").c_str(), rawValidConfig.c_str(), true);
+
+  String litersValidConfig = String("{\"name\":\"Liters Valid\",\"state_topic\":\"") + TOPIC_TANK_LITERS_VALID +
+                             "\",\"unique_id\":\"water_tank_liters_valid\",\"payload_on\":\"1\",\"payload_off\":\"0\"," + availability +
+                             ",\"entity_category\":\"diagnostic\",\"device\":" + deviceJson + "}";
+  mqtt.publish((String(DISCOVERY_PREFIX) + "/binary_sensor/water_tank_liters_valid/config").c_str(), litersValidConfig.c_str(), true);
+
+  String cmValidConfig = String("{\"name\":\"Centimeters Valid\",\"state_topic\":\"") + TOPIC_TANK_CM_VALID +
+                         "\",\"unique_id\":\"water_tank_cm_valid\",\"payload_on\":\"1\",\"payload_off\":\"0\"," + availability +
+                         ",\"entity_category\":\"diagnostic\",\"device\":" + deviceJson + "}";
+  mqtt.publish((String(DISCOVERY_PREFIX) + "/binary_sensor/water_tank_cm_valid/config").c_str(), cmValidConfig.c_str(), true);
+
+  String volumeNumberConfig = String("{\"name\":\"Tank Volume\",\"state_topic\":\"") + TOPIC_CFG_TANK_VOLUME +
+                              "\",\"command_topic\":\"" + TOPIC_CFG_TANK_VOLUME +
+                              "\",\"unique_id\":\"water_tank_volume_number\",\"unit_of_measurement\":\"L\",\"min\":0,\"step\":0.1," +
+                              availability + ",\"device\":" + deviceJson + "}";
+  mqtt.publish((String(DISCOVERY_PREFIX) + "/number/water_tank_volume/config").c_str(), volumeNumberConfig.c_str(), true);
+
+  String rodNumberConfig = String("{\"name\":\"Rod Length\",\"state_topic\":\"") + TOPIC_CFG_ROD_LENGTH +
+                           "\",\"command_topic\":\"" + TOPIC_CFG_ROD_LENGTH +
+                           "\",\"unique_id\":\"water_tank_rod_length_number\",\"unit_of_measurement\":\"cm\",\"min\":0,\"step\":0.1," +
+                           availability + ",\"device\":" + deviceJson + "}";
+  mqtt.publish((String(DISCOVERY_PREFIX) + "/number/water_tank_rod_length/config").c_str(), rodNumberConfig.c_str(), true);
+
+  String dryButtonConfig = String("{\"name\":\"Calibrate Dry\",\"command_topic\":\"") + TOPIC_CMD_CAL_DRY +
+                           "\",\"unique_id\":\"water_tank_calibrate_dry_button\"," + availability + ",\"device\":" + deviceJson + "}";
+  mqtt.publish((String(DISCOVERY_PREFIX) + "/button/water_tank_calibrate_dry/config").c_str(), dryButtonConfig.c_str(), true);
+
+  String wetButtonConfig = String("{\"name\":\"Calibrate Wet\",\"command_topic\":\"") + TOPIC_CMD_CAL_WET +
+                           "\",\"unique_id\":\"water_tank_calibrate_wet_button\"," + availability + ",\"device\":" + deviceJson + "}";
+  mqtt.publish((String(DISCOVERY_PREFIX) + "/button/water_tank_calibrate_wet/config").c_str(), wetButtonConfig.c_str(), true);
+
+  String clearButtonConfig = String("{\"name\":\"Clear Calibration\",\"command_topic\":\"") + TOPIC_CMD_CLEAR_CAL +
+                             "\",\"unique_id\":\"water_tank_clear_cal_button\"," + availability + ",\"device\":" + deviceJson + "}";
+  mqtt.publish((String(DISCOVERY_PREFIX) + "/button/water_tank_clear_cal/config").c_str(), clearButtonConfig.c_str(), true);
 
   discoverySent = true;
   Serial.println("[MQTT] Home Assistant discovery published.");
@@ -342,7 +896,14 @@ static void connectMQTT()
       logLine("[MQTT] Connected!");
       discoverySent = false;
       publishStatus(STATUS_ONLINE, true, true);
-      publishCalibrationStatus();
+      subscribeTopics();
+      publishCalibrationState(true);
+      refreshCalibrationState(true);
+      publishConfigValues(true);
+      publishBoolState(TOPIC_TANK_PROBE, probeConnected, false, publishedProbeConnected, lastPublishedProbeConnected, true);
+      publishBoolState(TOPIC_TANK_RAW_VALID, rawValid, false, publishedRawValid, lastPublishedRawValid, true);
+      refreshValidityFlags(percentEma, true);
+      recomputeDerivedFromPercent(true);
       publishDiscovery();
       break;
     }
@@ -378,13 +939,16 @@ void setup()
 
   prefs.begin(PREF_NAMESPACE, false);
   loadCalibration();
-  publishCalibrationStatus();
+  loadConfigValues();
+  refreshCalibrationState(true);
+  refreshValidityFlags(NAN, true);
   printHelpMenu();
 
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
   mqtt.setKeepAlive(30);
   mqtt.setSocketTimeout(5);
   mqtt.setBufferSize(512);
+  mqtt.setCallback(mqttCallback);
 
   ensureConnections();
 }
@@ -410,6 +974,7 @@ void loop()
     lastRawPublish = now;
     const uint16_t raw = readTouchAverage(TOUCH_SAMPLES);
     lastRawValue = raw;
+    updateProbeStatus(raw);
 
     if (mqtt.connected())
     {
@@ -435,20 +1000,16 @@ void loop()
       {
         percentEma = (PERCENT_EMA_ALPHA * rawPercent) + ((1.0f - PERCENT_EMA_ALPHA) * percentEma);
       }
-      publishStatus(STATUS_OK);
-
-      if (mqtt.connected())
-      {
-        mqtt.publish(TOPIC_TANK_PERCENT, String(percentEma, 1).c_str());
-      }
     }
     else
     {
-      publishStatus(STATUS_NEEDS_CAL);
+      percentEma = NAN;
     }
 
+    publishPercentAndDerived(percentEma);
+
     Serial.print("[PERCENT] ");
-    if (isnan(rawPercent))
+    if (isnan(percentEma))
     {
       Serial.println("N/A");
     }
