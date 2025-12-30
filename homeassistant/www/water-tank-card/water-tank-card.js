@@ -73,8 +73,13 @@ class WaterTankCard extends HTMLElement {
 
     _computeUiState() {
         // Online/offline is based on your status topic entity
-        const status = this._state(this._config.status_entity); // e.g. "online" or "offline"
-        const offline = !status || status === "offline";
+        const status = this._state(this._config.status_entity);
+
+        // Treat only explicit offline / unavailable as offline
+        const offline =
+            status === "offline" ||
+            status === "unavailable" ||
+            status === "unknown";
 
         const probeConnected = this._isOn(this._config.probe_entity);
         const percentValid = this._isOn(this._config.percent_valid_entity);
@@ -111,7 +116,9 @@ class WaterTankCard extends HTMLElement {
         const cm = this._num(this._config.cm_entity);
         const raw = this._state(this._config.raw_entity);
 
-        const onlineText = ui.mode === "OFFLINE" ? "Offline" : "Online";
+        const statusState = this._state(this._config.status_entity);
+        const onlineText =
+            statusState === "online" ? "Online" : "Offline";
 
         // Minimal styles (we’ll refine later)
         const css = `
