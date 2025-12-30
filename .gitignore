@@ -1,0 +1,13 @@
+# Arduino / ESP32
+.secrets.h
+secrets.h
+
+# macOS
+.DS_Store
+
+# VS Code
+.vscode/
+
+# Build / temp
+*.tmp
+*.log
