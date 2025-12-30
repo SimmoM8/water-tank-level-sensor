@@ -99,7 +99,7 @@ static const char *DEVICE_ID = "water_tank_esp32";
 static const char *DEVICE_NAME = "Water Tank Sensor";
 static const char *DEVICE_MANUFACTURER = "DIY";
 static const char *DEVICE_MODEL = "Nano ESP32";
-static const char *DEVICE_SW_VERSION = "1.0"; // update whenever pushing to main branch
+static const char *DEVICE_SW_VERSION = "1.1"; // update whenever pushing to main branch
 
 WiFiClient wifiClient;
 PubSubClient mqtt(wifiClient);
