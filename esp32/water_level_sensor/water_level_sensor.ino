@@ -4,6 +4,41 @@
 #include <stdlib.h>
 #include <math.h>
 
+// Optional config overrides (see water_level_config.h)
+#ifdef __has_include
+#if __has_include("water_level_config.h")
+#include "water_level_config.h"
+#endif
+#endif
+
+#ifndef CFG_PROBE_DISCONNECTED_BELOW_RAW
+#define CFG_PROBE_DISCONNECTED_BELOW_RAW 30000u
+#endif
+#ifndef CFG_SPIKE_DELTA
+#define CFG_SPIKE_DELTA 10000u
+#endif
+#ifndef CFG_RAPID_FLUCTUATION_DELTA
+#define CFG_RAPID_FLUCTUATION_DELTA 5000u
+#endif
+#ifndef CFG_SPIKE_COUNT_THRESHOLD
+#define CFG_SPIKE_COUNT_THRESHOLD 3u
+#endif
+#ifndef CFG_SPIKE_WINDOW_MS
+#define CFG_SPIKE_WINDOW_MS 5000u
+#endif
+#ifndef CFG_STUCK_EPS
+#define CFG_STUCK_EPS 2u
+#endif
+#ifndef CFG_STUCK_MS
+#define CFG_STUCK_MS 8000u
+#endif
+#ifndef CFG_PROBE_MIN_RAW
+#define CFG_PROBE_MIN_RAW 0u
+#endif
+#ifndef CFG_PROBE_MAX_RAW
+#define CFG_PROBE_MAX_RAW 65535u
+#endif
+
 // =============================================================================
 // Dad's Smart Home — Water Level Sensor (ESP32 touch) → MQTT → Home Assistant
 //
@@ -47,6 +82,7 @@ static const char *TOPIC_TANK_PERCENT = "home/water/tank/percent";
 static const char *TOPIC_TANK_STATUS = "home/water/tank/status";
 static const char *TOPIC_TANK_PROBE = "home/water/tank/probe_connected";
 static const char *TOPIC_TANK_CAL_STATE = "home/water/tank/calibration_state";
+static const char *TOPIC_TANK_QUALITY = "home/water/tank/quality_reason";
 static const char *TOPIC_TANK_RAW_VALID = "home/water/tank/raw_valid";
 static const char *TOPIC_TANK_PERCENT_VALID = "home/water/tank/percent_valid";
 static const char *TOPIC_TANK_LITERS_VALID = "home/water/tank/liters_valid";
@@ -74,12 +110,6 @@ static const uint32_t RAW_PUBLISH_MS = 1000;     // publish the raw value once p
 static const uint32_t PERCENT_PUBLISH_MS = 3000; // publish the percent value less often
 static const float PERCENT_EMA_ALPHA = 0.2f;     // EMA smoothing factor
 static const uint16_t CAL_MIN_DIFF = 20;         // minimum delta between dry/wet to accept calibration
-static const uint8_t PROBE_VARIANCE_WINDOW = 20; // rolling window for variance
-static const uint8_t PROBE_VARIANCE_MIN_SAMPLES = 5;
-static const float PROBE_MIN_VARIANCE = 2.0f;     // too-stable readings mean disconnected
-static const float PROBE_MAX_VARIANCE = 50000.0f; // wildly unstable readings mean disconnected
-static const uint16_t PROBE_MIN_RAW = 50;         // plausible minimum raw reading
-static const uint16_t PROBE_MAX_RAW = 4000;       // plausible maximum raw reading
 
 // ===== Network timeouts =====
 static const uint32_t WIFI_TIMEOUT_MS = 20000;
@@ -99,7 +129,7 @@ static const char *DEVICE_ID = "water_tank_esp32";
 static const char *DEVICE_NAME = "Water Tank Sensor";
 static const char *DEVICE_MANUFACTURER = "DIY";
 static const char *DEVICE_MODEL = "Nano ESP32";
-static const char *DEVICE_SW_VERSION = "1.1"; // update whenever pushing to main branch
+static const char *DEVICE_SW_VERSION = "1.0"; // update whenever pushing to main branch
 
 WiFiClient wifiClient;
 PubSubClient mqtt(wifiClient);
@@ -135,6 +165,21 @@ CalibrationState lastPublishedCalState = CAL_STATE_NEEDS;
 bool calibrationInProgress = false;
 bool publishedCalState = false;
 
+enum ProbeQualityReason
+{
+  QUALITY_OK,
+  QUALITY_DISCONNECTED_LOW_RAW,
+  QUALITY_UNRELIABLE_SPIKES,
+  QUALITY_UNRELIABLE_RAPID,
+  QUALITY_UNRELIABLE_STUCK,
+  QUALITY_OUT_OF_BOUNDS,
+  QUALITY_UNKNOWN
+};
+
+ProbeQualityReason probeQualityReason = QUALITY_UNKNOWN;
+ProbeQualityReason lastPublishedQualityReason = QUALITY_UNKNOWN;
+bool publishedQualityReason = false;
+
 bool lastPublishedProbeConnected = false;
 bool publishedProbeConnected = false;
 bool lastPublishedRawValid = false;
@@ -145,10 +190,6 @@ bool lastPublishedLitersValid = false;
 bool publishedLitersValid = false;
 bool lastPublishedCmValid = false;
 bool publishedCmValid = false;
-
-uint16_t probeWindow[PROBE_VARIANCE_WINDOW] = {0};
-uint8_t probeWindowCount = 0;
-uint8_t probeWindowIndex = 0;
 
 // ----------------- Helpers -----------------
 
@@ -251,64 +292,112 @@ static float clampNonNegative(float value)
   return value < 0.0f ? 0.0f : value;
 }
 
-static void addProbeSample(uint16_t raw)
+static const char *qualityReasonToString(ProbeQualityReason reason)
 {
-  probeWindow[probeWindowIndex] = raw;
-  probeWindowIndex = (probeWindowIndex + 1) % PROBE_VARIANCE_WINDOW;
-  if (probeWindowCount < PROBE_VARIANCE_WINDOW)
+  switch (reason)
   {
-    probeWindowCount++;
+  case QUALITY_OK:
+    return "ok";
+  case QUALITY_DISCONNECTED_LOW_RAW:
+    return "disconnected_low_raw";
+  case QUALITY_UNRELIABLE_SPIKES:
+    return "unreliable_spikes";
+  case QUALITY_UNRELIABLE_RAPID:
+    return "unreliable_rapid_fluctuation";
+  case QUALITY_UNRELIABLE_STUCK:
+    return "unreliable_stuck";
+  case QUALITY_OUT_OF_BOUNDS:
+    return "out_of_bounds";
+  case QUALITY_UNKNOWN:
+  default:
+    return "unknown";
   }
 }
 
-static float computeProbeVariance()
+static void publishQualityReason(bool force = false)
 {
-  if (probeWindowCount == 0)
-    return 0.0f;
+  if (!mqtt.connected())
+    return;
 
-  float mean = 0.0f;
-  for (uint8_t i = 0; i < probeWindowCount; i++)
+  if (force || !publishedQualityReason || probeQualityReason != lastPublishedQualityReason)
   {
-    mean += (float)probeWindow[i];
+    mqtt.publish(TOPIC_TANK_QUALITY, qualityReasonToString(probeQualityReason), true);
+    publishedQualityReason = true;
+    lastPublishedQualityReason = probeQualityReason;
   }
-  mean /= (float)probeWindowCount;
-
-  float variance = 0.0f;
-  for (uint8_t i = 0; i < probeWindowCount; i++)
-  {
-    const float diff = (float)probeWindow[i] - mean;
-    variance += diff * diff;
-  }
-  variance /= (float)probeWindowCount;
-  return variance;
-}
-
-static bool isProbeReadingPlausible(uint16_t raw)
-{
-  return raw >= PROBE_MIN_RAW && raw <= PROBE_MAX_RAW;
 }
 
 static bool evaluateProbeConnected(uint16_t raw)
 {
-  addProbeSample(raw);
+  static bool hasLast = false;
+  static uint16_t lastRaw = 0;
+  static uint8_t spikeCount = 0;
+  static uint32_t spikeWindowStart = 0;
+  static uint32_t stuckStartMs = 0;
 
-  if (!isProbeReadingPlausible(raw))
+  const uint32_t now = millis();
+  if (spikeWindowStart == 0)
   {
-    return false;
+    spikeWindowStart = now;
+  }
+  if (stuckStartMs == 0)
+  {
+    stuckStartMs = now;
   }
 
-  if (probeWindowCount < PROBE_VARIANCE_MIN_SAMPLES)
+  ProbeQualityReason reason = QUALITY_OK;
+  if (raw < CFG_PROBE_DISCONNECTED_BELOW_RAW)
   {
-    return true;
+    reason = QUALITY_DISCONNECTED_LOW_RAW;
+  }
+  else if (raw < CFG_PROBE_MIN_RAW || raw > CFG_PROBE_MAX_RAW)
+  {
+    reason = QUALITY_OUT_OF_BOUNDS;
+  }
+  else
+  {
+    uint32_t delta = 0;
+    if (hasLast)
+    {
+      delta = (uint32_t)abs((int32_t)raw - (int32_t)lastRaw);
+    }
+
+    if (delta >= CFG_RAPID_FLUCTUATION_DELTA)
+    {
+      reason = QUALITY_UNRELIABLE_RAPID;
+    }
+    else
+    {
+      if (now - spikeWindowStart > CFG_SPIKE_WINDOW_MS)
+      {
+        spikeWindowStart = now;
+        spikeCount = 0;
+      }
+      if (delta >= CFG_SPIKE_DELTA)
+      {
+        spikeCount++;
+        if (spikeCount >= CFG_SPIKE_COUNT_THRESHOLD)
+        {
+          reason = QUALITY_UNRELIABLE_SPIKES;
+        }
+      }
+
+      if (delta > CFG_STUCK_EPS)
+      {
+        stuckStartMs = now;
+      }
+      else if ((now - stuckStartMs) >= CFG_STUCK_MS)
+      {
+        reason = QUALITY_UNRELIABLE_STUCK;
+      }
+    }
   }
 
-  const float variance = computeProbeVariance();
-  if (variance < PROBE_MIN_VARIANCE || variance > PROBE_MAX_VARIANCE)
-  {
-    return false;
-  }
+  lastRaw = raw;
+  hasLast = true;
 
-  return true;
+  probeQualityReason = reason;
+  return reason == QUALITY_OK;
 }
 
 static void refreshCalibrationState(bool force = false)
@@ -379,29 +468,36 @@ static void publishConfigValues(bool force = false)
 
 static void updateProbeStatus(uint16_t raw, bool forcePublish = false)
 {
+  const bool prevConnected = probeConnected;
+  const ProbeQualityReason prevReason = probeQualityReason;
+
   const bool connected = evaluateProbeConnected(raw);
-  if (connected != probeConnected)
+  probeConnected = connected;
+  rawValid = probeConnected;
+
+  if (!probeConnected)
   {
-    probeConnected = connected;
-    if (!probeConnected)
+    percentEma = NAN;
+    refreshValidityFlags(NAN, true);
+    if (!calibrationInProgress)
     {
-      percentEma = NAN;
+      setCalibrationState(CAL_STATE_NEEDS);
     }
   }
 
-  rawValid = probeConnected;
+  if (!prevConnected && probeConnected)
+  {
+    Serial.println("[PROBE] connected");
+  }
+  else if (!probeConnected && (prevConnected || prevReason != probeQualityReason))
+  {
+    Serial.print("[PROBE] disconnected: ");
+    Serial.println(qualityReasonToString(probeQualityReason));
+  }
 
+  publishQualityReason(forcePublish);
   publishBoolState(TOPIC_TANK_PROBE, probeConnected, false, publishedProbeConnected, lastPublishedProbeConnected, forcePublish);
   publishBoolState(TOPIC_TANK_RAW_VALID, rawValid, false, publishedRawValid, lastPublishedRawValid, forcePublish);
-
-  if (!probeConnected && !calibrationInProgress)
-  {
-    setCalibrationState(CAL_STATE_NEEDS);
-  }
-  if (!probeConnected)
-  {
-    refreshValidityFlags(NAN, true);
-  }
 
   refreshCalibrationState(forcePublish);
 }
@@ -789,6 +885,11 @@ static void publishDiscovery()
                         deviceJson + "}";
   mqtt.publish((String(DISCOVERY_PREFIX) + "/sensor/water_tank_status/config").c_str(), statusConfig.c_str(), true);
 
+  String qualityConfig = String("{\"name\":\"Water Tank Quality Reason\",\"state_topic\":\"") + TOPIC_TANK_QUALITY +
+                         "\",\"unique_id\":\"water_tank_quality_reason\"," + availability +
+                         ",\"entity_category\":\"diagnostic\",\"device\":" + deviceJson + "}";
+  mqtt.publish((String(DISCOVERY_PREFIX) + "/sensor/water_tank_quality_reason/config").c_str(), qualityConfig.c_str(), true);
+
   String probeConfig = String("{\"name\":\"Probe Connected\",\"state_topic\":\"") + TOPIC_TANK_PROBE +
                        "\",\"unique_id\":\"water_tank_probe_connected\",\"payload_on\":\"1\",\"payload_off\":\"0\"," + availability +
                        ",\"device_class\":\"connectivity\",\"device\":" + deviceJson + "}";
@@ -900,6 +1001,7 @@ static void connectMQTT()
       publishCalibrationState(true);
       refreshCalibrationState(true);
       publishConfigValues(true);
+      publishQualityReason(true);
       publishBoolState(TOPIC_TANK_PROBE, probeConnected, false, publishedProbeConnected, lastPublishedProbeConnected, true);
       publishBoolState(TOPIC_TANK_RAW_VALID, rawValid, false, publishedRawValid, lastPublishedRawValid, true);
       refreshValidityFlags(percentEma, true);
