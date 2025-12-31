@@ -97,6 +97,8 @@ static const char *TOPIC_TANK_LITERS = "home/water/tank/liters";
 static const char *TOPIC_TANK_CM = "home/water/tank/centimeters";
 static const char *TOPIC_CFG_TANK_VOLUME = "home/water/tank/cfg/tank_volume_l";
 static const char *TOPIC_CFG_ROD_LENGTH = "home/water/tank/cfg/rod_length_cm";
+static const char *TOPIC_CMD_TANK_VOLUME = "home/water/tank/cmd/tank_volume_l";
+static const char *TOPIC_CMD_ROD_LENGTH = "home/water/tank/cmd/rod_length_cm";
 static const char *TOPIC_CFG_SIM_ENABLED = "home/water/tank/cfg/simulation_enabled";
 static const char *TOPIC_CFG_SIM_MODE = "home/water/tank/cfg/simulation_mode";
 static const char *TOPIC_CMD_SIM_ENABLED = "home/water/tank/cmd/simulation_enabled";
@@ -141,7 +143,7 @@ static const char *DEVICE_ID = "water_tank_esp32";
 static const char *DEVICE_NAME = "Water Tank Sensor";
 static const char *DEVICE_MANUFACTURER = "DIY";
 static const char *DEVICE_MODEL = "Nano ESP32";
-static const char *DEVICE_SW_VERSION = "1.1"; // update whenever pushing to main branch
+static const char *DEVICE_SW_VERSION = "1.2"; // update whenever pushing to main branch
 
 WiFiClient wifiClient;
 PubSubClient mqtt(wifiClient);
@@ -610,7 +612,13 @@ static void updateTankVolume(float value, bool forcePublish = false)
 {
   if (isnan(value))
     return;
-  tankVolumeLiters = clampNonNegative(value);
+  const float next = clampNonNegative(value);
+  if (!isnan(tankVolumeLiters) && fabs(tankVolumeLiters - next) < 0.001f)
+  {
+    // Ignore duplicate/echoed values to avoid log spam
+    return;
+  }
+  tankVolumeLiters = next;
   prefs.putFloat(PREF_KEY_TANK_VOL, tankVolumeLiters);
   Serial.print("[CFG] Tank volume set to ");
   Serial.println(tankVolumeLiters, 2);
@@ -622,7 +630,13 @@ static void updateRodLength(float value, bool forcePublish = false)
 {
   if (isnan(value))
     return;
-  rodLengthCm = clampNonNegative(value);
+  const float next = clampNonNegative(value);
+  if (!isnan(rodLengthCm) && fabs(rodLengthCm - next) < 0.001f)
+  {
+    // Ignore duplicate/echoed values to avoid log spam
+    return;
+  }
+  rodLengthCm = next;
   prefs.putFloat(PREF_KEY_ROD_LEN, rodLengthCm);
   Serial.print("[CFG] Rod length set to ");
   Serial.println(rodLengthCm, 2);
@@ -895,14 +909,14 @@ static bool tryParseBool(const String &input, bool &outValue)
 
 static void handleConfigCommand(const String &topic, const String &message)
 {
-  if (topic == TOPIC_CFG_TANK_VOLUME)
+  if (topic == TOPIC_CMD_TANK_VOLUME)
   {
     float value = NAN;
     if (!tryParseFloat(message, value))
       return;
     updateTankVolume(value, true);
   }
-  else if (topic == TOPIC_CFG_ROD_LENGTH)
+  else if (topic == TOPIC_CMD_ROD_LENGTH)
   {
     float value = NAN;
     if (!tryParseFloat(message, value))
@@ -986,8 +1000,8 @@ static void subscribeTopics()
   mqtt.subscribe(TOPIC_CMD_CAL_DRY);
   mqtt.subscribe(TOPIC_CMD_CAL_WET);
   mqtt.subscribe(TOPIC_CMD_CLEAR_CAL);
-  mqtt.subscribe(TOPIC_CFG_TANK_VOLUME);
-  mqtt.subscribe(TOPIC_CFG_ROD_LENGTH);
+  mqtt.subscribe(TOPIC_CMD_TANK_VOLUME);
+  mqtt.subscribe(TOPIC_CMD_ROD_LENGTH);
   mqtt.subscribe(TOPIC_CMD_SIM_ENABLED);
   mqtt.subscribe(TOPIC_CMD_SIM_MODE);
 }
@@ -1089,13 +1103,13 @@ static void publishDiscovery()
   }
 
   String volumeNumberConfig = String("{\"name\":\"Tank Volume\",\"state_topic\":\"") + TOPIC_CFG_TANK_VOLUME +
-                              "\",\"command_topic\":\"" + TOPIC_CFG_TANK_VOLUME +
+                              "\",\"command_topic\":\"" + TOPIC_CMD_TANK_VOLUME +
                               "\",\"unique_id\":\"water_tank_volume_number\",\"unit_of_measurement\":\"L\",\"min\":0,\"step\":0.1," +
                               availability + ",\"device\":" + deviceJson + "}";
   mqtt.publish((String(DISCOVERY_PREFIX) + "/number/water_tank_volume/config").c_str(), volumeNumberConfig.c_str(), true);
 
   String rodNumberConfig = String("{\"name\":\"Rod Length\",\"state_topic\":\"") + TOPIC_CFG_ROD_LENGTH +
-                           "\",\"command_topic\":\"" + TOPIC_CFG_ROD_LENGTH +
+                           "\",\"command_topic\":\"" + TOPIC_CMD_ROD_LENGTH +
                            "\",\"unique_id\":\"water_tank_rod_length_number\",\"unit_of_measurement\":\"cm\",\"min\":0,\"step\":0.1," +
                            availability + ",\"device\":" + deviceJson + "}";
   mqtt.publish((String(DISCOVERY_PREFIX) + "/number/water_tank_rod_length/config").c_str(), rodNumberConfig.c_str(), true);

@@ -11,4 +11,4 @@
 // #define CFG_STUCK_EPS 2u
 // #define CFG_STUCK_MS 8000u
 // #define CFG_PROBE_MIN_RAW 0u
-#define CFG_PROBE_MAX_RAW 655350u
+// #define CFG_PROBE_MAX_RAW 65535u
