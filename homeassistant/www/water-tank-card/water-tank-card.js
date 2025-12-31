@@ -4,7 +4,7 @@
  */
 
 const CARD_TAG = "water-tank-card";
-const VERSION = "0.3.0";
+const VERSION = "0.3.1";
 
 class WaterTankCard extends HTMLElement {
     constructor() {
@@ -39,6 +39,11 @@ class WaterTankCard extends HTMLElement {
             calibrate_dry_entity: null,
             calibrate_wet_entity: null,
             clear_calibration_entity: null,
+
+            // simulation controls (optional)
+            simulation_enabled_entity: null,
+            simulation_mode_entity: null,
+
             ...config,
         };
 
@@ -149,6 +154,10 @@ class WaterTankCard extends HTMLElement {
         if (this._config.calibrate_wet_entity) calEntities.push(this._config.calibrate_wet_entity);
         if (this._config.clear_calibration_entity) calEntities.push(this._config.clear_calibration_entity);
 
+        const simEntities = [];
+        if (this._config.simulation_enabled_entity) simEntities.push(this._config.simulation_enabled_entity);
+        if (this._config.simulation_mode_entity) simEntities.push(this._config.simulation_mode_entity);
+
         if (hasBrowserMod) {
             const cards = [
                 {
@@ -171,6 +180,14 @@ class WaterTankCard extends HTMLElement {
                     type: "entities",
                     title: "Calibration",
                     entities: calEntities,
+                });
+            }
+
+            if (simEntities.length) {
+                cards.push({
+                    type: "entities",
+                    title: "Simulation",
+                    entities: simEntities,
                 });
             }
 
