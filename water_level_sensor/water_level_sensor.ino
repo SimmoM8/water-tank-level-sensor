@@ -3,6 +3,8 @@
 #include <Preferences.h>
 #include <stdlib.h>
 #include <math.h>
+#include <memory>
+#include <cstring>
 #include "simulation.h"
 
 // Optional config overrides (see water_level_config.h)
@@ -97,6 +99,8 @@ static const char *TOPIC_CFG_TANK_VOLUME = "home/water/tank/cfg/tank_volume_l";
 static const char *TOPIC_CFG_ROD_LENGTH = "home/water/tank/cfg/rod_length_cm";
 static const char *TOPIC_CFG_SIM_ENABLED = "home/water/tank/cfg/simulation_enabled";
 static const char *TOPIC_CFG_SIM_MODE = "home/water/tank/cfg/simulation_mode";
+static const char *TOPIC_CMD_SIM_ENABLED = "home/water/tank/cmd/simulation_enabled";
+static const char *TOPIC_CMD_SIM_MODE = "home/water/tank/cmd/simulation_mode";
 static const char *TOPIC_CMD_CAL_DRY = "home/water/tank/cmd/calibrate_dry";
 static const char *TOPIC_CMD_CAL_WET = "home/water/tank/cmd/calibrate_wet";
 static const char *TOPIC_CMD_CLEAR_CAL = "home/water/tank/cmd/clear_calibration";
@@ -137,7 +141,7 @@ static const char *DEVICE_ID = "water_tank_esp32";
 static const char *DEVICE_NAME = "Water Tank Sensor";
 static const char *DEVICE_MANUFACTURER = "DIY";
 static const char *DEVICE_MODEL = "Nano ESP32";
-static const char *DEVICE_SW_VERSION = "1.0"; // update whenever pushing to main branch
+static const char *DEVICE_SW_VERSION = "1.1"; // update whenever pushing to main branch
 
 WiFiClient wifiClient;
 PubSubClient mqtt(wifiClient);
@@ -626,7 +630,7 @@ static void updateRodLength(float value, bool forcePublish = false)
   recomputeDerivedFromPercent(true);
 }
 
-static void setSimulationEnabled(bool enabled, bool forcePublish = false)
+static void setSimulationEnabled(bool enabled, bool forcePublish = false, const char *sourceMsg = nullptr)
 {
   if (simulationEnabled == enabled && !forcePublish)
     return;
@@ -641,19 +645,24 @@ static void setSimulationEnabled(bool enabled, bool forcePublish = false)
   updateProbeStatus(raw, true);
   publishConfigValues(true);
 
-  if (simulationEnabled)
+  Serial.print("[SIM] ");
+  Serial.print(simulationEnabled ? "enabled" : "disabled");
+  if (sourceMsg != nullptr)
   {
-    // Serial.println("[SIM] enabled");
+    Serial.print(" (msg=\"");
+    Serial.print(sourceMsg);
+    Serial.print("\")");
   }
-  else
-  {
-    // Serial.println("[SIM] disabled");
-  }
+  Serial.println();
 }
 
-static void setSimulationModeInternal(uint8_t mode, bool forcePublish = false)
+static void setSimulationModeInternal(uint8_t mode, bool forcePublish = false, const char *sourceMsg = nullptr)
 {
-  simulationMode = mode;
+  uint8_t clamped = mode > 5 ? 5 : mode;
+  if (simulationMode == clamped && !forcePublish)
+    return;
+
+  simulationMode = clamped;
   setSimulationMode(simulationMode);
   prefs.putUChar(PREF_KEY_SIM_MODE, simulationMode);
   publishConfigValues(true);
@@ -667,6 +676,16 @@ static void setSimulationModeInternal(uint8_t mode, bool forcePublish = false)
   {
     publishQualityReason(true);
   }
+
+  Serial.print("[SIM] mode = ");
+  Serial.print(simulationMode);
+  if (sourceMsg != nullptr)
+  {
+    Serial.print(" (msg=\"");
+    Serial.print(sourceMsg);
+    Serial.print("\")");
+  }
+  Serial.println();
 }
 
 static void publishStatus(const char *status, bool retained, bool force)
@@ -890,32 +909,19 @@ static void handleConfigCommand(const String &topic, const String &message)
       return;
     updateRodLength(value, true);
   }
-  else if (topic == TOPIC_CFG_SIM_ENABLED)
-  {
-    bool value = false;
-    if (!tryParseBool(message, value))
-      return;
-    setSimulationEnabled(value, true);
-  }
-  else if (topic == TOPIC_CFG_SIM_MODE)
-  {
-    const uint8_t mode = (uint8_t)message.toInt();
-    setSimulationModeInternal(mode, true);
-    // Serial.print("[SIM] mode = ");
-    // Serial.println(simulationMode);
-  }
 }
 
 static void mqttCallback(char *topic, byte *payload, unsigned int length)
 {
-  String message;
-  for (unsigned int i = 0; i < length; i++)
-  {
-    message += (char)payload[i];
-  }
+  std::unique_ptr<char[]> msgBuf(new char[length + 1]);
+  memcpy(msgBuf.get(), payload, length);
+  msgBuf[length] = '\0';
+
+  String message(msgBuf.get());
   message.trim();
 
   const String topicStr(topic);
+  const char *msgCStr = msgBuf.get();
 
   if (topicStr == TOPIC_CMD_CAL_DRY)
   {
@@ -933,6 +939,42 @@ static void mqttCallback(char *topic, byte *payload, unsigned int length)
     return;
   }
 
+  if (topicStr == TOPIC_CMD_SIM_ENABLED)
+  {
+    bool value = false;
+    if (!tryParseBool(message, value))
+      return;
+    setSimulationEnabled(value, true, message.c_str());
+    Serial.print("[SIM CMD] topic=");
+    Serial.print(topicStr);
+    Serial.print(" msg=\"");
+    Serial.print(message);
+    Serial.print("\" -> enabled=");
+    Serial.print(simulationEnabled ? "1" : "0");
+    Serial.print(" mode=");
+    Serial.println(simulationMode);
+    return;
+  }
+
+  if (topicStr == TOPIC_CMD_SIM_MODE)
+  {
+    int modeInt = atoi(message.c_str());
+    if (modeInt < 0)
+      modeInt = 0;
+    if (modeInt > 5)
+      modeInt = 5;
+    setSimulationModeInternal((uint8_t)modeInt, true, message.c_str());
+    Serial.print("[SIM CMD] topic=");
+    Serial.print(topicStr);
+    Serial.print(" msg=\"");
+    Serial.print(message);
+    Serial.print("\" -> enabled=");
+    Serial.print(simulationEnabled ? "1" : "0");
+    Serial.print(" mode=");
+    Serial.println(simulationMode);
+    return;
+  }
+
   handleConfigCommand(topicStr, message);
 }
 
@@ -946,8 +988,8 @@ static void subscribeTopics()
   mqtt.subscribe(TOPIC_CMD_CLEAR_CAL);
   mqtt.subscribe(TOPIC_CFG_TANK_VOLUME);
   mqtt.subscribe(TOPIC_CFG_ROD_LENGTH);
-  mqtt.subscribe(TOPIC_CFG_SIM_ENABLED);
-  mqtt.subscribe(TOPIC_CFG_SIM_MODE);
+  mqtt.subscribe(TOPIC_CMD_SIM_ENABLED);
+  mqtt.subscribe(TOPIC_CMD_SIM_MODE);
 }
 
 static void publishDiscovery()
@@ -1021,7 +1063,7 @@ static void publishDiscovery()
   mqtt.publish((String(DISCOVERY_PREFIX) + "/binary_sensor/water_tank_cm_valid/config").c_str(), cmValidConfig.c_str(), true);
 
   String simSwitchConfig = String("{\"name\":\"Simulation Enabled\",\"state_topic\":\"") + TOPIC_CFG_SIM_ENABLED +
-                           "\",\"command_topic\":\"" + TOPIC_CFG_SIM_ENABLED +
+                           "\",\"command_topic\":\"" + TOPIC_CMD_SIM_ENABLED +
                            "\",\"unique_id\":\"water_tank_sim_enabled\",\"payload_on\":\"1\",\"payload_off\":\"0\",\"entity_category\":\"diagnostic\"," + availability +
                            ",\"device\":" + deviceJson + "}";
   {
@@ -1034,7 +1076,7 @@ static void publishDiscovery()
   }
 
   String simModeConfig = String("{\"name\":\"Simulation Mode\",\"state_topic\":\"") + TOPIC_CFG_SIM_MODE +
-                         "\",\"command_topic\":\"" + TOPIC_CFG_SIM_MODE +
+                         "\",\"command_topic\":\"" + TOPIC_CMD_SIM_MODE +
                          "\",\"unique_id\":\"water_tank_sim_mode\",\"options\":[\"0\",\"1\",\"2\",\"3\",\"4\",\"5\"],\"entity_category\":\"diagnostic\"," + availability +
                          ",\"device\":" + deviceJson + "}";
   {
