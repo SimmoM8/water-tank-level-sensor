@@ -3,6 +3,7 @@
 #include <Preferences.h>
 #include <stdlib.h>
 #include <math.h>
+#include "simulation.h"
 
 // Optional config overrides (see water_level_config.h)
 #ifdef __has_include
@@ -13,6 +14,9 @@
 
 #ifndef CFG_PROBE_DISCONNECTED_BELOW_RAW
 #define CFG_PROBE_DISCONNECTED_BELOW_RAW 30000u
+#endif
+#ifndef CFG_CAL_MIN_DIFF
+#define CFG_CAL_MIN_DIFF 20u
 #endif
 #ifndef CFG_SPIKE_DELTA
 #define CFG_SPIKE_DELTA 10000u
@@ -91,6 +95,8 @@ static const char *TOPIC_TANK_LITERS = "home/water/tank/liters";
 static const char *TOPIC_TANK_CM = "home/water/tank/centimeters";
 static const char *TOPIC_CFG_TANK_VOLUME = "home/water/tank/cfg/tank_volume_l";
 static const char *TOPIC_CFG_ROD_LENGTH = "home/water/tank/cfg/rod_length_cm";
+static const char *TOPIC_CFG_SIM_ENABLED = "home/water/tank/cfg/simulation_enabled";
+static const char *TOPIC_CFG_SIM_MODE = "home/water/tank/cfg/simulation_mode";
 static const char *TOPIC_CMD_CAL_DRY = "home/water/tank/cmd/calibrate_dry";
 static const char *TOPIC_CMD_CAL_WET = "home/water/tank/cmd/calibrate_wet";
 static const char *TOPIC_CMD_CLEAR_CAL = "home/water/tank/cmd/clear_calibration";
@@ -103,13 +109,13 @@ static const char *STATUS_NEEDS_CAL = "needs_calibration";
 
 // ===== Sensor / Sampling =====
 // Arduino Nano ESP32: A6 is GPIO13 and is touch-capable.
-static const int TOUCH_PIN = A6;
+static const int TOUCH_PIN = A7;
 
-static const uint8_t TOUCH_SAMPLES = 16;         // average N reads to reduce jitter
-static const uint32_t RAW_PUBLISH_MS = 1000;     // publish the raw value once per second
-static const uint32_t PERCENT_PUBLISH_MS = 3000; // publish the percent value less often
-static const float PERCENT_EMA_ALPHA = 0.2f;     // EMA smoothing factor
-static const uint16_t CAL_MIN_DIFF = 20;         // minimum delta between dry/wet to accept calibration
+static const uint8_t TOUCH_SAMPLES = 16;               // average N reads to reduce jitter
+static const uint32_t RAW_PUBLISH_MS = 1000;           // publish the raw value once per second
+static const uint32_t PERCENT_PUBLISH_MS = 3000;       // publish the percent value less often
+static const float PERCENT_EMA_ALPHA = 0.2f;           // EMA smoothing factor
+static const uint16_t CAL_MIN_DIFF = CFG_CAL_MIN_DIFF; // minimum delta between dry/wet to accept calibration
 
 // ===== Network timeouts =====
 static const uint32_t WIFI_TIMEOUT_MS = 20000;
@@ -121,6 +127,8 @@ static const char *PREF_KEY_WET = "wet";
 static const char *PREF_KEY_INV = "inv";
 static const char *PREF_KEY_TANK_VOL = "tank_vol";
 static const char *PREF_KEY_ROD_LEN = "rod_len";
+static const char *PREF_KEY_SIM_ENABLED = "sim_en";
+static const char *PREF_KEY_SIM_MODE = "sim_mode";
 
 // ===== MQTT Discovery =====
 static const bool ENABLE_DISCOVERY = true;
@@ -152,6 +160,8 @@ float tankVolumeLiters = NAN;
 float rodLengthCm = NAN;
 float lastLiters = NAN;
 float lastCentimeters = NAN;
+bool simulationEnabled = false;
+uint8_t simulationMode = 0;
 
 enum CalibrationState
 {
@@ -195,6 +205,7 @@ bool publishedCmValid = false;
 
 static void publishStatus(const char *status, bool retained = true, bool force = false);
 static void refreshValidityFlags(float currentPercent, bool forcePublish = false);
+static uint16_t readRawValue();
 
 static void logLine(const char *msg)
 {
@@ -464,6 +475,9 @@ static void publishConfigValues(bool force = false)
   {
     mqtt.publish(TOPIC_CFG_ROD_LENGTH, "", true);
   }
+
+  mqtt.publish(TOPIC_CFG_SIM_ENABLED, simulationEnabled ? "1" : "0", true);
+  mqtt.publish(TOPIC_CFG_SIM_MODE, String(simulationMode).c_str(), true);
 }
 
 static void updateProbeStatus(uint16_t raw, bool forcePublish = false)
@@ -558,6 +572,9 @@ static void loadConfigValues()
 {
   tankVolumeLiters = prefs.getFloat(PREF_KEY_TANK_VOL, NAN);
   rodLengthCm = prefs.getFloat(PREF_KEY_ROD_LEN, NAN);
+  simulationEnabled = prefs.getBool(PREF_KEY_SIM_ENABLED, false);
+  simulationMode = prefs.getUChar(PREF_KEY_SIM_MODE, 0);
+  setSimulationMode(simulationMode);
 
   Serial.print("[CFG] Tank volume (L): ");
   if (isnan(tankVolumeLiters))
@@ -578,6 +595,11 @@ static void loadConfigValues()
   {
     Serial.println(rodLengthCm, 2);
   }
+
+  Serial.print("[CFG] Simulation enabled: ");
+  Serial.println(simulationEnabled ? "true" : "false");
+  Serial.print("[CFG] Simulation mode: ");
+  Serial.println(simulationMode);
 }
 
 static void updateTankVolume(float value, bool forcePublish = false)
@@ -602,6 +624,49 @@ static void updateRodLength(float value, bool forcePublish = false)
   Serial.println(rodLengthCm, 2);
   publishConfigValues(forcePublish);
   recomputeDerivedFromPercent(true);
+}
+
+static void setSimulationEnabled(bool enabled, bool forcePublish = false)
+{
+  if (simulationEnabled == enabled && !forcePublish)
+    return;
+
+  simulationEnabled = enabled;
+  prefs.putBool(PREF_KEY_SIM_ENABLED, simulationEnabled);
+  percentEma = NAN;
+  refreshValidityFlags(NAN, true);
+  refreshCalibrationState(true);
+  const uint16_t raw = readRawValue();
+  lastRawValue = raw;
+  updateProbeStatus(raw, true);
+  publishConfigValues(true);
+
+  if (simulationEnabled)
+  {
+    // Serial.println("[SIM] enabled");
+  }
+  else
+  {
+    // Serial.println("[SIM] disabled");
+  }
+}
+
+static void setSimulationModeInternal(uint8_t mode, bool forcePublish = false)
+{
+  simulationMode = mode;
+  setSimulationMode(simulationMode);
+  prefs.putUChar(PREF_KEY_SIM_MODE, simulationMode);
+  publishConfigValues(true);
+  if (simulationEnabled)
+  {
+    const uint16_t raw = readRawValue();
+    lastRawValue = raw;
+    updateProbeStatus(raw, true);
+  }
+  if (forcePublish)
+  {
+    publishQualityReason(true);
+  }
 }
 
 static void publishStatus(const char *status, bool retained, bool force)
@@ -682,6 +747,15 @@ static float computePercent(uint16_t raw)
   return constrain(percent, 0.0f, 100.0f);
 }
 
+static uint16_t readRawValue()
+{
+  if (simulationEnabled)
+  {
+    return readSimulatedRaw();
+  }
+  return readTouchAverage(TOUCH_SAMPLES);
+}
+
 static void beginCalibrationCapture()
 {
   calibrationInProgress = true;
@@ -699,7 +773,7 @@ static void finishCalibrationCapture()
 static void captureCalibrationPoint(bool isDry)
 {
   beginCalibrationCapture();
-  const uint16_t sample = readTouchAverage(TOUCH_SAMPLES);
+  const uint16_t sample = readRawValue();
   lastRawValue = sample;
   updateProbeStatus(sample, true);
 
@@ -785,6 +859,21 @@ static bool tryParseFloat(const String &input, float &outValue)
   return endPtr != nullptr && endPtr != input.c_str();
 }
 
+static bool tryParseBool(const String &input, bool &outValue)
+{
+  if (input == "1" || input.equalsIgnoreCase("true") || input.equalsIgnoreCase("on"))
+  {
+    outValue = true;
+    return true;
+  }
+  if (input == "0" || input.equalsIgnoreCase("false") || input.equalsIgnoreCase("off"))
+  {
+    outValue = false;
+    return true;
+  }
+  return false;
+}
+
 static void handleConfigCommand(const String &topic, const String &message)
 {
   if (topic == TOPIC_CFG_TANK_VOLUME)
@@ -800,6 +889,20 @@ static void handleConfigCommand(const String &topic, const String &message)
     if (!tryParseFloat(message, value))
       return;
     updateRodLength(value, true);
+  }
+  else if (topic == TOPIC_CFG_SIM_ENABLED)
+  {
+    bool value = false;
+    if (!tryParseBool(message, value))
+      return;
+    setSimulationEnabled(value, true);
+  }
+  else if (topic == TOPIC_CFG_SIM_MODE)
+  {
+    const uint8_t mode = (uint8_t)message.toInt();
+    setSimulationModeInternal(mode, true);
+    // Serial.print("[SIM] mode = ");
+    // Serial.println(simulationMode);
   }
 }
 
@@ -843,6 +946,8 @@ static void subscribeTopics()
   mqtt.subscribe(TOPIC_CMD_CLEAR_CAL);
   mqtt.subscribe(TOPIC_CFG_TANK_VOLUME);
   mqtt.subscribe(TOPIC_CFG_ROD_LENGTH);
+  mqtt.subscribe(TOPIC_CFG_SIM_ENABLED);
+  mqtt.subscribe(TOPIC_CFG_SIM_MODE);
 }
 
 static void publishDiscovery()
@@ -915,6 +1020,32 @@ static void publishDiscovery()
                          ",\"entity_category\":\"diagnostic\",\"device\":" + deviceJson + "}";
   mqtt.publish((String(DISCOVERY_PREFIX) + "/binary_sensor/water_tank_cm_valid/config").c_str(), cmValidConfig.c_str(), true);
 
+  String simSwitchConfig = String("{\"name\":\"Simulation Enabled\",\"state_topic\":\"") + TOPIC_CFG_SIM_ENABLED +
+                           "\",\"command_topic\":\"" + TOPIC_CFG_SIM_ENABLED +
+                           "\",\"unique_id\":\"water_tank_sim_enabled\",\"payload_on\":\"1\",\"payload_off\":\"0\",\"entity_category\":\"diagnostic\"," + availability +
+                           ",\"device\":" + deviceJson + "}";
+  {
+    const char *topic = (String(DISCOVERY_PREFIX) + "/switch/water_tank_simulation_enabled/config").c_str();
+    const bool ok = mqtt.publish(topic, simSwitchConfig.c_str(), true);
+    if (!ok)
+    {
+      Serial.println("[DISCOVERY] Failed to publish simulation switch config (payload too large?)");
+    }
+  }
+
+  String simModeConfig = String("{\"name\":\"Simulation Mode\",\"state_topic\":\"") + TOPIC_CFG_SIM_MODE +
+                         "\",\"command_topic\":\"" + TOPIC_CFG_SIM_MODE +
+                         "\",\"unique_id\":\"water_tank_sim_mode\",\"options\":[\"0\",\"1\",\"2\",\"3\",\"4\",\"5\"],\"entity_category\":\"diagnostic\"," + availability +
+                         ",\"device\":" + deviceJson + "}";
+  {
+    const char *topic = (String(DISCOVERY_PREFIX) + "/select/water_tank_simulation_mode/config").c_str();
+    const bool ok = mqtt.publish(topic, simModeConfig.c_str(), true);
+    if (!ok)
+    {
+      Serial.println("[DISCOVERY] Failed to publish simulation select config (payload too large?)");
+    }
+  }
+
   String volumeNumberConfig = String("{\"name\":\"Tank Volume\",\"state_topic\":\"") + TOPIC_CFG_TANK_VOLUME +
                               "\",\"command_topic\":\"" + TOPIC_CFG_TANK_VOLUME +
                               "\",\"unique_id\":\"water_tank_volume_number\",\"unit_of_measurement\":\"L\",\"min\":0,\"step\":0.1," +
@@ -981,7 +1112,7 @@ static void connectMQTT()
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
   mqtt.setKeepAlive(30);
   mqtt.setSocketTimeout(5);
-  mqtt.setBufferSize(512);
+  mqtt.setBufferSize(1024);
 
   Serial.print("[MQTT] Connecting to ");
   Serial.print(MQTT_HOST);
@@ -1049,7 +1180,7 @@ void setup()
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
   mqtt.setKeepAlive(30);
   mqtt.setSocketTimeout(5);
-  mqtt.setBufferSize(512);
+  mqtt.setBufferSize(1024);
   mqtt.setCallback(mqttCallback);
 
   ensureConnections();
@@ -1074,7 +1205,7 @@ void loop()
   if (now - lastRawPublish >= RAW_PUBLISH_MS)
   {
     lastRawPublish = now;
-    const uint16_t raw = readTouchAverage(TOUCH_SAMPLES);
+    const uint16_t raw = readRawValue();
     lastRawValue = raw;
     updateProbeStatus(raw);
 
