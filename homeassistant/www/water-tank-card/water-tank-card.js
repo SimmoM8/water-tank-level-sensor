@@ -4,7 +4,7 @@
  */
 
 const CARD_TAG = "water-tank-card";
-const VERSION = "0.3.2";
+const VERSION = "0.3.4";
 
 class WaterTankCard extends HTMLElement {
     constructor() {
@@ -290,6 +290,10 @@ class WaterTankCard extends HTMLElement {
         overflow: hidden;
       }
 
+      ha-card.simulation {
+        box-shadow: inset 0 0 0 2px rgba(255, 200, 0, 0.45);
+      }
+
       .header {
         display:flex;
         align-items:flex-start;
@@ -319,6 +323,23 @@ class WaterTankCard extends HTMLElement {
         background: rgba(255, 165, 0, 0.18);
         border: 1px solid rgba(255, 165, 0, 0.35);
       }
+        
+      .badge ha-icon {
+        --mdc-icon-size: 14px;
+      }
+
+      .simOffBtn {
+        cursor: pointer;
+        border: none;
+        border-radius: 999px;
+        padding: 2px 10px;
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.3px;
+        background: rgba(0,0,0,0.06);
+        opacity: 0.85;
+      }
+      .simOffBtn:hover { opacity: 1; }
 
       .corner {
         font-size: 12px;
@@ -364,6 +385,12 @@ class WaterTankCard extends HTMLElement {
         margin-top: 12px;
         font-size: 12px;
         opacity: 0.92;
+      }
+
+      .simNote {
+        font-size: 12px;
+        opacity: 0.78;
+        margin-top: 10px;
       }
 
       .warn {
@@ -439,6 +466,7 @@ class WaterTankCard extends HTMLElement {
             <div>${warningText || "Configure tank size + calibrate when ready"}</div>
           </div>
         </div>
+        ${simEnabled ? `<div class="simNote">Values are simulated</div>` : ``}
       `;
         }
         // OK view: show gauge + liters + cm, plus warning footer if needed
@@ -479,16 +507,23 @@ class WaterTankCard extends HTMLElement {
             <ha-icon icon="mdi:cog"></ha-icon>
           </button>
         </div>
+        ${simEnabled ? `<div class="simNote">Values are simulated</div>` : ``}
       `;
         }
 
         const html = `
       <style>${css}</style>
-      <ha-card>
+      <ha-card class="${simEnabled ? "simulation" : ""}">
         <div class="header">
           <div class="titleWrap">
             <div class="title">${this._config.title}</div>
-            ${simEnabled ? `<span class="badge">SIM</span>` : ``}
+            ${simEnabled
+                ? `
+                  <span class="badge"><ha-icon icon="mdi:alert-outline"></ha-icon> SIMULATION</span>
+                  <button class="simOffBtn" id="simOffBtn" title="Turn simulation off">Sim off</button>
+                `
+                : ``
+            }
           </div>
           <div class="corner">${onlineText}</div>
         </div>
@@ -500,6 +535,16 @@ class WaterTankCard extends HTMLElement {
 
         const btn = this.shadowRoot.getElementById("settingsBtn");
         if (btn) btn.onclick = () => this._openSettingsModal();
+
+        const simOff = this.shadowRoot.getElementById("simOffBtn");
+        if (simOff && this._config.simulation_enabled_entity) {
+            simOff.onclick = (e) => {
+                e.stopPropagation();
+                this._hass.callService("switch", "turn_off", {
+                    entity_id: this._config.simulation_enabled_entity,
+                });
+            };
+        }
     }
 }
 
