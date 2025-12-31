@@ -4,7 +4,7 @@
  */
 
 const CARD_TAG = "water-tank-card";
-const VERSION = "0.3.1";
+const VERSION = "0.3.2";
 
 class WaterTankCard extends HTMLElement {
     constructor() {
@@ -264,6 +264,11 @@ class WaterTankCard extends HTMLElement {
         const statusState = this._state(this._config.status_entity);
         const onlineText = statusState === "online" ? "Online" : "Offline";
 
+        // Simulation mode enabled?
+        const simEnabled =
+            !!this._config.simulation_enabled_entity &&
+            this._isOn(this._config.simulation_enabled_entity);
+
         // Warning footer logic (only when NOT error-only)
         const calState = this._state(this._config.calibration_entity);
         const percentValid = this._isOn(this._config.percent_valid_entity);
@@ -284,6 +289,7 @@ class WaterTankCard extends HTMLElement {
         padding: 16px;
         overflow: hidden;
       }
+
       .header {
         display:flex;
         align-items:flex-start;
@@ -291,11 +297,29 @@ class WaterTankCard extends HTMLElement {
         gap:12px;
         margin-bottom: 10px;
       }
+
       .title {
         font-size: 18px;
         font-weight: 800;
         line-height: 1.2;
       }
+
+      .titleWrap {
+        display:flex;
+        align-items:center;
+        gap:8px;
+      }
+
+      .badge {
+        font-size: 11px;
+        font-weight: 900;
+        letter-spacing: 0.6px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: rgba(255, 165, 0, 0.18);
+        border: 1px solid rgba(255, 165, 0, 0.35);
+      }
+
       .corner {
         font-size: 12px;
         opacity: 0.85;
@@ -462,7 +486,10 @@ class WaterTankCard extends HTMLElement {
       <style>${css}</style>
       <ha-card>
         <div class="header">
-          <div class="title">${this._config.title}</div>
+          <div class="titleWrap">
+            <div class="title">${this._config.title}</div>
+            ${simEnabled ? `<span class="badge">SIM</span>` : ``}
+          </div>
           <div class="corner">${onlineText}</div>
         </div>
         ${bodyHtml}
