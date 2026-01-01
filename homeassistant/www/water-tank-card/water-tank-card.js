@@ -1,10 +1,10 @@
 /* water-tank-card.js
  * Custom Home Assistant Lovelace card (no build step).
- * v0.3: arc gauge + error-only view + warning footer + Browser Mod settings modal.
+ * v0.4: arc gauge + error-only view + warning footer + in-card settings modal.
  */
 
 const CARD_TAG = "water-tank-card";
-const VERSION = "0.3.9";
+const VERSION = "0.4.0";
 
 class WaterTankCard extends HTMLElement {
     constructor() {
@@ -12,7 +12,14 @@ class WaterTankCard extends HTMLElement {
         this.attachShadow({ mode: "open" });
         this._config = null;
         this._hass = null;
-        this._settingsPage = "main";
+        this._modalOpen = false;
+        this._modalPage = "main";
+        this._draft = {
+            tankVolume: "",
+            rodLength: "",
+            dryValue: "",
+            wetValue: "",
+        };
     }
 
     setConfig(config) {
@@ -100,6 +107,69 @@ class WaterTankCard extends HTMLElement {
         return Math.max(min, Math.min(max, n));
     }
 
+    _buildOnlineBadgeHtml(online) {
+        const bg = online ? "rgba(0,150,0,0.12)" : "rgba(255,0,0,0.12)";
+        const br = online ? "rgba(0,150,0,0.35)" : "rgba(255,0,0,0.35)";
+        return `<span class="wt-badge" style="background:${bg};border-color:${br};">${online ? "Online" : "Offline"}</span>`;
+    }
+
+    _collectWarnings() {
+        const statusState = this._state(this._config.status_entity);
+        const probeState = this._state(this._config.probe_entity);
+        const calState = this._state(this._config.calibration_entity);
+        const percentValidState = this._state(this._config.percent_valid_entity);
+
+        const warnings = [];
+        if (this._isUnknownState(statusState) || statusState !== "online") warnings.push({ icon: "mdi:lan-disconnect", text: "Device offline or status unknown" });
+        if (probeState === "off") warnings.push({ icon: "mdi:power-plug-off-outline", text: "Probe disconnected" });
+        else if (this._isUnknownState(probeState)) warnings.push({ icon: "mdi:help-circle-outline", text: "Probe state unknown" });
+
+        if (calState === "needs_calibration") warnings.push({ icon: "mdi:ruler", text: "Needs calibration" });
+        else if (calState === "calibrating") warnings.push({ icon: "mdi:cog", text: "Calibrating…" });
+
+        if (percentValidState !== "on") warnings.push({ icon: "mdi:alert-outline", text: "Readings not valid" });
+
+        if (this._config.quality_reason_entity) {
+            const qr = this._state(this._config.quality_reason_entity);
+            if (!this._isUnknownState(qr) && qr && qr !== "ok") {
+                warnings.push({ icon: "mdi:waveform", text: `Quality: ${qr}` });
+            }
+        }
+
+        return warnings;
+    }
+
+    _setDraftFromEntitiesIfEmpty() {
+        const setIfEmpty = (key, entityId) => {
+            if (!entityId) return;
+            if (this._draft[key] !== "") return;
+            const v = this._state(entityId);
+            if (!this._isUnknownState(v)) this._draft[key] = v ?? "";
+        };
+
+        setIfEmpty("tankVolume", this._config.tank_volume_entity);
+        setIfEmpty("rodLength", this._config.rod_length_entity);
+        setIfEmpty("dryValue", this._config.cal_dry_value_entity);
+        setIfEmpty("wetValue", this._config.cal_wet_value_entity);
+    }
+
+    _openModal(page = "main") {
+        this._modalOpen = true;
+        this._modalPage = page;
+        this._setDraftFromEntitiesIfEmpty();
+        this._render();
+    }
+
+    _closeModal() {
+        this._modalOpen = false;
+        this._render();
+    }
+
+    _goModal(page) {
+        this._modalPage = page;
+        this._render();
+    }
+
     // ---------- state model ----------
     _computeUiState() {
         const status = this._state(this._config.status_entity); // "online" expected
@@ -140,313 +210,302 @@ class WaterTankCard extends HTMLElement {
         return { mode: "OK", msg: "OK", status };
     }
 
-    // ---------- modal ----------
-    _buildPopupData(page = "main", setPage = true) {
-        if (setPage) this._settingsPage = page;
-        const cards = page === "advanced" ? this._buildSettingsAdvancedCards() : this._buildSettingsMainCards();
-        return {
-            title: `${this._config.title || "Water Tank"} Settings`,
-            content: {
-                type: "vertical-stack",
-                cards,
-            },
+    // ---------- modal (in-card) ----------
+    _renderModalHtml() {
+        if (!this._modalOpen) return "";
+
+        const statusState = this._state(this._config.status_entity);
+        const online = statusState === "online";
+        const badge = this._buildOnlineBadgeHtml(online);
+        const warnings = this._collectWarnings();
+
+        const warningsHtml = warnings.length
+            ? `<ul class="wt-warning-list">${warnings
+                .map((w) => `<li><ha-icon icon="${w.icon}"></ha-icon><span>${this._safeText(w.text)}</span></li>`)
+                .join("")}</ul>`
+            : `<div class="wt-all-good">✅ All good — no issues detected</div>`;
+
+        const probeState = this._state(this._config.probe_entity);
+        const probeDisconnected = probeState === "off";
+        const probeUnknown = this._isUnknownState(probeState);
+
+        const renderCalValue = (key, label, entityId, draftKey) => {
+            if (!entityId) return `<div class="wt-cal-value"><div class="wt-cal-label">${label}</div><div class="wt-cal-read">—</div></div>`;
+            const val = this._safeText(this._state(entityId));
+            return `
+          <div class="wt-cal-value">
+            <div class="wt-cal-label">${label}</div>
+            <div class="wt-cal-input-row">
+              <input id="wt-${key}-input" type="text" value="${this._safeText(this._draft[draftKey] || val, "")}" />
+              <button class="wt-mini-btn" id="wt-${key}-set" data-entity="${entityId}">Set</button>
+            </div>
+          </div>`;
         };
+
+        const calibrationSection = `
+      <div class="wt-section">
+        <div class="wt-section-head">
+          <div>
+            <div class="wt-section-title">Calibration</div>
+            <div class="wt-section-sub">Calibrate the probe by setting its dry and fully submerged values.</div>
+          </div>
+          ${this._config.clear_calibration_entity
+                ? `<button class="wt-icon-btn" id="wt-clear-cal"><ha-icon icon="mdi:close-circle-outline"></ha-icon></button>`
+                : ""}
+        </div>
+
+        <div class="wt-cal-row">
+          <button class="wt-tile ${probeDisconnected ? "disabled" : ""}" id="wt-cal-dry" data-entity="${this._config.calibrate_dry_entity || ""}">
+            <ha-icon icon="mdi:water-off-outline"></ha-icon>
+            <span>Dry</span>
+          </button>
+          <button class="wt-tile ${probeDisconnected ? "disabled" : ""}" id="wt-cal-wet" data-entity="${this._config.calibrate_wet_entity || ""}">
+            <ha-icon icon="mdi:water"></ha-icon>
+            <span>Wet</span>
+          </button>
+        </div>
+        ${probeDisconnected
+                ? `<div class="wt-note">Probe disconnected — calibration disabled.</div>`
+                : probeUnknown
+                    ? `<div class="wt-note">Probe state unknown; calibration may not work.</div>`
+                    : `<div class="wt-note">Dry: probe in air • Wet: fully submerged</div>`}
+        <div class="wt-cal-values">
+          ${renderCalValue("dry", "Dry value", this._config.cal_dry_value_entity, "dryValue")}
+          ${renderCalValue("wet", "Wet value", this._config.cal_wet_value_entity, "wetValue")}
+        </div>
+      </div>`;
+
+        const setupRow = (id, icon, label, draftKey, helper) => {
+            if (!id) return "";
+            const val = this._draft[draftKey] || this._safeText(this._state(id), "");
+            return `
+        <div class="wt-setup-row">
+          <div class="wt-setup-icon"><ha-icon icon="${icon}"></ha-icon></div>
+          <div class="wt-setup-body">
+            <div class="wt-setup-label">${label}</div>
+            <div class="wt-setup-input">
+              <input id="wt-${draftKey}-input" type="text" value="${val}" />
+              <button class="wt-btn" id="wt-${draftKey}-save" data-entity="${id}">Save</button>
+            </div>
+            ${helper ? `<div class="wt-setup-help">${helper}</div>` : ""}
+          </div>
+        </div>`;
+        };
+
+        const setupSection =
+            this._config.tank_volume_entity || this._config.rod_length_entity
+                ? `
+      <div class="wt-section">
+        <div class="wt-section-title">Setup</div>
+        <div class="wt-setup">
+          ${setupRow(this._config.tank_volume_entity, "mdi:water", "Tank volume", "tankVolume", "Used to calculate liters")}
+          ${setupRow(this._config.rod_length_entity, "mdi:ruler", "Rod length", "rodLength", "Used to calculate cm")}
+        </div>
+      </div>`
+                : "";
+
+        const mainPage = `
+      <div class="wt-modal-header">
+        <div class="wt-modal-title">Settings</div>
+        <div class="wt-modal-actions">
+          ${badge}
+          <button class="wt-modal-close" aria-label="Close">✕</button>
+        </div>
+      </div>
+      <div class="wt-warnings">${warningsHtml}</div>
+      ${calibrationSection}
+      ${setupSection}
+      <div class="wt-modal-footer">
+        <button class="wt-link wt-modal-advanced"><ha-icon icon="mdi:chevron-right"></ha-icon><span>Advanced</span></button>
+      </div>
+    `;
+
+        const simEnabledState = this._config.simulation_enabled_entity ? this._isOn(this._config.simulation_enabled_entity) : false;
+        const simModeEntity = this._config.simulation_mode_entity;
+        const simModeState = simModeEntity ? this._state(simModeEntity) : "";
+        const simOptions = simModeEntity ? this._hass?.states?.[simModeEntity]?.attributes?.options || [] : [];
+
+        const diagnosticsLines = [
+            { label: "Raw", value: this._safeText(this._state(this._config.raw_entity)) },
+            { label: "Status", value: this._safeText(statusState) },
+            { label: "Probe", value: this._safeText(probeState) },
+            { label: "Calibration", value: this._safeText(this._state(this._config.calibration_entity)) },
+            { label: "Percent valid", value: this._safeText(this._state(this._config.percent_valid_entity)) },
+        ];
+        if (this._config.quality_reason_entity) diagnosticsLines.push({ label: "Quality reason", value: this._safeText(this._state(this._config.quality_reason_entity)) });
+        if (this._config.percent_entity) diagnosticsLines.push({ label: "Percent", value: this._safeText(this._state(this._config.percent_entity)) });
+        if (this._config.liters_entity) diagnosticsLines.push({ label: "Liters", value: this._safeText(this._state(this._config.liters_entity)) });
+        if (this._config.cm_entity) diagnosticsLines.push({ label: "Height", value: this._safeText(this._state(this._config.cm_entity)) });
+
+        const diagnosticsHtml = diagnosticsLines
+            .map((l) => `<div class="wt-diag-row"><span>${l.label}</span><b>${l.value}</b></div>`)
+            .join("");
+
+        const advancedPage = `
+      <div class="wt-modal-header">
+        <button class="wt-link wt-modal-back"><ha-icon icon="mdi:chevron-left"></ha-icon><span>Back</span></button>
+        <div class="wt-modal-actions">
+          ${badge}
+          <button class="wt-modal-close" aria-label="Close">✕</button>
+        </div>
+      </div>
+      <div class="wt-section">
+        <div class="wt-section-title">Advanced</div>
+      </div>
+      ${(this._config.simulation_enabled_entity || this._config.simulation_mode_entity) ? `
+      <div class="wt-section">
+        <div class="wt-section-sub" style="margin-bottom:8px;">Simulation controls</div>
+        ${this._config.simulation_enabled_entity
+                ? `<div class="wt-setup-row">
+            <div class="wt-setup-icon"><ha-icon icon="mdi:toggle-switch"></ha-icon></div>
+            <div class="wt-setup-body">
+              <div class="wt-setup-label">Simulation enabled</div>
+              <div class="wt-setup-input">
+                <button class="wt-btn ${simEnabledState ? "on" : ""}" id="wt-sim-toggle" data-entity="${this._config.simulation_enabled_entity}" data-state="${simEnabledState ? "on" : "off"}">${simEnabledState ? "On" : "Off"}</button>
+              </div>
+            </div>
+          </div>`
+                : ""}
+        ${this._config.simulation_mode_entity
+                ? `<div class="wt-setup-row">
+            <div class="wt-setup-icon"><ha-icon icon="mdi:chart-line"></ha-icon></div>
+            <div class="wt-setup-body">
+              <div class="wt-setup-label">Simulation mode</div>
+              <div class="wt-setup-input">
+                <select id="wt-sim-mode" data-entity="${simModeEntity || ""}">
+                  ${simOptions.map((opt) => `<option value="${opt}" ${String(opt) === String(simModeState) ? "selected" : ""}>${opt}</option>`).join("")}
+                </select>
+              </div>
+            </div>
+          </div>`
+                : ""}
+      </div>` : ""}
+
+      <div class="wt-section">
+        <div class="wt-section-sub" style="margin-bottom:8px;">Diagnostics</div>
+        <div class="wt-diag-list">${diagnosticsHtml}</div>
+      </div>
+      <div class="wt-modal-footer">
+        <button class="wt-link wt-modal-back"><ha-icon icon="mdi:chevron-left"></ha-icon><span>Back</span></button>
+      </div>
+    `;
+
+        const content = this._modalPage === "advanced" ? advancedPage : mainPage;
+
+        return `
+      <div class="wt-modal-overlay">
+        <div class="wt-modal-card">
+          ${content}
+        </div>
+      </div>
+    `;
     }
 
-    _openSettingsModal(page = "main") {
-        const hasBrowserMod = !!this._hass?.services?.browser_mod?.popup;
-        if (hasBrowserMod) {
-            this._hass.callService("browser_mod", "popup", this._buildPopupData(page, true));
-            setTimeout(() => {
-                const root = document.querySelector('home-assistant')?.shadowRoot
-                    ?.querySelector('hui-root')?.shadowRoot;
-                if (!root) return;
-                root.addEventListener('water-tank-advanced', () => this._openSettingsModal('advanced'), { once: true });
-                root.addEventListener('water-tank-main', () => this._openSettingsModal('main'), { once: true });
-            }, 0);
+    _bindModalHandlers() {
+        if (!this.shadowRoot) return;
+
+        const removeEsc = () => {
+            if (this._modalEscHandler) window.removeEventListener("keydown", this._modalEscHandler);
+        };
+
+        if (!this._modalOpen) {
+            removeEsc();
             return;
         }
 
-        // Fallback: open HA More Info for raw entity
-        this.dispatchEvent(
-            new CustomEvent("hass-more-info", {
-                bubbles: true,
-                composed: true,
-                detail: { entityId: this._config.raw_entity },
-            })
-        );
-    }
-
-    _openAdvanced() {
-        this._openSettingsModal("advanced");
-    }
-
-    _openMain() {
-        this._openSettingsModal("main");
-    }
-
-    _buildOnlineBadgeHtml(online) {
-      const bg = online ? "rgba(0,150,0,0.12)" : "rgba(255,0,0,0.12)";
-      const br = online ? "rgba(0,150,0,0.35)" : "rgba(255,0,0,0.35)";
-      return `<span style="padding:3px 9px;border-radius:999px;font-weight:800;font-size:11px;background:${bg};border:1px solid ${br};">${online ? "Online" : "Offline"}</span>`;
-    }
-
-    _buildSettingsMainCards() {
-      const statusState = this._state(this._config.status_entity);
-      const probeState = this._state(this._config.probe_entity);
-      const calState = this._state(this._config.calibration_entity);
-      const percentValidState = this._state(this._config.percent_valid_entity);
-
-      const probeDisconnected = probeState === "off";
-      const probeUnknown = this._isUnknownState(probeState);
-      const online = statusState === "online";
-      const badge = this._buildOnlineBadgeHtml(online);
-
-      // Build warning list (human-friendly)
-      const warnings = [];
-      if (this._isUnknownState(statusState) || !online) warnings.push({ icon: "mdi:lan-disconnect", text: "Device offline or status unknown" });
-      if (probeDisconnected) warnings.push({ icon: "mdi:power-plug-off-outline", text: "Probe disconnected" });
-      else if (probeUnknown) warnings.push({ icon: "mdi:help-circle-outline", text: "Waiting for probe data" });
-
-      if (calState === "needs_calibration") warnings.push({ icon: "mdi:ruler", text: "Needs calibration" });
-      else if (calState === "calibrating") warnings.push({ icon: "mdi:cog", text: "Calibrating…" });
-
-      if (percentValidState !== "on") warnings.push({ icon: "mdi:alert-outline", text: "Readings not valid" });
-
-      if (this._config.quality_reason_entity) {
-        const qr = this._state(this._config.quality_reason_entity);
-        if (!this._isUnknownState(qr) && qr && qr !== "ok") {
-          warnings.push({ icon: "mdi:waveform", text: `Quality: ${qr}` });
+        if (!this._modalEscHandler) {
+            this._modalEscHandler = (e) => {
+                if (e.key === "Escape") this._closeModal();
+            };
         }
-      }
+        window.addEventListener("keydown", this._modalEscHandler);
 
-      const warningsHtml = warnings.length
-        ? warnings
-            .map((w) => `<div style="display:flex;gap:10px;align-items:flex-start;padding:6px 0;">
-                <ha-icon icon="${w.icon}" style="opacity:0.85;"></ha-icon>
-                <div style="font-size:14px;line-height:1.3;">${this._safeText(w.text)}</div>
-              </div>`)
-            .join("")
-        : `<div style="display:flex;gap:10px;align-items:center;padding:8px 0;">
-              <ha-icon icon="mdi:check-circle-outline" style="opacity:0.85;"></ha-icon>
-              <div style="font-size:14px;font-weight:700;">All good — no issues detected</div>
-           </div>`;
+        const sr = this.shadowRoot;
+        const overlay = sr.querySelector(".wt-modal-overlay");
+        if (overlay) {
+            overlay.addEventListener("click", (e) => {
+                if (e.target === overlay) this._closeModal();
+            });
+        }
 
-      const statusCard = {
-        type: "markdown",
-        content: `
-<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
-  <div style="font-size:15px;font-weight:900;">${this._config.title || "Water Tank"}</div>
-  <div>${badge}</div>
-</div>
-<div style="margin-top:10px;">${warningsHtml}</div>
-`,
-      };
+        const closeBtn = sr.querySelector(".wt-modal-close");
+        if (closeBtn) closeBtn.onclick = () => this._closeModal();
 
-      // ----- Calibration section -----
-      const disableCal = probeDisconnected;
+        const advLink = sr.querySelector(".wt-modal-advanced");
+        if (advLink) advLink.onclick = () => this._goModal("advanced");
 
-      const dryVal = this._config.cal_dry_value_entity ? this._safeText(this._state(this._config.cal_dry_value_entity)) : "—";
-      const wetVal = this._config.cal_wet_value_entity ? this._safeText(this._state(this._config.cal_wet_value_entity)) : "—";
+        const backLink = sr.querySelector(".wt-modal-back");
+        if (backLink) backLink.onclick = () => this._goModal("main");
 
-      const calHeaderRow = {
-        type: "horizontal-stack",
-        cards: [
-          {
-            type: "markdown",
-            content: `
-<div style="display:flex;flex-direction:column;gap:4px;">
-  <div style="font-size:15px;font-weight:900;">Calibration</div>
-  <div style="font-size:13px;opacity:0.8;">Calibrate the probe by setting its dry and fully submerged values.</div>
-</div>
-`,
-          },
-          this._config.clear_calibration_entity
-            ? {
-                type: "button",
-                icon: "mdi:close-circle-outline",
-                name: "",
-                show_name: false,
-                show_icon: true,
-                tap_action: {
-                  action: "call-service",
-                  service: "button.press",
-                  target: { entity_id: this._config.clear_calibration_entity },
-                },
-                hold_action: { action: "none" },
-              }
-            : { type: "markdown", content: "" },
-        ],
-      };
-
-      const makeCalButton = (entityId, label, icon) => {
-        if (!entityId) return null;
-        return {
-          type: "button",
-          name: label,
-          icon,
-          show_icon: true,
-          show_name: true,
-          tap_action: disableCal
-            ? { action: "none" }
-            : { action: "call-service", service: "button.press", target: { entity_id: entityId } },
-          hold_action: { action: "none" },
+        const pressButton = (entityId) => {
+            if (!entityId) return;
+            this._hass.callService("button", "press", { entity_id: entityId });
         };
-      };
 
-      const dryBtn = makeCalButton(this._config.calibrate_dry_entity, "Dry", "mdi:water-off-outline");
-      const wetBtn = makeCalButton(this._config.calibrate_wet_entity, "Wet", "mdi:water");
+        const setNumber = (entityId, value) => {
+            if (!entityId || value === undefined) return;
+            const domain = entityId.split(".")[0];
+            const service = domain === "input_number" ? "set_value" : "set_value";
+            this._hass.callService(domain, service, { entity_id: entityId, value });
+        };
 
-      const calGridCards = [];
-      if (dryBtn) calGridCards.push(dryBtn);
-      if (wetBtn) calGridCards.push(wetBtn);
+        const updateDraft = (key, inputId) => {
+            const el = sr.getElementById(inputId);
+            if (!el) return null;
+            el.addEventListener("input", (e) => {
+                this._draft[key] = e.target.value;
+            });
+            return el;
+        };
 
-      // Under-button value + (optional) inline editable entity row if provided
-      const dryBelow = this._config.cal_dry_value_entity
-        ? { type: "entity", entity: this._config.cal_dry_value_entity, name: `Dry value (raw)`, icon: "mdi:water-off-outline" }
-        : { type: "markdown", content: `<div style="font-size:13px;opacity:0.85;">Dry value: <b>${dryVal}</b></div>` };
+        // Calibration buttons
+        const dryBtn = sr.getElementById("wt-cal-dry");
+        if (dryBtn && !dryBtn.classList.contains("disabled")) {
+            dryBtn.onclick = () => pressButton(dryBtn.dataset.entity);
+        }
+        const wetBtn = sr.getElementById("wt-cal-wet");
+        if (wetBtn && !wetBtn.classList.contains("disabled")) {
+            wetBtn.onclick = () => pressButton(wetBtn.dataset.entity);
+        }
+        const clearBtn = sr.getElementById("wt-clear-cal");
+        if (clearBtn) clearBtn.onclick = () => pressButton(this._config.clear_calibration_entity);
 
-      const wetBelow = this._config.cal_wet_value_entity
-        ? { type: "entity", entity: this._config.cal_wet_value_entity, name: `Wet value (raw)`, icon: "mdi:water" }
-        : { type: "markdown", content: `<div style="font-size:13px;opacity:0.85;">Wet value: <b>${wetVal}</b></div>` };
+        // Calibration value setters
+        const dryInput = updateDraft("dryValue", "wt-dry-input");
+        const wetInput = updateDraft("wetValue", "wt-wet-input");
+        const drySet = sr.getElementById("wt-dry-set");
+        if (drySet) drySet.onclick = () => setNumber(drySet.dataset.entity, dryInput ? dryInput.value : undefined);
+        const wetSet = sr.getElementById("wt-wet-set");
+        if (wetSet) wetSet.onclick = () => setNumber(wetSet.dataset.entity, wetInput ? wetInput.value : undefined);
 
-      const calButtonsRow = {
-        type: "horizontal-stack",
-        cards: [dryBtn || { type: "markdown", content: "" }, wetBtn || { type: "markdown", content: "" }],
-      };
+        // Setup rows
+        const tankInput = updateDraft("tankVolume", "wt-tankVolume-input");
+        const tankSave = sr.getElementById("wt-tankVolume-save");
+        if (tankSave) tankSave.onclick = () => setNumber(tankSave.dataset.entity, tankInput ? tankInput.value : undefined);
 
-      const calValuesRow = {
-        type: "horizontal-stack",
-        cards: [dryBelow, wetBelow],
-      };
+        const rodInput = updateDraft("rodLength", "wt-rodLength-input");
+        const rodSave = sr.getElementById("wt-rodLength-save");
+        if (rodSave) rodSave.onclick = () => setNumber(rodSave.dataset.entity, rodInput ? rodInput.value : undefined);
 
-      const calNote = disableCal
-        ? {
-            type: "markdown",
-            content: `<div style="margin-top:6px;font-size:12px;opacity:0.75;">Probe disconnected — calibration buttons are disabled.</div>`,
-          }
-        : {
-            type: "markdown",
-            content: `<div style="margin-top:6px;font-size:12px;opacity:0.75;">Dry = probe in air • Wet = probe fully submerged</div>`,
-          };
+        // Simulation controls
+        const simToggle = sr.getElementById("wt-sim-toggle");
+        if (simToggle) {
+            simToggle.onclick = () => {
+                const entityId = simToggle.dataset.entity;
+                if (!entityId) return;
+                const current = simToggle.dataset.state === "on";
+                this._hass.callService("switch", current ? "turn_off" : "turn_on", { entity_id: entityId });
+            };
+        }
 
-      const calibrationStack = {
-        type: "vertical-stack",
-        cards: [calHeaderRow, calButtonsRow, calValuesRow, calNote],
-      };
-
-      // ----- Setup (tank volume + rod length) -----
-      const setupEntities = [];
-      if (this._config.tank_volume_entity) setupEntities.push({ entity: this._config.tank_volume_entity, name: "Tank volume (L)", icon: "mdi:water" });
-      if (this._config.rod_length_entity) setupEntities.push({ entity: this._config.rod_length_entity, name: "Rod length (cm)", icon: "mdi:ruler" });
-
-      const setupCards = [];
-      if (setupEntities.length) {
-        setupCards.push({
-          type: "markdown",
-          content: `
-<div style="margin-top:6px;font-size:15px;font-weight:900;">Tank setup</div>
-<div style="font-size:13px;opacity:0.8;margin-top:4px;">Used to calculate liters and cm. Changes save automatically.</div>
-`,
-        });
-        setupCards.push({
-          type: "entities",
-          entities: setupEntities,
-          show_header_toggle: false,
-        });
-      }
-
-      // ----- Advanced link (subtle) -----
-      const advancedBtn = {
-        type: "button",
-        name: "Advanced",
-        icon: "mdi:chevron-right",
-        show_icon: true,
-        show_name: true,
-        tap_action: {
-          action: "fire-dom-event",
-          event_type: "water-tank-advanced",
-        },
-        hold_action: { action: "none" },
-      };
-
-      const cards = [statusCard, calibrationStack, ...setupCards, advancedBtn];
-      return cards;
-    }
-
-    _buildSettingsAdvancedCards() {
-      const cards = [];
-      const statusState = this._state(this._config.status_entity);
-      const online = statusState === "online";
-      const badge = this._buildOnlineBadgeHtml(online);
-
-      cards.push({
-        type: "markdown",
-        content: `
-<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
-  <div style="font-size:15px;font-weight:900;">Advanced</div>
-  <div>${badge}</div>
-</div>
-<div style="font-size:13px;opacity:0.8;margin-top:6px;">Simulation + diagnostics.</div>
-`,
-      });
-
-      // Simulation controls (advanced only)
-      const simEntities = [];
-      if (this._config.simulation_enabled_entity) simEntities.push({ entity: this._config.simulation_enabled_entity, name: "Simulation enabled", icon: "mdi:toggle-switch" });
-      if (this._config.simulation_mode_entity) simEntities.push({ entity: this._config.simulation_mode_entity, name: "Simulation mode", icon: "mdi:chart-line" });
-
-      if (simEntities.length) {
-        cards.push({
-          type: "entities",
-          entities: simEntities,
-          show_header_toggle: false,
-        });
-        cards.push({
-          type: "markdown",
-          content: `<div style="font-size:12px;opacity:0.75;">Simulation is for testing only. Turn it off for real readings.</div>`,
-        });
-      }
-
-      // Diagnostics (compact)
-      const lines = [];
-      lines.push(`Raw: <b>${this._safeText(this._state(this._config.raw_entity))}</b>`);
-      lines.push(`Status: <b>${this._safeText(statusState)}</b>`);
-      lines.push(`Probe: <b>${this._safeText(this._state(this._config.probe_entity))}</b>`);
-      lines.push(`Calibration: <b>${this._safeText(this._state(this._config.calibration_entity))}</b>`);
-      lines.push(`Percent valid: <b>${this._safeText(this._state(this._config.percent_valid_entity))}</b>`);
-      if (this._config.quality_reason_entity) lines.push(`Quality reason: <b>${this._safeText(this._state(this._config.quality_reason_entity))}</b>`);
-
-      // Optional display values
-      if (this._config.percent_entity) lines.push(`Percent: <b>${this._safeText(this._state(this._config.percent_entity))}</b>`);
-      if (this._config.liters_entity) lines.push(`Liters: <b>${this._safeText(this._state(this._config.liters_entity))}</b>`);
-      if (this._config.cm_entity) lines.push(`Height: <b>${this._safeText(this._state(this._config.cm_entity))}</b>`);
-
-      cards.push({
-        type: "markdown",
-        content: `
-<div style="margin-top:4px;font-size:15px;font-weight:900;">Diagnostics</div>
-<div style="margin-top:8px;display:flex;flex-direction:column;gap:6px;font-size:13px;opacity:0.92;">
-  ${lines.map((l) => `<div>${l}</div>`).join("")}
-</div>
-`,
-      });
-
-      // Back (subtle)
-      cards.push({
-        type: "button",
-        name: "Back",
-        icon: "mdi:chevron-left",
-        show_icon: true,
-        show_name: true,
-        tap_action: {
-          action: "fire-dom-event",
-          event_type: "water-tank-main",
-        },
-        hold_action: { action: "none" },
-      });
-
-      return cards;
+        const simMode = sr.getElementById("wt-sim-mode");
+        if (simMode) {
+            simMode.onchange = () => {
+                const entityId = simMode.dataset.entity;
+                if (!entityId) return;
+                this._hass.callService("select", "select_option", { entity_id: entityId, option: simMode.value });
+            };
+        }
     }
 
     // ---------- gauge ----------
@@ -665,6 +724,238 @@ class WaterTankCard extends HTMLElement {
         opacity: 0.85;
         margin-top: 10px;
       }
+
+      /* Modal */
+      .wt-modal-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        background: rgba(0, 0, 0, 0.45);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 16px;
+      }
+      .wt-modal-card {
+        background: var(--card-background-color, #fff);
+        color: var(--primary-text-color, #111);
+        width: min(92vw, 420px);
+        max-height: 80vh;
+        overflow: auto;
+        border-radius: 18px;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.22);
+        padding: 18px;
+        box-sizing: border-box;
+      }
+      .wt-modal-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+      .wt-modal-title {
+        font-size: 18px;
+        font-weight: 900;
+      }
+      .wt-modal-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .wt-modal-close {
+        cursor: pointer;
+        border: none;
+        background: transparent;
+        font-size: 18px;
+        line-height: 1;
+        padding: 6px;
+      }
+      .wt-badge {
+        padding: 3px 9px;
+        border-radius: 999px;
+        font-weight: 800;
+        font-size: 11px;
+        border: 1px solid rgba(0,0,0,0.12);
+      }
+      .wt-warnings {
+        margin-bottom: 12px;
+        font-size: 14px;
+      }
+      .wt-warning-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .wt-warning-list li {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .wt-all-good {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-weight: 700;
+      }
+      .wt-section {
+        margin-top: 12px;
+        padding-top: 8px;
+        border-top: 1px solid rgba(0,0,0,0.08);
+      }
+      .wt-section:first-of-type {
+        border-top: none;
+        padding-top: 0;
+      }
+      .wt-section-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        align-items: flex-start;
+      }
+      .wt-section-title {
+        font-size: 16px;
+        font-weight: 800;
+      }
+      .wt-section-sub {
+        font-size: 13px;
+        opacity: 0.8;
+      }
+      .wt-icon-btn {
+        border: none;
+        background: transparent;
+        cursor: pointer;
+        padding: 4px;
+      }
+      .wt-cal-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        margin-top: 12px;
+      }
+      .wt-tile {
+        border: 1px solid rgba(0,0,0,0.1);
+        border-radius: 12px;
+        padding: 12px;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        background: rgba(0,0,0,0.02);
+      }
+      .wt-tile.disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .wt-note {
+        margin-top: 8px;
+        font-size: 12px;
+        opacity: 0.75;
+      }
+      .wt-cal-values {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        margin-top: 12px;
+      }
+      .wt-cal-value {
+        font-size: 13px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .wt-cal-label {
+        opacity: 0.8;
+      }
+      .wt-cal-input-row {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+      }
+      .wt-cal-input-row input,
+      .wt-setup-input input,
+      select#wt-sim-mode {
+        flex: 1;
+        border-radius: 8px;
+        border: 1px solid rgba(0,0,0,0.2);
+        padding: 8px;
+        font-size: 14px;
+        background: var(--input-background-color, #fff);
+        color: var(--primary-text-color, #111);
+      }
+      .wt-mini-btn,
+      .wt-btn {
+        border: none;
+        border-radius: 10px;
+        padding: 8px 12px;
+        cursor: pointer;
+        background: rgba(0,0,0,0.08);
+        font-weight: 700;
+      }
+      .wt-btn.on {
+        background: rgba(0,150,0,0.15);
+      }
+      .wt-setup {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        margin-top: 8px;
+      }
+      .wt-setup-row {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 10px;
+        align-items: center;
+      }
+      .wt-setup-icon ha-icon {
+        --mdc-icon-size: 22px;
+        opacity: 0.8;
+      }
+      .wt-setup-label {
+        font-weight: 700;
+      }
+      .wt-setup-input {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-top: 6px;
+      }
+      .wt-setup-help {
+        font-size: 12px;
+        opacity: 0.75;
+        margin-top: 4px;
+      }
+      .wt-modal-footer {
+        margin-top: 14px;
+        display: flex;
+        justify-content: flex-end;
+      }
+      .wt-link {
+        border: none;
+        background: none;
+        color: var(--primary-color);
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-weight: 700;
+        padding: 4px;
+      }
+      .wt-diag-list {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        font-size: 13px;
+      }
+      .wt-diag-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+      }
     `;
 
         let bodyHtml = "";
@@ -766,13 +1057,16 @@ class WaterTankCard extends HTMLElement {
           <div class="corner">${onlineText}</div>
         </div>
         ${bodyHtml}
+        ${this._renderModalHtml()}
       </ha-card>
     `;
 
         this.shadowRoot.innerHTML = html;
 
-        const btn = this.shadowRoot.getElementById("settingsBtn");
-        if (btn) btn.onclick = () => this._openSettingsModal();
+        const settingButtons = this.shadowRoot.querySelectorAll("#settingsBtn");
+        settingButtons.forEach((btn) => {
+            btn.onclick = () => this._openModal("main");
+        });
 
         const simOff = this.shadowRoot.getElementById("simOffBtn");
         if (simOff && this._config.simulation_enabled_entity) {
@@ -783,6 +1077,8 @@ class WaterTankCard extends HTMLElement {
                 });
             };
         }
+
+        this._bindModalHandlers();
     }
 }
 
