@@ -1,10 +1,10 @@
 /* water-tank-card.js
  * Custom Home Assistant Lovelace card (no build step).
- * v0.4: arc gauge + error-only view + warning footer + in-card settings modal.
+ * v0.4.1: arc gauge + error-only view + warning footer + in-card settings modal.
  */
 
 const CARD_TAG = "water-tank-card";
-const VERSION = "0.4.0";
+const VERSION = "0.4.1";
 
 class WaterTankCard extends HTMLElement {
     constructor() {
@@ -105,6 +105,32 @@ class WaterTankCard extends HTMLElement {
 
     _clamp(n, min, max) {
         return Math.max(min, Math.min(max, n));
+    }
+
+    _domain(entityId) {
+        return entityId ? String(entityId).split(".")[0] : "";
+    }
+
+    _callService(domain, service, data = {}) {
+        if (!this._hass || !domain || !service) return;
+        try {
+            this._hass.callService(domain, service, data);
+        } catch (err) {
+            // keep silent but avoid crash
+            // eslint-disable-next-line no-console
+            console.warn(`${CARD_TAG}: service call failed`, domain, service, err);
+        }
+    }
+
+    _getOptions(entityId) {
+        if (!entityId || !this._hass?.states?.[entityId]) return [];
+        return this._hass.states[entityId].attributes?.options || [];
+    }
+
+    _isNumberLike(str) {
+        if (str === null || str === undefined) return false;
+        const n = Number(str);
+        return Number.isFinite(n);
     }
 
     _buildOnlineBadgeHtml(online) {
@@ -242,6 +268,8 @@ class WaterTankCard extends HTMLElement {
           </div>`;
         };
 
+        const dryDisabled = probeDisconnected || !this._config.calibrate_dry_entity;
+        const wetDisabled = probeDisconnected || !this._config.calibrate_wet_entity;
         const calibrationSection = `
       <div class="wt-section">
         <div class="wt-section-head">
@@ -250,16 +278,16 @@ class WaterTankCard extends HTMLElement {
             <div class="wt-section-sub">Calibrate the probe by setting its dry and fully submerged values.</div>
           </div>
           ${this._config.clear_calibration_entity
-                ? `<button class="wt-icon-btn" id="wt-clear-cal"><ha-icon icon="mdi:close-circle-outline"></ha-icon></button>`
+                ? `<button class="wt-icon-btn" id="btnCalClear"><ha-icon icon="mdi:close-circle-outline"></ha-icon></button>`
                 : ""}
         </div>
 
         <div class="wt-cal-row">
-          <button class="wt-tile ${probeDisconnected ? "disabled" : ""}" id="wt-cal-dry" data-entity="${this._config.calibrate_dry_entity || ""}">
+          <button class="wt-tile ${dryDisabled ? "disabled" : ""}" ${dryDisabled ? "disabled" : ""} id="btnCalDry" data-entity="${this._config.calibrate_dry_entity || ""}">
             <ha-icon icon="mdi:water-off-outline"></ha-icon>
             <span>Dry</span>
           </button>
-          <button class="wt-tile ${probeDisconnected ? "disabled" : ""}" id="wt-cal-wet" data-entity="${this._config.calibrate_wet_entity || ""}">
+          <button class="wt-tile ${wetDisabled ? "disabled" : ""}" ${wetDisabled ? "disabled" : ""} id="btnCalWet" data-entity="${this._config.calibrate_wet_entity || ""}">
             <ha-icon icon="mdi:water"></ha-icon>
             <span>Wet</span>
           </button>
@@ -275,22 +303,37 @@ class WaterTankCard extends HTMLElement {
         </div>
       </div>`;
 
-        const setupRow = (id, icon, label, draftKey, helper) => {
-            if (!id) return "";
-            const val = this._draft[draftKey] || this._safeText(this._state(id), "");
-            return `
+        const tankRow = this._config.tank_volume_entity
+            ? `
         <div class="wt-setup-row">
-          <div class="wt-setup-icon"><ha-icon icon="${icon}"></ha-icon></div>
+          <div class="wt-setup-icon"><ha-icon icon="mdi:water"></ha-icon></div>
           <div class="wt-setup-body">
-            <div class="wt-setup-label">${label}</div>
+            <div class="wt-setup-label">Tank volume</div>
             <div class="wt-setup-input">
-              <input id="wt-${draftKey}-input" type="text" value="${val}" />
-              <button class="wt-btn" id="wt-${draftKey}-save" data-entity="${id}">Save</button>
+              <input id="tankVolumeInput" type="text" value="${this._safeText(this._draft.tankVolume || this._state(this._config.tank_volume_entity), "")}" />
+              <button class="wt-btn" id="tankVolumeSave" data-entity="${this._config.tank_volume_entity}">Save</button>
             </div>
-            ${helper ? `<div class="wt-setup-help">${helper}</div>` : ""}
+            <div class="wt-error" id="tankVolumeError"></div>
+            <div class="wt-setup-help">Used to calculate liters</div>
           </div>
-        </div>`;
-        };
+        </div>`
+            : "";
+
+        const rodRow = this._config.rod_length_entity
+            ? `
+        <div class="wt-setup-row">
+          <div class="wt-setup-icon"><ha-icon icon="mdi:ruler"></ha-icon></div>
+          <div class="wt-setup-body">
+            <div class="wt-setup-label">Rod length</div>
+            <div class="wt-setup-input">
+              <input id="rodLengthInput" type="text" value="${this._safeText(this._draft.rodLength || this._state(this._config.rod_length_entity), "")}" />
+              <button class="wt-btn" id="rodLengthSave" data-entity="${this._config.rod_length_entity}">Save</button>
+            </div>
+            <div class="wt-error" id="rodLengthError"></div>
+            <div class="wt-setup-help">Used to calculate cm</div>
+          </div>
+        </div>`
+            : "";
 
         const setupSection =
             this._config.tank_volume_entity || this._config.rod_length_entity
@@ -298,8 +341,8 @@ class WaterTankCard extends HTMLElement {
       <div class="wt-section">
         <div class="wt-section-title">Setup</div>
         <div class="wt-setup">
-          ${setupRow(this._config.tank_volume_entity, "mdi:water", "Tank volume", "tankVolume", "Used to calculate liters")}
-          ${setupRow(this._config.rod_length_entity, "mdi:ruler", "Rod length", "rodLength", "Used to calculate cm")}
+          ${tankRow}
+          ${rodRow}
         </div>
       </div>`
                 : "";
@@ -323,7 +366,7 @@ class WaterTankCard extends HTMLElement {
         const simEnabledState = this._config.simulation_enabled_entity ? this._isOn(this._config.simulation_enabled_entity) : false;
         const simModeEntity = this._config.simulation_mode_entity;
         const simModeState = simModeEntity ? this._state(simModeEntity) : "";
-        const simOptions = simModeEntity ? this._hass?.states?.[simModeEntity]?.attributes?.options || [] : [];
+        const simOptions = this._getOptions(simModeEntity);
 
         const diagnosticsLines = [
             { label: "Raw", value: this._safeText(this._state(this._config.raw_entity)) },
@@ -361,7 +404,7 @@ class WaterTankCard extends HTMLElement {
             <div class="wt-setup-body">
               <div class="wt-setup-label">Simulation enabled</div>
               <div class="wt-setup-input">
-                <button class="wt-btn ${simEnabledState ? "on" : ""}" id="wt-sim-toggle" data-entity="${this._config.simulation_enabled_entity}" data-state="${simEnabledState ? "on" : "off"}">${simEnabledState ? "On" : "Off"}</button>
+                <button class="wt-btn ${simEnabledState ? "on" : ""}" id="simToggleBtn" data-entity="${this._config.simulation_enabled_entity}" data-state="${simEnabledState ? "on" : "off"}">${simEnabledState ? "On" : "Off"}</button>
               </div>
             </div>
           </div>`
@@ -372,7 +415,7 @@ class WaterTankCard extends HTMLElement {
             <div class="wt-setup-body">
               <div class="wt-setup-label">Simulation mode</div>
               <div class="wt-setup-input">
-                <select id="wt-sim-mode" data-entity="${simModeEntity || ""}">
+                <select id="simModeSelect" data-entity="${simModeEntity || ""}">
                   ${simOptions.map((opt) => `<option value="${opt}" ${String(opt) === String(simModeState) ? "selected" : ""}>${opt}</option>`).join("")}
                 </select>
               </div>
@@ -424,86 +467,169 @@ class WaterTankCard extends HTMLElement {
         const overlay = sr.querySelector(".wt-modal-overlay");
         if (overlay) {
             overlay.addEventListener("click", (e) => {
-                if (e.target === overlay) this._closeModal();
+                if (e.target === overlay) {
+                    e.stopPropagation();
+                    this._closeModal();
+                }
             });
         }
 
         const closeBtn = sr.querySelector(".wt-modal-close");
-        if (closeBtn) closeBtn.onclick = () => this._closeModal();
+        if (closeBtn) closeBtn.onclick = (e) => {
+            e.stopPropagation();
+            this._closeModal();
+        };
 
         const advLink = sr.querySelector(".wt-modal-advanced");
-        if (advLink) advLink.onclick = () => this._goModal("advanced");
+        if (advLink) advLink.onclick = (e) => {
+            e.stopPropagation();
+            this._goModal("advanced");
+        };
 
         const backLink = sr.querySelector(".wt-modal-back");
-        if (backLink) backLink.onclick = () => this._goModal("main");
+        if (backLink) backLink.onclick = (e) => {
+            e.stopPropagation();
+            this._goModal("main");
+        };
 
         const pressButton = (entityId) => {
             if (!entityId) return;
-            this._hass.callService("button", "press", { entity_id: entityId });
+            this._callService("button", "press", { entity_id: entityId });
         };
 
+        // Calibration buttons
+        const dryBtn = sr.getElementById("btnCalDry");
+        if (dryBtn && !dryBtn.classList.contains("disabled")) {
+            dryBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                pressButton(dryBtn.dataset.entity);
+            };
+        }
+        const wetBtn = sr.getElementById("btnCalWet");
+        if (wetBtn && !wetBtn.classList.contains("disabled")) {
+            wetBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                pressButton(wetBtn.dataset.entity);
+            };
+        }
+        const clearBtn = sr.getElementById("btnCalClear");
+        if (clearBtn) {
+            clearBtn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                pressButton(this._config.clear_calibration_entity);
+            };
+        }
+
+        // Calibration value setters (optional)
         const setNumber = (entityId, value) => {
             if (!entityId || value === undefined) return;
-            const domain = entityId.split(".")[0];
-            const service = domain === "input_number" ? "set_value" : "set_value";
-            this._hass.callService(domain, service, { entity_id: entityId, value });
+            const domain = this._domain(entityId);
+            this._callService(domain, "set_value", { entity_id: entityId, value });
         };
 
         const updateDraft = (key, inputId) => {
             const el = sr.getElementById(inputId);
             if (!el) return null;
             el.addEventListener("input", (e) => {
+                e.stopPropagation();
                 this._draft[key] = e.target.value;
             });
             return el;
         };
 
-        // Calibration buttons
-        const dryBtn = sr.getElementById("wt-cal-dry");
-        if (dryBtn && !dryBtn.classList.contains("disabled")) {
-            dryBtn.onclick = () => pressButton(dryBtn.dataset.entity);
-        }
-        const wetBtn = sr.getElementById("wt-cal-wet");
-        if (wetBtn && !wetBtn.classList.contains("disabled")) {
-            wetBtn.onclick = () => pressButton(wetBtn.dataset.entity);
-        }
-        const clearBtn = sr.getElementById("wt-clear-cal");
-        if (clearBtn) clearBtn.onclick = () => pressButton(this._config.clear_calibration_entity);
-
-        // Calibration value setters
         const dryInput = updateDraft("dryValue", "wt-dry-input");
         const wetInput = updateDraft("wetValue", "wt-wet-input");
         const drySet = sr.getElementById("wt-dry-set");
-        if (drySet) drySet.onclick = () => setNumber(drySet.dataset.entity, dryInput ? dryInput.value : undefined);
+        if (drySet) {
+            drySet.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setNumber(drySet.dataset.entity, dryInput ? dryInput.value : undefined);
+            };
+        }
         const wetSet = sr.getElementById("wt-wet-set");
-        if (wetSet) wetSet.onclick = () => setNumber(wetSet.dataset.entity, wetInput ? wetInput.value : undefined);
-
-        // Setup rows
-        const tankInput = updateDraft("tankVolume", "wt-tankVolume-input");
-        const tankSave = sr.getElementById("wt-tankVolume-save");
-        if (tankSave) tankSave.onclick = () => setNumber(tankSave.dataset.entity, tankInput ? tankInput.value : undefined);
-
-        const rodInput = updateDraft("rodLength", "wt-rodLength-input");
-        const rodSave = sr.getElementById("wt-rodLength-save");
-        if (rodSave) rodSave.onclick = () => setNumber(rodSave.dataset.entity, rodInput ? rodInput.value : undefined);
-
-        // Simulation controls
-        const simToggle = sr.getElementById("wt-sim-toggle");
-        if (simToggle) {
-            simToggle.onclick = () => {
-                const entityId = simToggle.dataset.entity;
-                if (!entityId) return;
-                const current = simToggle.dataset.state === "on";
-                this._hass.callService("switch", current ? "turn_off" : "turn_on", { entity_id: entityId });
+        if (wetSet) {
+            wetSet.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setNumber(wetSet.dataset.entity, wetInput ? wetInput.value : undefined);
             };
         }
 
-        const simMode = sr.getElementById("wt-sim-mode");
+        // Setup number fields with validation
+        const attachNumberField = (inputId, saveId, errorId, draftKey, entityId) => {
+            if (!entityId) return;
+            const input = sr.getElementById(inputId);
+            const save = sr.getElementById(saveId);
+            const err = sr.getElementById(errorId);
+            if (!input || !save) return;
+
+            const setError = (msg) => {
+                if (err) err.textContent = msg || "";
+            };
+
+            const validate = () => {
+                const raw = input.value?.trim() ?? "";
+                const valid = raw.length > 0 && this._isNumberLike(raw) && Number(raw) > 0;
+                const numVal = valid ? Number(raw) : NaN;
+                const current = this._num(entityId);
+                const unchanged = valid && current !== null && Math.abs(current - numVal) < 0.001;
+                setError(valid ? "" : "Enter a number greater than 0");
+                save.disabled = !valid || unchanged;
+                return { valid, numVal, unchanged };
+            };
+
+            input.addEventListener("input", (e) => {
+                e.stopPropagation();
+                this._draft[draftKey] = input.value;
+                validate();
+            });
+
+            save.addEventListener("click", (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const { valid, numVal, unchanged } = validate();
+                if (!valid || unchanged) return;
+                this._callService("number", "set_value", { entity_id: entityId, value: numVal });
+                const original = save.textContent;
+                save.textContent = "Saved";
+                save.disabled = true;
+                setTimeout(() => {
+                    save.textContent = original;
+                    validate();
+                }, 1200);
+            });
+
+            validate();
+        };
+
+        attachNumberField("tankVolumeInput", "tankVolumeSave", "tankVolumeError", "tankVolume", this._config.tank_volume_entity);
+        attachNumberField("rodLengthInput", "rodLengthSave", "rodLengthError", "rodLength", this._config.rod_length_entity);
+
+        // Simulation controls
+        const simToggle = sr.getElementById("simToggleBtn");
+        if (simToggle) {
+            simToggle.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const entityId = simToggle.dataset.entity;
+                if (!entityId) return;
+                const current = simToggle.dataset.state === "on";
+                this._callService("switch", current ? "turn_off" : "turn_on", { entity_id: entityId });
+            };
+        }
+
+        const simMode = sr.getElementById("simModeSelect");
         if (simMode) {
-            simMode.onchange = () => {
+            simMode.onchange = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
                 const entityId = simMode.dataset.entity;
                 if (!entityId) return;
-                this._hass.callService("select", "select_option", { entity_id: entityId, option: simMode.value });
+                this._callService("select", "select_option", { entity_id: entityId, option: simMode.value });
             };
         }
     }
@@ -928,6 +1054,18 @@ class WaterTankCard extends HTMLElement {
         font-size: 12px;
         opacity: 0.75;
         margin-top: 4px;
+      }
+      .wt-error {
+        min-height: 16px;
+        color: var(--error-color, #c00);
+        font-size: 12px;
+        margin-top: 2px;
+      }
+      input:disabled,
+      button:disabled,
+      select:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
       }
       .wt-modal-footer {
         margin-top: 14px;

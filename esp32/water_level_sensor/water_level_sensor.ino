@@ -93,7 +93,8 @@
 // -------------------------------------------
 
 // ===== MQTT / Home Assistant =====
-static const char *MQTT_HOST = "homeassistant.local";
+// static const char *MQTT_HOST = "homeassistant.local";
+static const char *MQTT_HOST = "192.168.0.37";
 static const int MQTT_PORT = 1883;
 
 // Use a stable client id (unique per device). If you add more ESP32 devices later,
@@ -106,6 +107,8 @@ static const char *TOPIC_TANK_PERCENT = "home/water/tank/percent";
 static const char *TOPIC_TANK_STATUS = "home/water/tank/status";
 static const char *TOPIC_TANK_PROBE = "home/water/tank/probe_connected";
 static const char *TOPIC_TANK_CAL_STATE = "home/water/tank/calibration_state";
+static const char *TOPIC_TANK_CAL_DRY = "home/water/tank/cal_dry";
+static const char *TOPIC_TANK_CAL_WET = "home/water/tank/cal_wet";
 static const char *TOPIC_TANK_QUALITY = "home/water/tank/quality_reason";
 static const char *TOPIC_TANK_RAW_VALID = "home/water/tank/raw_valid";
 static const char *TOPIC_TANK_PERCENT_VALID = "home/water/tank/percent_valid";
@@ -186,6 +189,8 @@ float lastLiters = NAN;
 float lastCentimeters = NAN;
 bool simulationEnabled = false;
 uint8_t simulationMode = 0;
+bool publishedCalDry = false;
+bool publishedCalWet = false;
 
 enum CalibrationState
 {
@@ -289,6 +294,37 @@ static void publishCalibrationState(bool force = false)
     mqtt.publish(TOPIC_TANK_CAL_STATE, calibrationStateToString(calibrationState), true);
     publishedCalState = true;
     lastPublishedCalState = calibrationState;
+  }
+}
+
+static void publishCalibrationValues(bool force = false, bool clear = false)
+{
+  if (!mqtt.connected())
+    return;
+
+  const bool hasAny = calDry != 0 || calWet != 0;
+
+  if (clear || (!hasAny && force))
+  {
+    mqtt.publish(TOPIC_TANK_CAL_DRY, "", true);
+    mqtt.publish(TOPIC_TANK_CAL_WET, "", true);
+    publishedCalDry = true;
+    publishedCalWet = true;
+    return;
+  }
+
+  if (!hasAny && !force)
+    return;
+
+  if (force || !publishedCalDry)
+  {
+    mqtt.publish(TOPIC_TANK_CAL_DRY, String(calDry).c_str(), true);
+    publishedCalDry = true;
+  }
+  if (force || !publishedCalWet)
+  {
+    mqtt.publish(TOPIC_TANK_CAL_WET, String(calWet).c_str(), true);
+    publishedCalWet = true;
   }
 }
 
@@ -806,6 +842,7 @@ static void clearCalibration()
   setCalibrationState(CAL_STATE_NEEDS, true);
   refreshValidityFlags(NAN, true);
   refreshStatus(true);
+  publishCalibrationValues(true, true);
   Serial.println("[CAL] Cleared calibration.");
 }
 
@@ -879,6 +916,7 @@ static void captureCalibrationPoint(bool isDry)
     Serial.println(calWet);
   }
 
+  publishCalibrationValues(true);
   percentEma = NAN;
   finishCalibrationCapture();
 }
@@ -1095,6 +1133,16 @@ static void publishDiscovery()
                           "\",\"unique_id\":\"water_tank_cal_state\"," + availability + ",\"device\":" + deviceJson + "}";
   mqtt.publish((String(DISCOVERY_PREFIX) + "/sensor/water_tank_cal_state/config").c_str(), calStateConfig.c_str(), true);
 
+  String calDryConfig = String("{\"name\":\"Water Tank Cal Dry\",\"state_topic\":\"") + TOPIC_TANK_CAL_DRY +
+                        "\",\"unique_id\":\"water_tank_cal_dry\",\"state_class\":\"measurement\",\"entity_category\":\"diagnostic\"," + availability +
+                        ",\"device\":" + deviceJson + "}";
+  mqtt.publish((String(DISCOVERY_PREFIX) + "/sensor/water_tank_cal_dry/config").c_str(), calDryConfig.c_str(), true);
+
+  String calWetConfig = String("{\"name\":\"Water Tank Cal Wet\",\"state_topic\":\"") + TOPIC_TANK_CAL_WET +
+                        "\",\"unique_id\":\"water_tank_cal_wet\",\"state_class\":\"measurement\",\"entity_category\":\"diagnostic\"," + availability +
+                        ",\"device\":" + deviceJson + "}";
+  mqtt.publish((String(DISCOVERY_PREFIX) + "/sensor/water_tank_cal_wet/config").c_str(), calWetConfig.c_str(), true);
+
   String statusConfig = String("{\"name\":\"Water Tank Status\",\"state_topic\":\"") + TOPIC_TANK_STATUS +
                         "\",\"unique_id\":\"water_tank_status\"," + availability + ",\"entity_category\":\"diagnostic\",\"device\":" +
                         deviceJson + "}";
@@ -1242,6 +1290,7 @@ static void connectMQTT()
       publishStatus(STATUS_ONLINE, true, true);
       subscribeTopics();
       publishCalibrationState(true);
+      publishCalibrationValues(true);
       refreshCalibrationState(true);
       publishConfigValues(true);
       publishQualityReason(true);
