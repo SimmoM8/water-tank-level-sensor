@@ -4,7 +4,7 @@
  */
 
 const CARD_TAG = "water-tank-card";
-const VERSION = "0.3.6";
+const VERSION = "0.3.9";
 
 class WaterTankCard extends HTMLElement {
     constructor() {
@@ -44,6 +44,10 @@ class WaterTankCard extends HTMLElement {
             // simulation controls (optional)
             simulation_enabled_entity: null,
             simulation_mode_entity: null,
+
+            // optional calibration value readouts
+            cal_dry_value_entity: null,
+            cal_wet_value_entity: null,
 
             // optional diagnostics
             quality_reason_entity: null,
@@ -153,6 +157,13 @@ class WaterTankCard extends HTMLElement {
         const hasBrowserMod = !!this._hass?.services?.browser_mod?.popup;
         if (hasBrowserMod) {
             this._hass.callService("browser_mod", "popup", this._buildPopupData(page, true));
+            setTimeout(() => {
+                const root = document.querySelector('home-assistant')?.shadowRoot
+                    ?.querySelector('hui-root')?.shadowRoot;
+                if (!root) return;
+                root.addEventListener('water-tank-advanced', () => this._openSettingsModal('advanced'), { once: true });
+                root.addEventListener('water-tank-main', () => this._openSettingsModal('main'), { once: true });
+            }, 0);
             return;
         }
 
@@ -174,192 +185,268 @@ class WaterTankCard extends HTMLElement {
         this._openSettingsModal("main");
     }
 
+    _buildOnlineBadgeHtml(online) {
+      const bg = online ? "rgba(0,150,0,0.12)" : "rgba(255,0,0,0.12)";
+      const br = online ? "rgba(0,150,0,0.35)" : "rgba(255,0,0,0.35)";
+      return `<span style="padding:3px 9px;border-radius:999px;font-weight:800;font-size:11px;background:${bg};border:1px solid ${br};">${online ? "Online" : "Offline"}</span>`;
+    }
+
     _buildSettingsMainCards() {
-        const status = this._safeText(this._state(this._config.status_entity));
-        const probeState = this._state(this._config.probe_entity);
-        const calState = this._safeText(this._state(this._config.calibration_entity));
-        const percentValid = this._safeText(this._state(this._config.percent_valid_entity));
-        const raw = this._safeText(this._state(this._config.raw_entity));
-        const probeDisconnected = probeState === "off";
-        const probeUnknown = this._isUnknownState(probeState);
+      const statusState = this._state(this._config.status_entity);
+      const probeState = this._state(this._config.probe_entity);
+      const calState = this._state(this._config.calibration_entity);
+      const percentValidState = this._state(this._config.percent_valid_entity);
 
-        const summary = `
-### Status
-- Status: **${status}**
-- Probe: **${this._safeText(probeState)}**
-- Calibration: **${calState}**
-- Percent valid: **${percentValid}**
-- Raw: **${raw}**
-${probeDisconnected ? "\n⚠️ Probe disconnected" : probeUnknown ? "\n⚠️ Probe state unknown" : ""}`.trim();
+      const probeDisconnected = probeState === "off";
+      const probeUnknown = this._isUnknownState(probeState);
+      const online = statusState === "online";
+      const badge = this._buildOnlineBadgeHtml(online);
 
-        const cards = [
-            {
-                type: "markdown",
-                content: summary,
-            },
-        ];
+      // Build warning list (human-friendly)
+      const warnings = [];
+      if (this._isUnknownState(statusState) || !online) warnings.push({ icon: "mdi:lan-disconnect", text: "Device offline or status unknown" });
+      if (probeDisconnected) warnings.push({ icon: "mdi:power-plug-off-outline", text: "Probe disconnected" });
+      else if (probeUnknown) warnings.push({ icon: "mdi:help-circle-outline", text: "Waiting for probe data" });
 
-        // Calibration actions
-        const calCards = [];
-        const calibrationButtons = [];
-        const disableCal = probeDisconnected;
-        const calNote = probeDisconnected
-            ? "Probe disconnected — calibration disabled."
-            : probeUnknown
-                ? "Probe state unknown — use with caution."
-                : "Dry: Probe in air. Wet: Probe fully submerged.";
+      if (calState === "needs_calibration") warnings.push({ icon: "mdi:ruler", text: "Needs calibration" });
+      else if (calState === "calibrating") warnings.push({ icon: "mdi:cog", text: "Calibrating…" });
 
-        const makeCalButton = (entityId, name, icon) => {
-            if (!entityId) return null;
-            return {
+      if (percentValidState !== "on") warnings.push({ icon: "mdi:alert-outline", text: "Readings not valid" });
+
+      if (this._config.quality_reason_entity) {
+        const qr = this._state(this._config.quality_reason_entity);
+        if (!this._isUnknownState(qr) && qr && qr !== "ok") {
+          warnings.push({ icon: "mdi:waveform", text: `Quality: ${qr}` });
+        }
+      }
+
+      const warningsHtml = warnings.length
+        ? warnings
+            .map((w) => `<div style="display:flex;gap:10px;align-items:flex-start;padding:6px 0;">
+                <ha-icon icon="${w.icon}" style="opacity:0.85;"></ha-icon>
+                <div style="font-size:14px;line-height:1.3;">${this._safeText(w.text)}</div>
+              </div>`)
+            .join("")
+        : `<div style="display:flex;gap:10px;align-items:center;padding:8px 0;">
+              <ha-icon icon="mdi:check-circle-outline" style="opacity:0.85;"></ha-icon>
+              <div style="font-size:14px;font-weight:700;">All good — no issues detected</div>
+           </div>`;
+
+      const statusCard = {
+        type: "markdown",
+        content: `
+<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+  <div style="font-size:15px;font-weight:900;">${this._config.title || "Water Tank"}</div>
+  <div>${badge}</div>
+</div>
+<div style="margin-top:10px;">${warningsHtml}</div>
+`,
+      };
+
+      // ----- Calibration section -----
+      const disableCal = probeDisconnected;
+
+      const dryVal = this._config.cal_dry_value_entity ? this._safeText(this._state(this._config.cal_dry_value_entity)) : "—";
+      const wetVal = this._config.cal_wet_value_entity ? this._safeText(this._state(this._config.cal_wet_value_entity)) : "—";
+
+      const calHeaderRow = {
+        type: "horizontal-stack",
+        cards: [
+          {
+            type: "markdown",
+            content: `
+<div style="display:flex;flex-direction:column;gap:4px;">
+  <div style="font-size:15px;font-weight:900;">Calibration</div>
+  <div style="font-size:13px;opacity:0.8;">Calibrate the probe by setting its dry and fully submerged values.</div>
+</div>
+`,
+          },
+          this._config.clear_calibration_entity
+            ? {
                 type: "button",
-                name: disableCal ? `${name} (probe disconnected)` : name,
-                icon,
-                entity: entityId,
-                show_state: false,
-                tap_action: disableCal
-                    ? { action: "none" }
-                    : {
-                        action: "call-service",
-                        service: "button.press",
-                        target: { entity_id: entityId },
-                    },
+                icon: "mdi:close-circle-outline",
+                name: "",
+                show_name: false,
+                show_icon: true,
+                tap_action: {
+                  action: "call-service",
+                  service: "button.press",
+                  target: { entity_id: this._config.clear_calibration_entity },
+                },
                 hold_action: { action: "none" },
-            };
+              }
+            : { type: "markdown", content: "" },
+        ],
+      };
+
+      const makeCalButton = (entityId, label, icon) => {
+        if (!entityId) return null;
+        return {
+          type: "button",
+          name: label,
+          icon,
+          show_icon: true,
+          show_name: true,
+          tap_action: disableCal
+            ? { action: "none" }
+            : { action: "call-service", service: "button.press", target: { entity_id: entityId } },
+          hold_action: { action: "none" },
         };
+      };
 
-        const dryBtn = makeCalButton(this._config.calibrate_dry_entity, "Calibrate Dry", "mdi:water-off-outline");
-        const wetBtn = makeCalButton(this._config.calibrate_wet_entity, "Calibrate Wet", "mdi:water");
-        const clearBtn = makeCalButton(this._config.clear_calibration_entity, "Clear Calibration", "mdi:refresh");
+      const dryBtn = makeCalButton(this._config.calibrate_dry_entity, "Dry", "mdi:water-off-outline");
+      const wetBtn = makeCalButton(this._config.calibrate_wet_entity, "Wet", "mdi:water");
 
-        if (dryBtn) calibrationButtons.push(dryBtn);
-        if (wetBtn) calibrationButtons.push(wetBtn);
-        if (clearBtn) calibrationButtons.push(clearBtn);
+      const calGridCards = [];
+      if (dryBtn) calGridCards.push(dryBtn);
+      if (wetBtn) calGridCards.push(wetBtn);
 
-        if (calibrationButtons.length) {
-            calCards.push({
-                type: "markdown",
-                content: `### Calibration\n${calNote}`,
-            });
-            calCards.push({
-                type: "horizontal-stack",
-                cards: calibrationButtons,
-            });
-        }
+      // Under-button value + (optional) inline editable entity row if provided
+      const dryBelow = this._config.cal_dry_value_entity
+        ? { type: "entity", entity: this._config.cal_dry_value_entity, name: `Dry value (raw)`, icon: "mdi:water-off-outline" }
+        : { type: "markdown", content: `<div style="font-size:13px;opacity:0.85;">Dry value: <b>${dryVal}</b></div>` };
 
-        if (calCards.length) cards.push(...calCards);
+      const wetBelow = this._config.cal_wet_value_entity
+        ? { type: "entity", entity: this._config.cal_wet_value_entity, name: `Wet value (raw)`, icon: "mdi:water" }
+        : { type: "markdown", content: `<div style="font-size:13px;opacity:0.85;">Wet value: <b>${wetVal}</b></div>` };
 
-        // Setup values
-        const setupCards = [];
-        const setupNote = [];
-        if (this._config.tank_volume_entity) setupNote.push("• Tank volume: Used to calculate liters");
-        if (this._config.rod_length_entity) setupNote.push("• Rod length: Used to calculate cm");
+      const calButtonsRow = {
+        type: "horizontal-stack",
+        cards: [dryBtn || { type: "markdown", content: "" }, wetBtn || { type: "markdown", content: "" }],
+      };
 
-        const makeSetupRow = (entityId, name, icon) => ({
-            type: "horizontal-stack",
-            cards: [
-                {
-                    type: "entity",
-                    entity: entityId,
-                    name,
-                },
-                {
-                    type: "button",
-                    name: "Save",
-                    icon: icon || "mdi:content-save",
-                    entity: entityId,
-                    tap_action: { action: "more-info" },
-                    hold_action: { action: "none" },
-                },
-            ],
+      const calValuesRow = {
+        type: "horizontal-stack",
+        cards: [dryBelow, wetBelow],
+      };
+
+      const calNote = disableCal
+        ? {
+            type: "markdown",
+            content: `<div style="margin-top:6px;font-size:12px;opacity:0.75;">Probe disconnected — calibration buttons are disabled.</div>`,
+          }
+        : {
+            type: "markdown",
+            content: `<div style="margin-top:6px;font-size:12px;opacity:0.75;">Dry = probe in air • Wet = probe fully submerged</div>`,
+          };
+
+      const calibrationStack = {
+        type: "vertical-stack",
+        cards: [calHeaderRow, calButtonsRow, calValuesRow, calNote],
+      };
+
+      // ----- Setup (tank volume + rod length) -----
+      const setupEntities = [];
+      if (this._config.tank_volume_entity) setupEntities.push({ entity: this._config.tank_volume_entity, name: "Tank volume (L)", icon: "mdi:water" });
+      if (this._config.rod_length_entity) setupEntities.push({ entity: this._config.rod_length_entity, name: "Rod length (cm)", icon: "mdi:ruler" });
+
+      const setupCards = [];
+      if (setupEntities.length) {
+        setupCards.push({
+          type: "markdown",
+          content: `
+<div style="margin-top:6px;font-size:15px;font-weight:900;">Tank setup</div>
+<div style="font-size:13px;opacity:0.8;margin-top:4px;">Used to calculate liters and cm. Changes save automatically.</div>
+`,
         });
-
-        const setupRows = [];
-        if (this._config.tank_volume_entity)
-            setupRows.push(makeSetupRow(this._config.tank_volume_entity, "Tank volume (L)", "mdi:beaker"));
-        if (this._config.rod_length_entity)
-            setupRows.push(makeSetupRow(this._config.rod_length_entity, "Rod length (cm)", "mdi:ruler"));
-
-        if (setupRows.length) {
-            setupCards.push({
-                type: "markdown",
-                content: `### Setup\n${setupNote.join("\n") || ""}`,
-            });
-            setupCards.push(...setupRows);
-        }
-
-        if (setupCards.length) cards.push(...setupCards);
-
-        // Advanced link
-        cards.push({
-            type: "button",
-            name: "Advanced…",
-            icon: "mdi:cog-transfer",
-            tap_action: {
-                action: "call-service",
-                service: "browser_mod.popup",
-                service_data: this._buildPopupData("advanced", false),
-            },
-            hold_action: { action: "none" },
+        setupCards.push({
+          type: "entities",
+          entities: setupEntities,
+          show_header_toggle: false,
         });
+      }
 
-        return cards;
+      // ----- Advanced link (subtle) -----
+      const advancedBtn = {
+        type: "button",
+        name: "Advanced",
+        icon: "mdi:chevron-right",
+        show_icon: true,
+        show_name: true,
+        tap_action: {
+          action: "fire-dom-event",
+          event_type: "water-tank-advanced",
+        },
+        hold_action: { action: "none" },
+      };
+
+      const cards = [statusCard, calibrationStack, ...setupCards, advancedBtn];
+      return cards;
     }
 
     _buildSettingsAdvancedCards() {
-        const cards = [];
-        const probeState = this._state(this._config.probe_entity);
-        const calState = this._state(this._config.calibration_entity);
-        const percentValidState = this._state(this._config.percent_valid_entity);
+      const cards = [];
+      const statusState = this._state(this._config.status_entity);
+      const online = statusState === "online";
+      const badge = this._buildOnlineBadgeHtml(online);
 
-        // Simulation controls
-        const simEntities = [];
-        if (this._config.simulation_enabled_entity) simEntities.push(this._config.simulation_enabled_entity);
-        if (this._config.simulation_mode_entity) simEntities.push(this._config.simulation_mode_entity);
+      cards.push({
+        type: "markdown",
+        content: `
+<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+  <div style="font-size:15px;font-weight:900;">Advanced</div>
+  <div>${badge}</div>
+</div>
+<div style="font-size:13px;opacity:0.8;margin-top:6px;">Simulation + diagnostics.</div>
+`,
+      });
 
-        if (simEntities.length) {
-            cards.push({
-                type: "markdown",
-                content: "### Simulation\nEnable simulation for testing without hardware.",
-            });
-            cards.push({
-                type: "entities",
-                entities: simEntities,
-            });
-        }
+      // Simulation controls (advanced only)
+      const simEntities = [];
+      if (this._config.simulation_enabled_entity) simEntities.push({ entity: this._config.simulation_enabled_entity, name: "Simulation enabled", icon: "mdi:toggle-switch" });
+      if (this._config.simulation_mode_entity) simEntities.push({ entity: this._config.simulation_mode_entity, name: "Simulation mode", icon: "mdi:chart-line" });
 
-        // Diagnostics
-        const lines = [];
-        lines.push(`- Raw: **${this._safeText(this._state(this._config.raw_entity))}**`);
-        lines.push(`- Status: **${this._safeText(this._state(this._config.status_entity))}**`);
-        lines.push(`- Probe: **${this._safeText(probeState)}**`);
-        lines.push(`- Calibration: **${this._safeText(calState)}**`);
-        lines.push(`- Percent valid: **${this._safeText(percentValidState)}**`);
-
-        if (this._config.percent_entity) lines.push(`- Percent: **${this._safeText(this._state(this._config.percent_entity))}**`);
-        if (this._config.liters_entity) lines.push(`- Liters: **${this._safeText(this._state(this._config.liters_entity))}**`);
-        if (this._config.cm_entity) lines.push(`- Height: **${this._safeText(this._state(this._config.cm_entity))}**`);
-        if (this._config.quality_reason_entity)
-            lines.push(`- Quality reason: **${this._safeText(this._state(this._config.quality_reason_entity))}**`);
-
+      if (simEntities.length) {
         cards.push({
-            type: "markdown",
-            content: `### Diagnostics\n${lines.join("\n")}`,
+          type: "entities",
+          entities: simEntities,
+          show_header_toggle: false,
         });
-
-        // Back button
         cards.push({
-            type: "button",
-            name: "Back",
-            icon: "mdi:arrow-left",
-            tap_action: {
-                action: "call-service",
-                service: "browser_mod.close_popup",
-            },
-            hold_action: { action: "none" },
+          type: "markdown",
+          content: `<div style="font-size:12px;opacity:0.75;">Simulation is for testing only. Turn it off for real readings.</div>`,
         });
+      }
 
-        return cards;
+      // Diagnostics (compact)
+      const lines = [];
+      lines.push(`Raw: <b>${this._safeText(this._state(this._config.raw_entity))}</b>`);
+      lines.push(`Status: <b>${this._safeText(statusState)}</b>`);
+      lines.push(`Probe: <b>${this._safeText(this._state(this._config.probe_entity))}</b>`);
+      lines.push(`Calibration: <b>${this._safeText(this._state(this._config.calibration_entity))}</b>`);
+      lines.push(`Percent valid: <b>${this._safeText(this._state(this._config.percent_valid_entity))}</b>`);
+      if (this._config.quality_reason_entity) lines.push(`Quality reason: <b>${this._safeText(this._state(this._config.quality_reason_entity))}</b>`);
+
+      // Optional display values
+      if (this._config.percent_entity) lines.push(`Percent: <b>${this._safeText(this._state(this._config.percent_entity))}</b>`);
+      if (this._config.liters_entity) lines.push(`Liters: <b>${this._safeText(this._state(this._config.liters_entity))}</b>`);
+      if (this._config.cm_entity) lines.push(`Height: <b>${this._safeText(this._state(this._config.cm_entity))}</b>`);
+
+      cards.push({
+        type: "markdown",
+        content: `
+<div style="margin-top:4px;font-size:15px;font-weight:900;">Diagnostics</div>
+<div style="margin-top:8px;display:flex;flex-direction:column;gap:6px;font-size:13px;opacity:0.92;">
+  ${lines.map((l) => `<div>${l}</div>`).join("")}
+</div>
+`,
+      });
+
+      // Back (subtle)
+      cards.push({
+        type: "button",
+        name: "Back",
+        icon: "mdi:chevron-left",
+        show_icon: true,
+        show_name: true,
+        tap_action: {
+          action: "fire-dom-event",
+          event_type: "water-tank-main",
+        },
+        hold_action: { action: "none" },
+      });
+
+      return cards;
     }
 
     // ---------- gauge ----------
