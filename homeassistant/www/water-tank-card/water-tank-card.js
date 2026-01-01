@@ -4,7 +4,7 @@
  */
 
 const CARD_TAG = "water-tank-card";
-const VERSION = "0.3.4";
+const VERSION = "0.3.5";
 
 class WaterTankCard extends HTMLElement {
     constructor() {
@@ -12,6 +12,7 @@ class WaterTankCard extends HTMLElement {
         this.attachShadow({ mode: "open" });
         this._config = null;
         this._hass = null;
+        this._settingsPage = "main";
     }
 
     setConfig(config) {
@@ -43,6 +44,9 @@ class WaterTankCard extends HTMLElement {
             // simulation controls (optional)
             simulation_enabled_entity: null,
             simulation_mode_entity: null,
+
+            // optional diagnostics
+            quality_reason_entity: null,
 
             ...config,
         };
@@ -133,71 +137,22 @@ class WaterTankCard extends HTMLElement {
     }
 
     // ---------- modal ----------
-    _openSettingsModal() {
+    _buildPopupData(page = "main", setPage = true) {
+        if (setPage) this._settingsPage = page;
+        const cards = page === "advanced" ? this._buildSettingsAdvancedCards() : this._buildSettingsMainCards();
+        return {
+            title: `${this._config.title || "Water Tank"} Settings`,
+            content: {
+                type: "vertical-stack",
+                cards,
+            },
+        };
+    }
+
+    _openSettingsModal(page = "main") {
         const hasBrowserMod = !!this._hass?.services?.browser_mod?.popup;
-
-        // Build a “best effort” modal. If optional entities are missing, we omit that section.
-        const statusEntities = [
-            this._config.status_entity,
-            this._config.calibration_entity,
-            this._config.probe_entity,
-            this._config.percent_valid_entity,
-            this._config.raw_entity,
-        ];
-
-        const configEntities = [];
-        if (this._config.tank_volume_entity) configEntities.push(this._config.tank_volume_entity);
-        if (this._config.rod_length_entity) configEntities.push(this._config.rod_length_entity);
-
-        const calEntities = [];
-        if (this._config.calibrate_dry_entity) calEntities.push(this._config.calibrate_dry_entity);
-        if (this._config.calibrate_wet_entity) calEntities.push(this._config.calibrate_wet_entity);
-        if (this._config.clear_calibration_entity) calEntities.push(this._config.clear_calibration_entity);
-
-        const simEntities = [];
-        if (this._config.simulation_enabled_entity) simEntities.push(this._config.simulation_enabled_entity);
-        if (this._config.simulation_mode_entity) simEntities.push(this._config.simulation_mode_entity);
-
         if (hasBrowserMod) {
-            const cards = [
-                {
-                    type: "entities",
-                    title: "Status",
-                    entities: statusEntities,
-                },
-            ];
-
-            if (configEntities.length) {
-                cards.push({
-                    type: "entities",
-                    title: "Tank Setup",
-                    entities: configEntities,
-                });
-            }
-
-            if (calEntities.length) {
-                cards.push({
-                    type: "entities",
-                    title: "Calibration",
-                    entities: calEntities,
-                });
-            }
-
-            if (simEntities.length) {
-                cards.push({
-                    type: "entities",
-                    title: "Simulation",
-                    entities: simEntities,
-                });
-            }
-
-            this._hass.callService("browser_mod", "popup", {
-                title: this._config.title || "Water Tank Settings",
-                content: {
-                    type: "vertical-stack",
-                    cards,
-                },
-            });
+            this._hass.callService("browser_mod", "popup", this._buildPopupData(page, true));
             return;
         }
 
@@ -209,6 +164,203 @@ class WaterTankCard extends HTMLElement {
                 detail: { entityId: this._config.raw_entity },
             })
         );
+    }
+
+    _openAdvanced() {
+        this._openSettingsModal("advanced");
+    }
+
+    _openMain() {
+        this._openSettingsModal("main");
+    }
+
+    _buildSettingsMainCards() {
+        const status = this._safeText(this._state(this._config.status_entity));
+        const probeState = this._state(this._config.probe_entity);
+        const calState = this._safeText(this._state(this._config.calibration_entity));
+        const percentValid = this._safeText(this._state(this._config.percent_valid_entity));
+        const raw = this._safeText(this._state(this._config.raw_entity));
+        const probeDisconnected = probeState === "off";
+        const probeUnknown = this._isUnknownState(probeState);
+
+        const summary = `
+### Status
+- Status: **${status}**
+- Probe: **${this._safeText(probeState)}**
+- Calibration: **${calState}**
+- Percent valid: **${percentValid}**
+- Raw: **${raw}**
+${probeDisconnected ? "\n⚠️ Probe disconnected" : probeUnknown ? "\n⚠️ Probe state unknown" : ""}`.trim();
+
+        const cards = [
+            {
+                type: "markdown",
+                content: summary,
+            },
+        ];
+
+        // Calibration actions
+        const calCards = [];
+        const calibrationButtons = [];
+        const disableCal = probeDisconnected;
+        const calNote = probeDisconnected
+            ? "Probe disconnected — calibration disabled."
+            : probeUnknown
+                ? "Probe state unknown — use with caution."
+                : "Dry: Probe in air. Wet: Probe fully submerged.";
+
+        const makeCalButton = (entityId, name, icon) => {
+            if (!entityId) return null;
+            return {
+                type: "button",
+                name: disableCal ? `${name} (probe disconnected)` : name,
+                icon,
+                entity: entityId,
+                show_state: false,
+                tap_action: disableCal
+                    ? { action: "none" }
+                    : {
+                        action: "call-service",
+                        service: "button.press",
+                        target: { entity_id: entityId },
+                    },
+                hold_action: { action: "none" },
+            };
+        };
+
+        const dryBtn = makeCalButton(this._config.calibrate_dry_entity, "Calibrate Dry", "mdi:water-off-outline");
+        const wetBtn = makeCalButton(this._config.calibrate_wet_entity, "Calibrate Wet", "mdi:water");
+        const clearBtn = makeCalButton(this._config.clear_calibration_entity, "Clear Calibration", "mdi:refresh");
+
+        if (dryBtn) calibrationButtons.push(dryBtn);
+        if (wetBtn) calibrationButtons.push(wetBtn);
+        if (clearBtn) calibrationButtons.push(clearBtn);
+
+        if (calibrationButtons.length) {
+            calCards.push({
+                type: "markdown",
+                content: `### Calibration\n${calNote}`,
+            });
+            calCards.push({
+                type: "horizontal-stack",
+                cards: calibrationButtons,
+            });
+        }
+
+        if (calCards.length) cards.push(...calCards);
+
+        // Setup values
+        const setupCards = [];
+        const setupNote = [];
+        if (this._config.tank_volume_entity) setupNote.push("• Tank volume: Used to calculate liters");
+        if (this._config.rod_length_entity) setupNote.push("• Rod length: Used to calculate cm");
+
+        const makeSetupRow = (entityId, name, icon) => ({
+            type: "horizontal-stack",
+            cards: [
+                {
+                    type: "entity",
+                    entity: entityId,
+                    name,
+                },
+                {
+                    type: "button",
+                    name: "Save",
+                    icon: icon || "mdi:content-save",
+                    entity: entityId,
+                    tap_action: { action: "more-info" },
+                    hold_action: { action: "none" },
+                },
+            ],
+        });
+
+        const setupRows = [];
+        if (this._config.tank_volume_entity)
+            setupRows.push(makeSetupRow(this._config.tank_volume_entity, "Tank volume (L)", "mdi:beaker"));
+        if (this._config.rod_length_entity)
+            setupRows.push(makeSetupRow(this._config.rod_length_entity, "Rod length (cm)", "mdi:ruler"));
+
+        if (setupRows.length) {
+            setupCards.push({
+                type: "markdown",
+                content: `### Setup\n${setupNote.join("\n") || ""}`,
+            });
+            setupCards.push(...setupRows);
+        }
+
+        if (setupCards.length) cards.push(...setupCards);
+
+        // Advanced link
+        cards.push({
+            type: "button",
+            name: "Advanced…",
+            icon: "mdi:cog-transfer",
+            tap_action: {
+                action: "call-service",
+                service: "browser_mod.popup",
+                service_data: this._buildPopupData("advanced", false),
+            },
+            hold_action: { action: "none" },
+        });
+
+        return cards;
+    }
+
+    _buildSettingsAdvancedCards() {
+        const cards = [];
+        const probeState = this._state(this._config.probe_entity);
+        const calState = this._state(this._config.calibration_entity);
+        const percentValidState = this._state(this._config.percent_valid_entity);
+
+        // Simulation controls
+        const simEntities = [];
+        if (this._config.simulation_enabled_entity) simEntities.push(this._config.simulation_enabled_entity);
+        if (this._config.simulation_mode_entity) simEntities.push(this._config.simulation_mode_entity);
+
+        if (simEntities.length) {
+            cards.push({
+                type: "markdown",
+                content: "### Simulation\nEnable simulation for testing without hardware.",
+            });
+            cards.push({
+                type: "entities",
+                entities: simEntities,
+            });
+        }
+
+        // Diagnostics
+        const lines = [];
+        lines.push(`- Raw: **${this._safeText(this._state(this._config.raw_entity))}**`);
+        lines.push(`- Status: **${this._safeText(this._state(this._config.status_entity))}**`);
+        lines.push(`- Probe: **${this._safeText(probeState)}**`);
+        lines.push(`- Calibration: **${this._safeText(calState)}**`);
+        lines.push(`- Percent valid: **${this._safeText(percentValidState)}**`);
+
+        if (this._config.percent_entity) lines.push(`- Percent: **${this._safeText(this._state(this._config.percent_entity))}**`);
+        if (this._config.liters_entity) lines.push(`- Liters: **${this._safeText(this._state(this._config.liters_entity))}**`);
+        if (this._config.cm_entity) lines.push(`- Height: **${this._safeText(this._state(this._config.cm_entity))}**`);
+        if (this._config.quality_reason_entity)
+            lines.push(`- Quality reason: **${this._safeText(this._state(this._config.quality_reason_entity))}**`);
+
+        cards.push({
+            type: "markdown",
+            content: `### Diagnostics\n${lines.join("\n")}`,
+        });
+
+        // Back button
+        cards.push({
+            type: "button",
+            name: "Back",
+            icon: "mdi:arrow-left",
+            tap_action: {
+                action: "call-service",
+                service: "browser_mod.popup",
+                service_data: this._buildPopupData("main", false),
+            },
+            hold_action: { action: "none" },
+        });
+
+        return cards;
     }
 
     // ---------- gauge ----------
