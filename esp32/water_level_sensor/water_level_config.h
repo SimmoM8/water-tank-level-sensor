@@ -12,3 +12,13 @@
 // #define CFG_STUCK_MS 8000u
 // #define CFG_PROBE_MIN_RAW 0u
 // #define CFG_PROBE_MAX_RAW 65535u
+
+// — Tank Volume Number entity (display/input) —
+#define CFG_TANK_VOLUME_UNIT "mL" // "L" or "mL"
+#define CFG_TANK_VOLUME_MAX 30000.0f
+// #define CFG_TANK_VOLUME_STEP 1.0f
+
+// — Rod Length Number entity (display/input) —
+// #define CFG_ROD_LENGTH_UNIT "cm"    // "cm" or "m"
+// #define CFG_ROD_LENGTH_MAX 300.0f
+// #define CFG_ROD_LENGTH_STEP 1.0f
