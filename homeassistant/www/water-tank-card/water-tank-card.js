@@ -4,7 +4,7 @@
  */
 
 const CARD_TAG = "water-tank-card";
-const VERSION = "0.3.5";
+const VERSION = "0.3.6";
 
 class WaterTankCard extends HTMLElement {
     constructor() {
@@ -354,8 +354,7 @@ ${probeDisconnected ? "\n⚠️ Probe disconnected" : probeUnknown ? "\n⚠️ P
             icon: "mdi:arrow-left",
             tap_action: {
                 action: "call-service",
-                service: "browser_mod.popup",
-                service_data: this._buildPopupData("main", false),
+                service: "browser_mod.close_popup",
             },
             hold_action: { action: "none" },
         });
