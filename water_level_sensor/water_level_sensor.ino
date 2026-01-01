@@ -44,6 +44,24 @@
 #ifndef CFG_PROBE_MAX_RAW
 #define CFG_PROBE_MAX_RAW 65535u
 #endif
+#ifndef CFG_TANK_VOLUME_UNIT
+#define CFG_TANK_VOLUME_UNIT "L"
+#endif
+#ifndef CFG_TANK_VOLUME_MAX
+#define CFG_TANK_VOLUME_MAX 30000.0f
+#endif
+#ifndef CFG_TANK_VOLUME_STEP
+#define CFG_TANK_VOLUME_STEP 1.0f
+#endif
+#ifndef CFG_ROD_LENGTH_UNIT
+#define CFG_ROD_LENGTH_UNIT "cm"
+#endif
+#ifndef CFG_ROD_LENGTH_MAX
+#define CFG_ROD_LENGTH_MAX 300.0f
+#endif
+#ifndef CFG_ROD_LENGTH_STEP
+#define CFG_ROD_LENGTH_STEP 1.0f
+#endif
 
 // =============================================================================
 // Dad's Smart Home — Water Level Sensor (ESP32 touch) → MQTT → Home Assistant
@@ -143,7 +161,7 @@ static const char *DEVICE_ID = "water_tank_esp32";
 static const char *DEVICE_NAME = "Water Tank Sensor";
 static const char *DEVICE_MANUFACTURER = "DIY";
 static const char *DEVICE_MODEL = "Nano ESP32";
-static const char *DEVICE_SW_VERSION = "1.2"; // update whenever pushing to main branch
+static const char *DEVICE_SW_VERSION = "1.3"; // update whenever pushing to main branch
 
 WiFiClient wifiClient;
 PubSubClient mqtt(wifiClient);
@@ -309,6 +327,42 @@ static float clampNonNegative(float value)
   return value < 0.0f ? 0.0f : value;
 }
 
+static float tankExternalFromLiters(float liters)
+{
+  if (strcmp(CFG_TANK_VOLUME_UNIT, "mL") == 0)
+  {
+    return liters * 1000.0f;
+  }
+  return liters;
+}
+
+static float tankLitersFromExternal(float external)
+{
+  if (strcmp(CFG_TANK_VOLUME_UNIT, "mL") == 0)
+  {
+    return external / 1000.0f;
+  }
+  return external;
+}
+
+static float rodExternalFromCm(float cm)
+{
+  if (strcmp(CFG_ROD_LENGTH_UNIT, "m") == 0)
+  {
+    return cm / 100.0f;
+  }
+  return cm;
+}
+
+static float rodCmFromExternal(float external)
+{
+  if (strcmp(CFG_ROD_LENGTH_UNIT, "m") == 0)
+  {
+    return external * 100.0f;
+  }
+  return external;
+}
+
 static const char *qualityReasonToString(ProbeQualityReason reason)
 {
   switch (reason)
@@ -466,7 +520,7 @@ static void publishConfigValues(bool force = false)
 
   if (!isnan(tankVolumeLiters))
   {
-    mqtt.publish(TOPIC_CFG_TANK_VOLUME, String(tankVolumeLiters, 2).c_str(), true);
+    mqtt.publish(TOPIC_CFG_TANK_VOLUME, String(tankExternalFromLiters(tankVolumeLiters), 2).c_str(), true);
   }
   else if (force)
   {
@@ -475,7 +529,7 @@ static void publishConfigValues(bool force = false)
 
   if (!isnan(rodLengthCm))
   {
-    mqtt.publish(TOPIC_CFG_ROD_LENGTH, String(rodLengthCm, 2).c_str(), true);
+    mqtt.publish(TOPIC_CFG_ROD_LENGTH, String(rodExternalFromCm(rodLengthCm), 2).c_str(), true);
   }
   else if (force)
   {
@@ -914,14 +968,14 @@ static void handleConfigCommand(const String &topic, const String &message)
     float value = NAN;
     if (!tryParseFloat(message, value))
       return;
-    updateTankVolume(value, true);
+    updateTankVolume(tankLitersFromExternal(value), true);
   }
   else if (topic == TOPIC_CMD_ROD_LENGTH)
   {
     float value = NAN;
     if (!tryParseFloat(message, value))
       return;
-    updateRodLength(value, true);
+    updateRodLength(rodCmFromExternal(value), true);
   }
 }
 
@@ -1028,7 +1082,7 @@ static void publishDiscovery()
   mqtt.publish((String(DISCOVERY_PREFIX) + "/sensor/water_tank_percent/config").c_str(), percentConfig.c_str(), true);
 
   String litersConfig = String("{\"name\":\"Water Tank Liters\",\"state_topic\":\"") + TOPIC_TANK_LITERS +
-                        "\",\"unique_id\":\"water_tank_liters\",\"unit_of_measurement\":\"L\"," + availability +
+                        "\",\"unique_id\":\"water_tank_liters\",\"unit_of_measurement\":\"mL\"," + availability +
                         ",\"state_class\":\"measurement\",\"device\":" + deviceJson + "}";
   mqtt.publish((String(DISCOVERY_PREFIX) + "/sensor/water_tank_liters/config").c_str(), litersConfig.c_str(), true);
 
@@ -1104,13 +1158,15 @@ static void publishDiscovery()
 
   String volumeNumberConfig = String("{\"name\":\"Tank Volume\",\"state_topic\":\"") + TOPIC_CFG_TANK_VOLUME +
                               "\",\"command_topic\":\"" + TOPIC_CMD_TANK_VOLUME +
-                              "\",\"unique_id\":\"water_tank_volume_number\",\"unit_of_measurement\":\"L\",\"min\":0,\"step\":0.1," +
+                              "\",\"unique_id\":\"water_tank_volume_number\",\"unit_of_measurement\":\"" + String(CFG_TANK_VOLUME_UNIT) +
+                              "\",\"min\":0,\"max\":" + String(CFG_TANK_VOLUME_MAX, 1) + ",\"step\":" + String(CFG_TANK_VOLUME_STEP, 2) + "," +
                               availability + ",\"device\":" + deviceJson + "}";
   mqtt.publish((String(DISCOVERY_PREFIX) + "/number/water_tank_volume/config").c_str(), volumeNumberConfig.c_str(), true);
 
   String rodNumberConfig = String("{\"name\":\"Rod Length\",\"state_topic\":\"") + TOPIC_CFG_ROD_LENGTH +
                            "\",\"command_topic\":\"" + TOPIC_CMD_ROD_LENGTH +
-                           "\",\"unique_id\":\"water_tank_rod_length_number\",\"unit_of_measurement\":\"cm\",\"min\":0,\"step\":0.1," +
+                           "\",\"unique_id\":\"water_tank_rod_length_number\",\"unit_of_measurement\":\"" + String(CFG_ROD_LENGTH_UNIT) +
+                           "\",\"min\":0,\"max\":" + String(CFG_ROD_LENGTH_MAX, 1) + ",\"step\":" + String(CFG_ROD_LENGTH_STEP, 2) + "," +
                            availability + ",\"device\":" + deviceJson + "}";
   mqtt.publish((String(DISCOVERY_PREFIX) + "/number/water_tank_rod_length/config").c_str(), rodNumberConfig.c_str(), true);
 
