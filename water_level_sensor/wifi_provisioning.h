@@ -12,7 +12,7 @@ void wifiProvisioningBegin(Preferences &prefs);
 void wifiEnsureConnected(Preferences &prefs, uint32_t wifiTimeoutMs);
 
 // Force captive portal on next loop without wiping credentials
-void wifiForcePortalNext(Preferences &prefs);
+void wifiEnterSetupMode(Preferences &prefs);
 
 // Wipe WiFi credentials and reboot into captive portal
-void wifiWipeAndPortal(Preferences &prefs);
+void wifiFactoryReset(Preferences &prefs);

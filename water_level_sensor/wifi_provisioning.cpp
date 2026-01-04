@@ -87,7 +87,7 @@ void wifiEnsureConnected(Preferences &prefs, uint32_t wifiTimeoutMs)
     Serial.println(WiFi.localIP());
 }
 
-void wifiForcePortalNext(Preferences &prefs)
+void wifiEnterSetupMode(Preferences &prefs)
 {
     Serial.println("[WIFI] Forcing captive portal");
     prefs.putBool(PREF_KEY_FORCE_PORTAL, true);
@@ -95,7 +95,7 @@ void wifiForcePortalNext(Preferences &prefs)
     delay(250);
 }
 
-void wifiWipeAndPortal(Preferences &prefs)
+void wifiFactoryReset(Preferences &prefs)
 {
     Serial.println("[WIFI] Wiping WiFi credentials and rebooting");
     WiFi.disconnect(true, true);
