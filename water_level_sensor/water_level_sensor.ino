@@ -251,6 +251,8 @@ static void printHelpMenu()
   Serial.println("  show  -> print current calibration values");
   Serial.println("  clear -> clear stored calibration");
   Serial.println("  invert-> toggle inverted flag and save");
+  Serial.println("  wifi  -> start Wi‑Fi captive portal (setup mode)");
+  Serial.println("  wipewifi -> clear Wi‑Fi creds + reboot into setup portal");
   Serial.println("  help  -> show this menu");
 }
 
@@ -1039,10 +1041,6 @@ static void handleSerialCommands()
   {
     handleInvertCalibration();
   }
-  else if (cmd == "help" || cmd.length() > 0)
-  {
-    printHelpMenu();
-  }
   else if (cmd == "wifi")
   {
     Serial.println("[WIFI] Forcing portal on next loop...");
@@ -1057,6 +1055,15 @@ static void handleSerialCommands()
     prefs.putBool(PREF_KEY_FORCE_PORTAL, true);
     delay(500);
     ESP.restart();
+  }
+  else if (cmd == "help")
+  {
+    printHelpMenu();
+  }
+  else if (cmd.length() > 0)
+  {
+    // Unknown command
+    printHelpMenu();
   }
 }
 
