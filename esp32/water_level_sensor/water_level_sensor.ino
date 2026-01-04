@@ -92,6 +92,9 @@
 #ifndef MQTT_PASS
 #define MQTT_PASS ""
 #endif
+#ifndef OTA_PASS
+#define OTA_PASS "password"
+#endif
 // -------------------------------------------
 
 // ===== MQTT / Home Assistant =====
@@ -241,6 +244,7 @@ static uint16_t readRawValue();
 static void setupOTA()
 {
   ArduinoOTA.setHostname("water-tank-esp32");
+  ArduinoOTA.setPassword("supersecret");
 
   ArduinoOTA.onStart([]()
                      { Serial.println("[OTA] Update started"); });
