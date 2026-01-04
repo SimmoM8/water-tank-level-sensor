@@ -1,5 +1,5 @@
 #include <WiFi.h>
-#include <WiFiManager.h>
+#include <ArduinoOTA.h>
 #include <PubSubClient.h>
 #include <Preferences.h>
 #include <stdlib.h>
@@ -7,6 +7,7 @@
 #include <memory>
 #include <cstring>
 #include "simulation.h"
+#include "wifi_provisioning.h"
 
 // Optional config overrides (see water_level_config.h)
 #ifdef __has_include
@@ -166,7 +167,6 @@ static const char *DEVICE_NAME = "Water Tank Sensor";
 static const char *DEVICE_MANUFACTURER = "DIY";
 static const char *DEVICE_MODEL = "Nano ESP32";
 static const char *DEVICE_SW_VERSION = "1.3"; // update whenever pushing to main branch
-static const char *PREF_KEY_FORCE_PORTAL = "force_portal";
 
 WiFiClient wifiClient;
 PubSubClient mqtt(wifiClient);
@@ -238,6 +238,23 @@ static void publishStatus(const char *status, bool retained = true, bool force =
 static void refreshValidityFlags(float currentPercent, bool forcePublish = false);
 static uint16_t readRawValue();
 
+static void setupOTA()
+{
+  ArduinoOTA.setHostname("water-tank-esp32");
+
+  ArduinoOTA.onStart([]()
+                     { Serial.println("[OTA] Update started"); });
+
+  ArduinoOTA.onEnd([]()
+                   { Serial.println("[OTA] Update finished"); });
+
+  ArduinoOTA.onError([](ota_error_t error)
+                     { Serial.printf("[OTA] Error %u\n", error); });
+
+  ArduinoOTA.begin();
+  Serial.println("[OTA] Ready");
+}
+
 static void logLine(const char *msg)
 {
   Serial.println(msg);
@@ -273,75 +290,6 @@ static const char *calibrationStateToString(CalibrationState state)
   default:
     return STATUS_NEEDS_CAL;
   }
-}
-
-static void startWiFiPortal()
-{
-  Serial.println("[WIFI] Starting captive portal (setup mode)...");
-
-  WiFiManager wm;
-  wm.setConfigPortalTimeout(180); // 3 minutes
-  wm.setConnectTimeout(20);
-  wm.setConnectRetries(2);
-
-  // Good practice: make portal name stable + recognizable
-  wm.setHostname("water-tank-esp32");
-
-  // Start AP + captive portal
-  bool ok = wm.startConfigPortal("WaterTank-Setup");
-
-  if (!ok)
-  {
-    Serial.println("[WIFI] Portal timed out or failed. Rebooting...");
-    delay(1000);
-    ESP.restart();
-  }
-
-  Serial.println("[WIFI] WiFi configured. Connected!");
-  Serial.print("[WIFI] IP: ");
-  Serial.println(WiFi.localIP());
-
-  // Clear any forced portal flag after success
-  prefs.putBool(PREF_KEY_FORCE_PORTAL, false);
-}
-
-static void ensureWiFiConnected()
-{
-  if (WiFi.status() == WL_CONNECTED)
-    return;
-
-  // If user forced portal (via serial command), go straight to portal
-  const bool forcePortal = prefs.getBool(PREF_KEY_FORCE_PORTAL, false);
-  if (forcePortal)
-  {
-    startWiFiPortal();
-    return;
-  }
-
-  Serial.print("[WIFI] Connecting to saved WiFi: ");
-  Serial.println(WiFi.SSID());
-
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(); // uses credentials saved in flash by WiFiManager / ESP32
-
-  const uint32_t start = millis();
-  while (WiFi.status() != WL_CONNECTED)
-  {
-    delay(250);
-    Serial.print(".");
-    if (millis() - start > WIFI_TIMEOUT_MS)
-    {
-      Serial.println();
-      Serial.println("[WIFI] Failed to connect. Launching portal...");
-      startWiFiPortal();
-      return;
-    }
-  }
-
-  Serial.println();
-  Serial.println("[WIFI] Connected!");
-  Serial.print("[WIFI] IP: ");
-  Serial.println(WiFi.localIP());
 }
 
 static void publishBoolState(const char *topic, bool value, bool retained, bool &publishedFlag, bool &lastValue, bool force = false)
@@ -1043,18 +991,11 @@ static void handleSerialCommands()
   }
   else if (cmd == "wifi")
   {
-    Serial.println("[WIFI] Forcing portal on next loop...");
-    prefs.putBool(PREF_KEY_FORCE_PORTAL, true);
-    WiFi.disconnect(true, true);
-    delay(250);
+    wifiForcePortalNext(prefs);
   }
   else if (cmd == "wipewifi")
   {
-    Serial.println("[WIFI] Clearing saved WiFi credentials and rebooting...");
-    WiFi.disconnect(true, true); // clears STA creds on ESP32
-    prefs.putBool(PREF_KEY_FORCE_PORTAL, true);
-    delay(500);
-    ESP.restart();
+    wifiWipeAndPortal(prefs);
   }
   else if (cmd == "help")
   {
@@ -1329,7 +1270,7 @@ static void publishDiscovery()
 
 static void connectWiFi()
 {
-  ensureWiFiConnected();
+  wifiEnsureConnected(prefs, WIFI_TIMEOUT_MS);
 }
 
 static void connectMQTT()
@@ -1400,6 +1341,7 @@ void setup()
   }
 
   prefs.begin(PREF_NAMESPACE, false);
+  wifiProvisioningBegin(prefs);
   loadCalibration();
   loadConfigValues();
   refreshCalibrationState(true);
@@ -1413,10 +1355,13 @@ void setup()
   mqtt.setCallback(mqttCallback);
 
   ensureConnections();
+  setupOTA();
 }
 
 void loop()
 {
+  ArduinoOTA.handle();
+
   ensureConnections();
 
   if (mqtt.connected())

@@ -1,5 +1,3 @@
-
-
 #pragma once
 
 #include <Preferences.h>
@@ -12,7 +10,7 @@ void wifiProvisioningBegin(Preferences &prefs);
 void wifiEnsureConnected(Preferences &prefs, uint32_t wifiTimeoutMs);
 
 // Force captive portal on next loop without wiping credentials
-void wifiEnterSetupMode(Preferences &prefs);
+void wifiForcePortalNext(Preferences &prefs);
 
 // Wipe WiFi credentials and reboot into captive portal
-void wifiFactoryReset(Preferences &prefs);
+void wifiWipeAndPortal(Preferences &prefs);

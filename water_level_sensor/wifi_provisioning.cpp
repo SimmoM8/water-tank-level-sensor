@@ -1,7 +1,4 @@
-
-
 #include "wifi_provisioning.h"
-
 #include <WiFi.h>
 #include <WiFiManager.h>
 
@@ -87,7 +84,7 @@ void wifiEnsureConnected(Preferences &prefs, uint32_t wifiTimeoutMs)
     Serial.println(WiFi.localIP());
 }
 
-void wifiEnterSetupMode(Preferences &prefs)
+void wifiForcePortalNext(Preferences &prefs)
 {
     Serial.println("[WIFI] Forcing captive portal");
     prefs.putBool(PREF_KEY_FORCE_PORTAL, true);
@@ -95,7 +92,7 @@ void wifiEnterSetupMode(Preferences &prefs)
     delay(250);
 }
 
-void wifiFactoryReset(Preferences &prefs)
+void wifiWipeAndPortal(Preferences &prefs)
 {
     Serial.println("[WIFI] Wiping WiFi credentials and rebooting");
     WiFi.disconnect(true, true);
