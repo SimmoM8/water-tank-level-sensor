@@ -198,42 +198,25 @@ class WaterTankCard extends HTMLElement {
 
     // ---------- state model ----------
     _computeUiState() {
-        const status = this._state(this._config.status_entity); // "online" expected
+        const status = this._state(this._config.status_entity);
+        const probeState = this._state(this._config.probe_entity);
+        const percentValidState = this._state(this._config.percent_valid_entity);
+        const calState = this._state(this._config.calibration_entity);
+
         const offline = this._isUnknownState(status) || status === "offline";
+        if (offline) return { display: "nullify", severity: "error", icon: "mdi:lan-disconnect", msg: "Device offline" };
 
-        const probeState = this._state(this._config.probe_entity); // on/off/unknown
-        const percentValidState = this._state(this._config.percent_valid_entity); // on/off/unknown
-        const calState = this._state(this._config.calibration_entity); // needs_calibration | calibrating | calibrated
+        if (probeState === "off") return { display: "nullify", severity: "error", icon: "mdi:power-plug-off-outline", msg: "Probe disconnected" };
 
-        const probeUnknown = this._isUnknownState(probeState);
-        const probeConnected = probeState === "on";
-        const probeDisconnected = probeState === "off";
+        if (this._isUnknownState(probeState)) return { display: "nullify", severity: "warn", icon: "mdi:help-circle-outline", msg: "Probe status unknown" };
 
-        const percentValid = percentValidState === "on";
-        const percentValidUnknown = this._isUnknownState(percentValidState);
+        if (calState === "calibrating") return { display: "dim", severity: "warn", icon: "mdi:cog", msg: "Calibrating…" };
 
-        // 1) Offline overrides everything
-        if (offline) return { mode: "OFFLINE", msg: "Device offline", status };
+        if (calState === "needs_calibration") return { display: "dim", severity: "warn", icon: "mdi:ruler", msg: "Needs calibration" };
 
-        // 2) Probe disconnected → error-only view (no values shown)
-        if (probeDisconnected) return { mode: "ERROR", msg: "Probe disconnected", status };
+        if (percentValidState !== "on") return { display: "dim", severity: "warn", icon: "mdi:alert-outline", msg: "Readings not valid" };
 
-        // 3) Probe status unknown → setup (not error) so it doesn’t look “broken”
-        if (probeUnknown) return { mode: "SETUP", msg: "Waiting for probe data…", status };
-
-        // 4) Calibration / validity
-        if (!percentValid || calState === "needs_calibration" || percentValidUnknown) {
-            const m =
-                calState === "calibrating"
-                    ? "Calibrating…"
-                    : calState === "needs_calibration"
-                        ? "Needs calibration"
-                        : "Readings not valid";
-            return { mode: "SETUP", msg: m, status };
-        }
-
-        // 5) OK
-        return { mode: "OK", msg: "OK", status };
+        return { display: "normal", severity: "ok", icon: "mdi:check-circle-outline", msg: "All readings valid" };
     }
 
     // ---------- modal (in-card) ----------
@@ -691,19 +674,7 @@ class WaterTankCard extends HTMLElement {
         const simEnabled =
             !!this._config.simulation_enabled_entity &&
             this._isOn(this._config.simulation_enabled_entity);
-
-        // Warning footer logic (only when NOT error-only)
-        const calState = this._state(this._config.calibration_entity);
-        const percentValid = this._isOn(this._config.percent_valid_entity);
         const probeState = this._state(this._config.probe_entity);
-
-        let warningText = "";
-        if (ui.mode !== "ERROR" && ui.mode !== "OFFLINE") {
-            if (calState === "needs_calibration") warningText = "Calibration required";
-            else if (calState === "calibrating") warningText = "Calibrating…";
-            else if (!percentValid) warningText = "Readings not valid";
-            else if (this._isUnknownState(probeState)) warningText = "Probe status unknown";
-        }
 
         const css = `
       :host { display:block; }
@@ -749,6 +720,43 @@ class WaterTankCard extends HTMLElement {
         
       .badge ha-icon {
         --mdc-icon-size: 14px;
+      }
+
+      .gaugeWrap {
+        position: relative;
+      }
+
+      .gaugeOverlay {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        pointer-events: none;
+      }
+
+      .gaugeOverlay .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        font-weight: 800;
+        font-size: 13px;
+      }
+
+      .gaugeOverlay.warn .pill {
+        background: rgba(255, 170, 0, 0.85);
+        color: #000;
+      }
+
+      .gaugeOverlay.error .pill {
+        background: rgba(255, 64, 64, 0.9);
+        color: #fff;
+      }
+
+      .dim {
+        opacity: 0.55;
       }
 
       .simOffBtn {
@@ -1096,55 +1104,35 @@ class WaterTankCard extends HTMLElement {
       }
     `;
 
-        let bodyHtml = "";
+        const nullify = ui.display === "nullify";
+        const dim = ui.display === "dim";
 
-        // ERROR-ONLY view: show only error message + icon (no values)
-        if (ui.mode === "ERROR" || ui.mode === "OFFLINE") {
-            bodyHtml = `
-        <div class="notice error">
-          <ha-icon icon="mdi:alert-circle-outline"></ha-icon>
-          <div class="msg">${ui.msg}</div>
-          <div style="margin-left:auto;">
-            <button class="btn" id="settingsBtn" title="Settings">
-              <ha-icon icon="mdi:cog"></ha-icon>
-            </button>
-          </div>
-        </div>
-        <div class="rawLine">Raw: ${this._safeText(raw)}</div>
-      `;
-        }
-        // SETUP view: show setup message + settings button, raw line
-        else if (ui.mode === "SETUP") {
-            bodyHtml = `
-        <div class="notice">
-          <ha-icon icon="mdi:alert-outline"></ha-icon>
-          <div class="msg">${ui.msg}</div>
-          <div style="margin-left:auto;">
-            <button class="btn" id="settingsBtn" title="Settings">
-              <ha-icon icon="mdi:cog"></ha-icon>
-            </button>
-          </div>
-        </div>
-        <div class="rawLine">Raw: ${this._safeText(raw)}</div>
+        const pctText = nullify ? "—%" : (pct !== null ? `${pct.toFixed(1)}%` : "—%");
+        const litersText = nullify ? "—" : this._safeText(liters !== null ? liters.toFixed(2) : null);
+        const cmText = nullify ? "—" : this._safeText(cm !== null ? cm.toFixed(1) : null);
+        const gaugeValue = nullify ? 0 : pct ?? 0;
+        const gauge = this._renderGaugeArc(gaugeValue);
 
-        <div class="footer">
-          <div class="warn">
-            <ha-icon icon="mdi:information-outline"></ha-icon>
-            <div>${warningText || "Configure tank size + calibrate when ready"}</div>
-          </div>
-        </div>
-        ${simEnabled ? `<div class="simNote">Values are simulated</div>` : ``}
-      `;
-        }
-        // OK view: show gauge + liters + cm, plus warning footer if needed
-        else {
-            const pctText = pct !== null ? `${pct.toFixed(1)}%` : "—%";
-            const gauge = this._renderGaugeArc(pct ?? 0);
+        const overlay =
+            ui.severity === "ok"
+                ? ""
+                : `<div class="gaugeOverlay ${ui.severity}">
+                    <div class="pill"><ha-icon icon="${ui.icon}"></ha-icon>${this._safeText(ui.msg)}</div>
+                   </div>`;
 
-            bodyHtml = `
-        <div class="layout">
-          <div>
+        const footerIcon =
+            ui.severity === "ok"
+                ? "mdi:check-circle-outline"
+                : ui.severity === "warn"
+                    ? "mdi:alert-outline"
+                    : "mdi:alert-circle-outline";
+        const footerMsg = ui.msg || (ui.severity === "ok" ? "All readings valid" : "");
+
+        const bodyHtml = `
+        <div class="layout ${dim ? "dim" : ""}">
+          <div class="gaugeWrap">
             ${gauge}
+            ${overlay}
           </div>
 
           <div class="metrics">
@@ -1152,22 +1140,22 @@ class WaterTankCard extends HTMLElement {
 
             <div class="metricRow">
               <ha-icon icon="mdi:water-outline"></ha-icon>
-              <div><b>${this._safeText(liters !== null ? liters.toFixed(2) : null)}</b> L</div>
+              <div><b>${litersText}</b> L</div>
             </div>
 
             <div class="metricRow">
               <ha-icon icon="mdi:ruler"></ha-icon>
-              <div><b>${this._safeText(cm !== null ? cm.toFixed(1) : null)}</b> cm</div>
+              <div><b>${cmText}</b> cm</div>
             </div>
           </div>
         </div>
 
+        <div class="rawLine">Raw: ${this._safeText(raw)}</div>
+
         <div class="footer">
           <div class="warn">
-            ${warningText
-                    ? `<ha-icon icon="mdi:alert-outline"></ha-icon><div>${warningText}</div>`
-                    : `<ha-icon icon="mdi:check-circle-outline"></ha-icon><div>All readings valid</div>`
-                }
+            <ha-icon icon="${footerIcon}"></ha-icon>
+            <div>${footerMsg}</div>
           </div>
 
           <button class="btn" id="settingsBtn" title="Settings">
@@ -1176,7 +1164,6 @@ class WaterTankCard extends HTMLElement {
         </div>
         ${simEnabled ? `<div class="simNote">Values are simulated</div>` : ``}
       `;
-        }
 
         const html = `
       <style>${css}</style>
