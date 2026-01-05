@@ -194,6 +194,12 @@ float lastLiters = NAN;
 float lastCentimeters = NAN;
 bool simulationEnabled = false;
 uint8_t simulationMode = 0;
+enum SenseMode
+{
+  SENSE_TOUCH = 0,
+  SENSE_RC = 1
+};
+static SenseMode senseMode = SENSE_TOUCH;
 bool publishedCalDry = false;
 bool publishedCalWet = false;
 
@@ -274,6 +280,8 @@ static void printHelpMenu()
   Serial.println("  invert-> toggle inverted flag and save");
   Serial.println("  wifi  -> start Wi‑Fi captive portal (setup mode)");
   Serial.println("  wipewifi -> clear Wi‑Fi creds + reboot into setup portal");
+  Serial.println("  mode touch -> use touchRead()");
+  Serial.println("  mode rc    -> use RC timing");
   Serial.println("  help  -> show this menu");
 }
 
@@ -882,6 +890,42 @@ static uint16_t readTouchAverage(uint8_t samples)
   return (uint16_t)(sum / samples);
 }
 
+static uint32_t readRcOnceUs()
+{
+  const uint32_t DISCHARGE_US = 500;
+  const uint32_t TIMEOUT_US = 200000;
+
+  pinMode(TOUCH_PIN, OUTPUT);
+  digitalWrite(TOUCH_PIN, LOW);
+  delayMicroseconds(DISCHARGE_US);
+
+  pinMode(TOUCH_PIN, INPUT);
+  const uint32_t t0 = micros();
+  while (digitalRead(TOUCH_PIN) == LOW)
+  {
+    if ((micros() - t0) > TIMEOUT_US)
+      return TIMEOUT_US;
+  }
+  return micros() - t0;
+}
+
+static uint16_t readRcAverageScaled(uint8_t samples)
+{
+  const uint32_t SCALE_DIV = 4;
+
+  uint32_t sum = 0;
+  for (uint8_t i = 0; i < samples; i++)
+  {
+    sum += (readRcOnceUs() / SCALE_DIV);
+    delay(2);
+  }
+
+  uint32_t avg = sum / samples;
+  if (avg > 65535u)
+    avg = 65535u;
+  return (uint16_t)avg;
+}
+
 static float computePercent(uint16_t raw)
 {
   if (!hasCalibrationValues() || calDry == calWet || !probeConnected)
@@ -902,6 +946,12 @@ static uint16_t readRawValue()
   {
     return readSimulatedRaw();
   }
+
+  if (senseMode == SENSE_RC)
+  {
+    return readRcAverageScaled(TOUCH_SAMPLES);
+  }
+
   return readTouchAverage(TOUCH_SAMPLES);
 }
 
@@ -965,6 +1015,19 @@ static void handleSerialCommands()
   String cmd = Serial.readStringUntil('\n');
   cmd.trim();
   cmd.toLowerCase();
+
+  if (cmd == "mode touch")
+  {
+    senseMode = SENSE_TOUCH;
+    Serial.println("[MODE] touch");
+    return;
+  }
+  if (cmd == "mode rc")
+  {
+    senseMode = SENSE_RC;
+    Serial.println("[MODE] rc");
+    return;
+  }
 
   if (cmd == "dry")
   {
