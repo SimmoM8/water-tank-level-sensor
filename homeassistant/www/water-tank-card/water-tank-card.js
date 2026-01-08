@@ -4,7 +4,7 @@
  */
 
 const CARD_TAG = "water-tank-card";
-const VERSION = "0.4.2";
+const VERSION = "0.4.3";
 
 class WaterTankCard extends HTMLElement {
   constructor() {
@@ -622,8 +622,8 @@ class WaterTankCard extends HTMLElement {
     const p = this._clamp(percent ?? 0, 0, 100);
 
     // Layout sizing
-    const w = 150;
-    const h = 190;
+    const w = 190;
+    const h = 160;
 
     // Inner tank area (where water can appear)
     const pad = 14;
@@ -635,8 +635,48 @@ class WaterTankCard extends HTMLElement {
     const fillH = Math.round((innerH * p) / 100);
     const fillY = innerY + (innerH - fillH);
 
-    // If invalid/nullified, we show empty tank (p=0) but keep outline
-    const showFill = !(ui?.nullify);
+    // Use the existing state model
+    const nullify = ui?.display === "nullify";
+    const showFill = !nullify;
+
+    // Corner radii (tighter = more tank-like / industrial)
+    const outerR = 10;
+    const innerR = 8;
+
+    // A) Lid / manhole cap
+    const lidW = 44;
+    const lidH = 10;
+    const lidX = (w - lidW) / 2;
+    const lidY = pad - 3;
+
+    // B) Vertical ribs
+    const ribCount = 7;
+    const ribs = Array.from({ length: ribCount }, (_, i) => {
+      const x = innerX + Math.round(((i + 1) * innerW) / (ribCount + 1));
+      return `<line class="tankRib" x1="${x}" y1="${innerY + 4}" x2="${x}" y2="${innerY + innerH - 4}" />`;
+    }).join("");
+
+    // D) Level ticks (0/25/50/75/100)
+    const tickX1 = innerX - 10;
+    const tickX2 = innerX - 2;
+    const tickBoldX2 = innerX + 2;
+    const tickCount = 5;
+    const ticks = Array.from({ length: tickCount }, (_, i) => {
+      const t = i / (tickCount - 1); // 0..1
+      const y = Math.round(innerY + t * innerH);
+      const bold = i === 0 || i === tickCount - 1 || i === 2; // 0, 50, 100
+      const x2 = bold ? tickBoldX2 : tickX2;
+      return `<line class="tankTick${bold ? " bold" : ""}" x1="${tickX1}" y1="${y}" x2="${x2}" y2="${y}" />`;
+    }).join("");
+
+    // C) Outlet pipe + valve (right side near bottom)
+    const pipeH = 12;
+    const pipeW = 22;
+    const pipeY = Math.round(innerY + innerH - 28);
+    const pipeX = w - pad;
+    const valveCx = pipeX + pipeW + 10;
+    const valveCy = pipeY + pipeH / 2;
+    const valveR = 6;
 
     return `
       <svg class="tankSvg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-label="Water tank level">
@@ -647,15 +687,31 @@ class WaterTankCard extends HTMLElement {
           </linearGradient>
 
           <clipPath id="wtTankClip">
-            <rect x="${innerX}" y="${innerY}" width="${innerW}" height="${innerH}" rx="16" ry="16"></rect>
+            <rect x="${innerX}" y="${innerY}" width="${innerW}" height="${innerH}" rx="${innerR}" ry="${innerR}"></rect>
           </clipPath>
         </defs>
 
+        <!-- A) Lid / manhole cap -->
+        <rect class="tankLid" x="${lidX}" y="${lidY}" width="${lidW}" height="${lidH}" rx="6" ry="6"></rect>
+        <line class="tankLidDetail" x1="${lidX + 10}" y1="${lidY + lidH / 2}" x2="${lidX + lidW - 10}" y2="${lidY + lidH / 2}" />
+
         <!-- Outer glass / outline -->
-        <rect class="tankOutline" x="${pad}" y="${pad}" width="${w - pad * 2}" height="${h - pad * 2}" rx="20" ry="20"></rect>
+        <rect class="tankOutline"
+              x="${pad}" y="${pad}"
+              width="${w - pad * 2}" height="${h - pad * 2}"
+              rx="${outerR}" ry="${outerR}"></rect>
+
+        <!-- D) Level ticks -->
+        <g class="tankTicks">${ticks}</g>
 
         <!-- Inner cavity -->
-        <rect class="tankInner" x="${innerX}" y="${innerY}" width="${innerW}" height="${innerH}" rx="16" ry="16"></rect>
+        <rect class="tankInner"
+              x="${innerX}" y="${innerY}"
+              width="${innerW}" height="${innerH}"
+              rx="${innerR}" ry="${innerR}"></rect>
+
+        <!-- B) Ribs -->
+        <g class="tankRibs">${ribs}</g>
 
         <!-- Fill -->
         <g clip-path="url(#wtTankClip)">
@@ -663,12 +719,17 @@ class WaterTankCard extends HTMLElement {
         ? `<rect class="tankFill" x="${innerX}" y="${fillY}" width="${innerW}" height="${fillH}" fill="url(#wtFillGrad)"></rect>`
         : ``
       }
-          <!-- simple surface line -->
           ${showFill && fillH > 0
         ? `<path class="tankSurface" d="M ${innerX} ${fillY} H ${innerX + innerW}" />`
         : ``
       }
         </g>
+
+        <!-- C) Outlet pipe + valve -->
+        <rect class="tankPipe" x="${pipeX}" y="${pipeY}" width="${pipeW}" height="${pipeH}" rx="4" ry="4"></rect>
+        <circle class="tankValve" cx="${valveCx}" cy="${valveCy}" r="${valveR}"></circle>
+        <line class="tankValveHandle" x1="${valveCx - 8}" y1="${valveCy - 10}" x2="${valveCx + 8}" y2="${valveCy - 10}" />
+        <line class="tankValveHandle" x1="${valveCx}" y1="${valveCy - 10}" x2="${valveCx}" y2="${valveCy - 4}" />
       </svg>
     `;
   }
@@ -836,6 +897,53 @@ class WaterTankCard extends HTMLElement {
         stroke: rgba(255,255,255,0.35);
         stroke-width: 2;
         opacity: 0.6;
+      }
+
+            .tankLid {
+        fill: rgba(255,255,255,0.04);
+        stroke: rgba(255,255,255,0.22);
+        stroke-width: 2;
+      }
+
+      .tankLidDetail {
+        stroke: rgba(255,255,255,0.22);
+        stroke-width: 2;
+        stroke-linecap: round;
+        opacity: 0.8;
+      }
+
+      .tankRib {
+        stroke: rgba(255,255,255,0.10);
+        stroke-width: 1;
+      }
+
+      .tankTick {
+        stroke: rgba(255,255,255,0.14);
+        stroke-width: 1;
+        stroke-linecap: round;
+      }
+
+      .tankTick.bold {
+        stroke: rgba(255,255,255,0.22);
+        stroke-width: 2;
+      }
+
+      .tankPipe {
+        fill: rgba(255,255,255,0.03);
+        stroke: rgba(255,255,255,0.18);
+        stroke-width: 2;
+      }
+
+      .tankValve {
+        fill: rgba(0,0,0,0.06);
+        stroke: rgba(255,255,255,0.20);
+        stroke-width: 2;
+      }
+
+      .tankValveHandle {
+        stroke: rgba(255,255,255,0.20);
+        stroke-width: 2;
+        stroke-linecap: round;
       }
 
       .dim {
@@ -1195,10 +1303,11 @@ class WaterTankCard extends HTMLElement {
     const cmText = nullify ? "—" : this._safeText(cm !== null ? cm.toFixed(1) : null);
 
     const view = (this._config.view || "tank").toLowerCase();
+    const visualPct = nullify ? 0 : (pct ?? 0);
     const visual =
       view === "gauge"
-        ? this._renderGaugeArc(ui.nullify ? 0 : (pct ?? 0))
-        : this._renderTankSvg(ui.nullify ? 0 : (pct ?? 0), ui);
+        ? this._renderGaugeArc(visualPct)
+        : this._renderTankSvg(visualPct, ui);
 
     const overlay =
       ui.severity === "ok"
