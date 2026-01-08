@@ -140,8 +140,8 @@ static const char *STATUS_OK = "ok";
 static const char *STATUS_NEEDS_CAL = "needs_calibration";
 
 // ===== Sensor / Sampling =====
-// Arduino Nano ESP32: A6 is GPIO13 and is touch-capable.
-static const int TOUCH_PIN = A7;
+// Arduino Nano ESP32: A7 is GPIO14 and is touch-capable.
+static const int TOUCH_PIN = 14; // GPIO14 or A7
 
 static const uint8_t TOUCH_SAMPLES = 16;               // average N reads to reduce jitter
 static const uint32_t RAW_PUBLISH_MS = 1000;           // publish the raw value once per second
@@ -892,26 +892,40 @@ static uint16_t readTouchAverage(uint8_t samples)
 
 static uint32_t readRcOnceUs()
 {
+  // High-resolution RC timing using CPU cycle counter.
+  // NOTE: Return value is CYCLES (not microseconds). We scale later.
   const uint32_t DISCHARGE_US = 500;
-  const uint32_t TIMEOUT_US = 200000;
 
+  // Timeout in cycles (~50 ms @ 240 MHz). Adjust if needed.
+  const uint32_t TIMEOUT_CYCLES = 240000000UL / 20UL; // 12,000,000 cycles
+
+  // Discharge the probe node
   pinMode(TOUCH_PIN, OUTPUT);
   digitalWrite(TOUCH_PIN, LOW);
   delayMicroseconds(DISCHARGE_US);
 
+  // Float and time until the pin reads HIGH
   pinMode(TOUCH_PIN, INPUT);
-  const uint32_t t0 = micros();
+
+  const uint32_t start = ESP.getCycleCount();
   while (digitalRead(TOUCH_PIN) == LOW)
   {
-    if ((micros() - t0) > TIMEOUT_US)
-      return TIMEOUT_US;
+    const uint32_t now = ESP.getCycleCount();
+    if ((uint32_t)(now - start) > TIMEOUT_CYCLES)
+      return TIMEOUT_CYCLES;
   }
-  return micros() - t0;
+
+  const uint32_t end = ESP.getCycleCount();
+  return (uint32_t)(end - start);
 }
 
 static uint16_t readRcAverageScaled(uint8_t samples)
 {
-  const uint32_t SCALE_DIV = 4;
+  // Cycle scaling:
+  // - At 240 MHz, 1 us ≈ 240 cycles.
+  // - Your current readings (~2–8 us) become ~480–1920 cycles.
+  // - Scaling by 16 yields ~30–120 counts (much more usable than 1–3).
+  const uint32_t SCALE_DIV = 16;
 
   uint32_t sum = 0;
   for (uint8_t i = 0; i < samples; i++)
@@ -1481,7 +1495,8 @@ void loop()
     }
 
     publishPercentAndDerived(percentEma);
-
+    Serial.print("[SENSE MODE] ");
+    Serial.println(senseMode);
     Serial.print("[PERCENT] ");
     if (isnan(percentEma))
     {
