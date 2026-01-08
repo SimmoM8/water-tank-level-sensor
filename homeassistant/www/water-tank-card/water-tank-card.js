@@ -4,244 +4,244 @@
  */
 
 const CARD_TAG = "water-tank-card";
-const VERSION = "0.4.1";
+const VERSION = "0.4.2";
 
 class WaterTankCard extends HTMLElement {
-    constructor() {
-        super();
-        this.attachShadow({ mode: "open" });
-        this._config = null;
-        this._hass = null;
-        this._modalOpen = false;
-        this._modalPage = "main";
-        this._draft = {
-            tankVolume: "",
-            rodLength: "",
-            dryValue: "",
-            wetValue: "",
-        };
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this._config = null;
+    this._hass = null;
+    this._modalOpen = false;
+    this._modalPage = "main";
+    this._draft = {
+      tankVolume: "",
+      rodLength: "",
+      dryValue: "",
+      wetValue: "",
+    };
+  }
+
+  setConfig(config) {
+    const required = [
+      "percent_entity",
+      "liters_entity",
+      "cm_entity",
+      "status_entity",
+      "probe_entity",
+      "percent_valid_entity",
+      "calibration_entity",
+      "raw_entity",
+    ];
+
+    for (const key of required) {
+      if (!config[key]) throw new Error(`Missing required config key: ${key}`);
     }
 
-    setConfig(config) {
-        const required = [
-            "percent_entity",
-            "liters_entity",
-            "cm_entity",
-            "status_entity",
-            "probe_entity",
-            "percent_valid_entity",
-            "calibration_entity",
-            "raw_entity",
-        ];
+    // Optional entities for modal controls (strongly recommended)
+    this._config = {
+      title: "Water Tank",
+      // modal entities (optional)
+      tank_volume_entity: null,
+      rod_length_entity: null,
+      calibrate_dry_entity: null,
+      calibrate_wet_entity: null,
+      clear_calibration_entity: null,
 
-        for (const key of required) {
-            if (!config[key]) throw new Error(`Missing required config key: ${key}`);
-        }
+      // simulation controls (optional)
+      simulation_enabled_entity: null,
+      simulation_mode_entity: null,
 
-        // Optional entities for modal controls (strongly recommended)
-        this._config = {
-            title: "Water Tank",
-            // modal entities (optional)
-            tank_volume_entity: null,
-            rod_length_entity: null,
-            calibrate_dry_entity: null,
-            calibrate_wet_entity: null,
-            clear_calibration_entity: null,
+      // optional calibration value readouts
+      cal_dry_value_entity: null,
+      cal_wet_value_entity: null,
 
-            // simulation controls (optional)
-            simulation_enabled_entity: null,
-            simulation_mode_entity: null,
+      // optional diagnostics
+      quality_reason_entity: null,
 
-            // optional calibration value readouts
-            cal_dry_value_entity: null,
-            cal_wet_value_entity: null,
+      ...config,
+    };
 
-            // optional diagnostics
-            quality_reason_entity: null,
+    this._render();
+  }
 
-            ...config,
-        };
+  set hass(hass) {
+    this._hass = hass;
+    this._render();
+  }
 
-        this._render();
+  getCardSize() {
+    return 3;
+  }
+
+  // ---------- helpers ----------
+  _state(entityId) {
+    return this._hass?.states?.[entityId]?.state;
+  }
+
+  _num(entityId) {
+    const v = parseFloat(this._state(entityId));
+    return Number.isFinite(v) ? v : null;
+  }
+
+  _isOn(entityId) {
+    return this._state(entityId) === "on";
+  }
+
+  _isOff(entityId) {
+    return this._state(entityId) === "off";
+  }
+
+  _isUnknownState(s) {
+    return s === null || s === undefined || s === "unknown" || s === "unavailable";
+  }
+
+  _safeText(v, fallback = "—") {
+    if (v === null || v === undefined) return fallback;
+    if (typeof v === "number" && !Number.isFinite(v)) return fallback;
+    const s = String(v);
+    return s.length ? s : fallback;
+  }
+
+  _clamp(n, min, max) {
+    return Math.max(min, Math.min(max, n));
+  }
+
+  _domain(entityId) {
+    return entityId ? String(entityId).split(".")[0] : "";
+  }
+
+  _callService(domain, service, data = {}) {
+    if (!this._hass || !domain || !service) return;
+    try {
+      this._hass.callService(domain, service, data);
+    } catch (err) {
+      // keep silent but avoid crash
+      // eslint-disable-next-line no-console
+      console.warn(`${CARD_TAG}: service call failed`, domain, service, err);
+    }
+  }
+
+  _getOptions(entityId) {
+    if (!entityId || !this._hass?.states?.[entityId]) return [];
+    return this._hass.states[entityId].attributes?.options || [];
+  }
+
+  _isNumberLike(str) {
+    if (str === null || str === undefined) return false;
+    const n = Number(str);
+    return Number.isFinite(n);
+  }
+
+  _buildOnlineBadgeHtml(online) {
+    const bg = online ? "rgba(0,150,0,0.12)" : "rgba(255,0,0,0.12)";
+    const br = online ? "rgba(0,150,0,0.35)" : "rgba(255,0,0,0.35)";
+    return `<span class="wt-badge" style="background:${bg};border-color:${br};">${online ? "Online" : "Offline"}</span>`;
+  }
+
+  _collectWarnings() {
+    const statusState = this._state(this._config.status_entity);
+    const probeState = this._state(this._config.probe_entity);
+    const calState = this._state(this._config.calibration_entity);
+    const percentValidState = this._state(this._config.percent_valid_entity);
+
+    const warnings = [];
+    if (this._isUnknownState(statusState) || statusState !== "online") warnings.push({ icon: "mdi:lan-disconnect", text: "Device offline or status unknown" });
+    if (probeState === "off") warnings.push({ icon: "mdi:power-plug-off-outline", text: "Probe disconnected" });
+    else if (this._isUnknownState(probeState)) warnings.push({ icon: "mdi:help-circle-outline", text: "Probe state unknown" });
+
+    if (calState === "needs_calibration") warnings.push({ icon: "mdi:ruler", text: "Needs calibration" });
+    else if (calState === "calibrating") warnings.push({ icon: "mdi:cog", text: "Calibrating…" });
+
+    if (percentValidState !== "on") warnings.push({ icon: "mdi:alert-outline", text: "Readings not valid" });
+
+    if (this._config.quality_reason_entity) {
+      const qr = this._state(this._config.quality_reason_entity);
+      if (!this._isUnknownState(qr) && qr && qr !== "ok") {
+        warnings.push({ icon: "mdi:waveform", text: `Quality: ${qr}` });
+      }
     }
 
-    set hass(hass) {
-        this._hass = hass;
-        this._render();
-    }
+    return warnings;
+  }
 
-    getCardSize() {
-        return 3;
-    }
+  _setDraftFromEntitiesIfEmpty() {
+    const setIfEmpty = (key, entityId) => {
+      if (!entityId) return;
+      if (this._draft[key] !== "") return;
+      const v = this._state(entityId);
+      if (!this._isUnknownState(v)) this._draft[key] = v ?? "";
+    };
 
-    // ---------- helpers ----------
-    _state(entityId) {
-        return this._hass?.states?.[entityId]?.state;
-    }
+    setIfEmpty("tankVolume", this._config.tank_volume_entity);
+    setIfEmpty("rodLength", this._config.rod_length_entity);
+    setIfEmpty("dryValue", this._config.cal_dry_value_entity);
+    setIfEmpty("wetValue", this._config.cal_wet_value_entity);
+  }
 
-    _num(entityId) {
-        const v = parseFloat(this._state(entityId));
-        return Number.isFinite(v) ? v : null;
-    }
+  _openModal(page = "main") {
+    this._modalOpen = true;
+    this._modalPage = page;
+    this._setDraftFromEntitiesIfEmpty();
+    this._render();
+  }
 
-    _isOn(entityId) {
-        return this._state(entityId) === "on";
-    }
+  _closeModal() {
+    this._modalOpen = false;
+    this._render();
+  }
 
-    _isOff(entityId) {
-        return this._state(entityId) === "off";
-    }
+  _goModal(page) {
+    this._modalPage = page;
+    this._render();
+  }
 
-    _isUnknownState(s) {
-        return s === null || s === undefined || s === "unknown" || s === "unavailable";
-    }
+  // ---------- state model ----------
+  _computeUiState() {
+    const status = this._state(this._config.status_entity);
+    const probeState = this._state(this._config.probe_entity);
+    const percentValidState = this._state(this._config.percent_valid_entity);
+    const calState = this._state(this._config.calibration_entity);
 
-    _safeText(v, fallback = "—") {
-        if (v === null || v === undefined) return fallback;
-        if (typeof v === "number" && !Number.isFinite(v)) return fallback;
-        const s = String(v);
-        return s.length ? s : fallback;
-    }
+    const offline = this._isUnknownState(status) || status === "offline";
+    if (offline) return { display: "nullify", severity: "error", icon: "mdi:lan-disconnect", msg: "Device offline" };
 
-    _clamp(n, min, max) {
-        return Math.max(min, Math.min(max, n));
-    }
+    if (probeState === "off") return { display: "nullify", severity: "error", icon: "mdi:power-plug-off-outline", msg: "Probe disconnected" };
 
-    _domain(entityId) {
-        return entityId ? String(entityId).split(".")[0] : "";
-    }
+    if (this._isUnknownState(probeState)) return { display: "nullify", severity: "warn", icon: "mdi:help-circle-outline", msg: "Probe status unknown" };
 
-    _callService(domain, service, data = {}) {
-        if (!this._hass || !domain || !service) return;
-        try {
-            this._hass.callService(domain, service, data);
-        } catch (err) {
-            // keep silent but avoid crash
-            // eslint-disable-next-line no-console
-            console.warn(`${CARD_TAG}: service call failed`, domain, service, err);
-        }
-    }
+    if (calState === "calibrating") return { display: "dim", severity: "warn", icon: "mdi:cog", msg: "Calibrating…" };
 
-    _getOptions(entityId) {
-        if (!entityId || !this._hass?.states?.[entityId]) return [];
-        return this._hass.states[entityId].attributes?.options || [];
-    }
+    if (calState === "needs_calibration") return { display: "dim", severity: "warn", icon: "mdi:ruler", msg: "Needs calibration" };
 
-    _isNumberLike(str) {
-        if (str === null || str === undefined) return false;
-        const n = Number(str);
-        return Number.isFinite(n);
-    }
+    if (percentValidState !== "on") return { display: "dim", severity: "warn", icon: "mdi:alert-outline", msg: "Readings not valid" };
 
-    _buildOnlineBadgeHtml(online) {
-        const bg = online ? "rgba(0,150,0,0.12)" : "rgba(255,0,0,0.12)";
-        const br = online ? "rgba(0,150,0,0.35)" : "rgba(255,0,0,0.35)";
-        return `<span class="wt-badge" style="background:${bg};border-color:${br};">${online ? "Online" : "Offline"}</span>`;
-    }
+    return { display: "normal", severity: "ok", icon: "mdi:check-circle-outline", msg: "All readings valid" };
+  }
 
-    _collectWarnings() {
-        const statusState = this._state(this._config.status_entity);
-        const probeState = this._state(this._config.probe_entity);
-        const calState = this._state(this._config.calibration_entity);
-        const percentValidState = this._state(this._config.percent_valid_entity);
+  // ---------- modal (in-card) ----------
+  _renderModalHtml() {
+    if (!this._modalOpen) return "";
 
-        const warnings = [];
-        if (this._isUnknownState(statusState) || statusState !== "online") warnings.push({ icon: "mdi:lan-disconnect", text: "Device offline or status unknown" });
-        if (probeState === "off") warnings.push({ icon: "mdi:power-plug-off-outline", text: "Probe disconnected" });
-        else if (this._isUnknownState(probeState)) warnings.push({ icon: "mdi:help-circle-outline", text: "Probe state unknown" });
+    const statusState = this._state(this._config.status_entity);
+    const online = statusState === "online";
+    const badge = this._buildOnlineBadgeHtml(online);
+    const warnings = this._collectWarnings();
 
-        if (calState === "needs_calibration") warnings.push({ icon: "mdi:ruler", text: "Needs calibration" });
-        else if (calState === "calibrating") warnings.push({ icon: "mdi:cog", text: "Calibrating…" });
+    const warningsHtml = warnings.length
+      ? `<ul class="wt-warning-list">${warnings
+        .map((w) => `<li><ha-icon icon="${w.icon}"></ha-icon><span>${this._safeText(w.text)}</span></li>`)
+        .join("")}</ul>`
+      : `<div class="wt-all-good">✅ All good — no issues detected</div>`;
 
-        if (percentValidState !== "on") warnings.push({ icon: "mdi:alert-outline", text: "Readings not valid" });
+    const probeState = this._state(this._config.probe_entity);
+    const probeDisconnected = probeState === "off";
+    const probeUnknown = this._isUnknownState(probeState);
 
-        if (this._config.quality_reason_entity) {
-            const qr = this._state(this._config.quality_reason_entity);
-            if (!this._isUnknownState(qr) && qr && qr !== "ok") {
-                warnings.push({ icon: "mdi:waveform", text: `Quality: ${qr}` });
-            }
-        }
-
-        return warnings;
-    }
-
-    _setDraftFromEntitiesIfEmpty() {
-        const setIfEmpty = (key, entityId) => {
-            if (!entityId) return;
-            if (this._draft[key] !== "") return;
-            const v = this._state(entityId);
-            if (!this._isUnknownState(v)) this._draft[key] = v ?? "";
-        };
-
-        setIfEmpty("tankVolume", this._config.tank_volume_entity);
-        setIfEmpty("rodLength", this._config.rod_length_entity);
-        setIfEmpty("dryValue", this._config.cal_dry_value_entity);
-        setIfEmpty("wetValue", this._config.cal_wet_value_entity);
-    }
-
-    _openModal(page = "main") {
-        this._modalOpen = true;
-        this._modalPage = page;
-        this._setDraftFromEntitiesIfEmpty();
-        this._render();
-    }
-
-    _closeModal() {
-        this._modalOpen = false;
-        this._render();
-    }
-
-    _goModal(page) {
-        this._modalPage = page;
-        this._render();
-    }
-
-    // ---------- state model ----------
-    _computeUiState() {
-        const status = this._state(this._config.status_entity);
-        const probeState = this._state(this._config.probe_entity);
-        const percentValidState = this._state(this._config.percent_valid_entity);
-        const calState = this._state(this._config.calibration_entity);
-
-        const offline = this._isUnknownState(status) || status === "offline";
-        if (offline) return { display: "nullify", severity: "error", icon: "mdi:lan-disconnect", msg: "Device offline" };
-
-        if (probeState === "off") return { display: "nullify", severity: "error", icon: "mdi:power-plug-off-outline", msg: "Probe disconnected" };
-
-        if (this._isUnknownState(probeState)) return { display: "nullify", severity: "warn", icon: "mdi:help-circle-outline", msg: "Probe status unknown" };
-
-        if (calState === "calibrating") return { display: "dim", severity: "warn", icon: "mdi:cog", msg: "Calibrating…" };
-
-        if (calState === "needs_calibration") return { display: "dim", severity: "warn", icon: "mdi:ruler", msg: "Needs calibration" };
-
-        if (percentValidState !== "on") return { display: "dim", severity: "warn", icon: "mdi:alert-outline", msg: "Readings not valid" };
-
-        return { display: "normal", severity: "ok", icon: "mdi:check-circle-outline", msg: "All readings valid" };
-    }
-
-    // ---------- modal (in-card) ----------
-    _renderModalHtml() {
-        if (!this._modalOpen) return "";
-
-        const statusState = this._state(this._config.status_entity);
-        const online = statusState === "online";
-        const badge = this._buildOnlineBadgeHtml(online);
-        const warnings = this._collectWarnings();
-
-        const warningsHtml = warnings.length
-            ? `<ul class="wt-warning-list">${warnings
-                .map((w) => `<li><ha-icon icon="${w.icon}"></ha-icon><span>${this._safeText(w.text)}</span></li>`)
-                .join("")}</ul>`
-            : `<div class="wt-all-good">✅ All good — no issues detected</div>`;
-
-        const probeState = this._state(this._config.probe_entity);
-        const probeDisconnected = probeState === "off";
-        const probeUnknown = this._isUnknownState(probeState);
-
-        const renderCalValue = (key, label, entityId, draftKey) => {
-            if (!entityId) return `<div class="wt-cal-value"><div class="wt-cal-label">${label}</div><div class="wt-cal-read">—</div></div>`;
-            const val = this._safeText(this._state(entityId));
-            return `
+    const renderCalValue = (key, label, entityId, draftKey) => {
+      if (!entityId) return `<div class="wt-cal-value"><div class="wt-cal-label">${label}</div><div class="wt-cal-read">—</div></div>`;
+      const val = this._safeText(this._state(entityId));
+      return `
           <div class="wt-cal-value">
             <div class="wt-cal-label">${label}</div>
             <div class="wt-cal-input-row">
@@ -249,11 +249,11 @@ class WaterTankCard extends HTMLElement {
               <button class="wt-mini-btn" id="wt-${key}-set" data-entity="${entityId}">Set</button>
             </div>
           </div>`;
-        };
+    };
 
-        const dryDisabled = probeDisconnected || !this._config.calibrate_dry_entity;
-        const wetDisabled = probeDisconnected || !this._config.calibrate_wet_entity;
-        const calibrationSection = `
+    const dryDisabled = probeDisconnected || !this._config.calibrate_dry_entity;
+    const wetDisabled = probeDisconnected || !this._config.calibrate_wet_entity;
+    const calibrationSection = `
       <div class="wt-section">
         <div class="wt-section-head">
           <div>
@@ -261,8 +261,8 @@ class WaterTankCard extends HTMLElement {
             <div class="wt-section-sub">Calibrate the probe by setting its dry and fully submerged values.</div>
           </div>
           ${this._config.clear_calibration_entity
-                ? `<button class="wt-icon-btn" id="btnCalClear"><ha-icon icon="mdi:close-circle-outline"></ha-icon></button>`
-                : ""}
+        ? `<button class="wt-icon-btn" id="btnCalClear"><ha-icon icon="mdi:close-circle-outline"></ha-icon></button>`
+        : ""}
         </div>
 
         <div class="wt-cal-row">
@@ -276,18 +276,18 @@ class WaterTankCard extends HTMLElement {
           </button>
         </div>
         ${probeDisconnected
-                ? `<div class="wt-note">Probe disconnected — calibration disabled.</div>`
-                : probeUnknown
-                    ? `<div class="wt-note">Probe state unknown; calibration may not work.</div>`
-                    : `<div class="wt-note">Dry: probe in air • Wet: fully submerged</div>`}
+        ? `<div class="wt-note">Probe disconnected — calibration disabled.</div>`
+        : probeUnknown
+          ? `<div class="wt-note">Probe state unknown; calibration may not work.</div>`
+          : `<div class="wt-note">Dry: probe in air • Wet: fully submerged</div>`}
         <div class="wt-cal-values">
           ${renderCalValue("dry", "Dry value", this._config.cal_dry_value_entity, "dryValue")}
           ${renderCalValue("wet", "Wet value", this._config.cal_wet_value_entity, "wetValue")}
         </div>
       </div>`;
 
-        const tankRow = this._config.tank_volume_entity
-            ? `
+    const tankRow = this._config.tank_volume_entity
+      ? `
         <div class="wt-setup-row">
           <div class="wt-setup-icon"><ha-icon icon="mdi:water"></ha-icon></div>
           <div class="wt-setup-body">
@@ -300,10 +300,10 @@ class WaterTankCard extends HTMLElement {
             <div class="wt-setup-help">Used to calculate liters</div>
           </div>
         </div>`
-            : "";
+      : "";
 
-        const rodRow = this._config.rod_length_entity
-            ? `
+    const rodRow = this._config.rod_length_entity
+      ? `
         <div class="wt-setup-row">
           <div class="wt-setup-icon"><ha-icon icon="mdi:ruler"></ha-icon></div>
           <div class="wt-setup-body">
@@ -316,11 +316,11 @@ class WaterTankCard extends HTMLElement {
             <div class="wt-setup-help">Used to calculate cm</div>
           </div>
         </div>`
-            : "";
+      : "";
 
-        const setupSection =
-            this._config.tank_volume_entity || this._config.rod_length_entity
-                ? `
+    const setupSection =
+      this._config.tank_volume_entity || this._config.rod_length_entity
+        ? `
       <div class="wt-section">
         <div class="wt-section-title">Setup</div>
         <div class="wt-setup">
@@ -328,9 +328,9 @@ class WaterTankCard extends HTMLElement {
           ${rodRow}
         </div>
       </div>`
-                : "";
+        : "";
 
-        const mainPage = `
+    const mainPage = `
       <div class="wt-modal-header">
         <div class="wt-modal-title">Settings</div>
         <div class="wt-modal-actions">
@@ -346,28 +346,28 @@ class WaterTankCard extends HTMLElement {
       </div>
     `;
 
-        const simEnabledState = this._config.simulation_enabled_entity ? this._isOn(this._config.simulation_enabled_entity) : false;
-        const simModeEntity = this._config.simulation_mode_entity;
-        const simModeState = simModeEntity ? this._state(simModeEntity) : "";
-        const simOptions = this._getOptions(simModeEntity);
+    const simEnabledState = this._config.simulation_enabled_entity ? this._isOn(this._config.simulation_enabled_entity) : false;
+    const simModeEntity = this._config.simulation_mode_entity;
+    const simModeState = simModeEntity ? this._state(simModeEntity) : "";
+    const simOptions = this._getOptions(simModeEntity);
 
-        const diagnosticsLines = [
-            { label: "Raw", value: this._safeText(this._state(this._config.raw_entity)) },
-            { label: "Status", value: this._safeText(statusState) },
-            { label: "Probe", value: this._safeText(probeState) },
-            { label: "Calibration", value: this._safeText(this._state(this._config.calibration_entity)) },
-            { label: "Percent valid", value: this._safeText(this._state(this._config.percent_valid_entity)) },
-        ];
-        if (this._config.quality_reason_entity) diagnosticsLines.push({ label: "Quality reason", value: this._safeText(this._state(this._config.quality_reason_entity)) });
-        if (this._config.percent_entity) diagnosticsLines.push({ label: "Percent", value: this._safeText(this._state(this._config.percent_entity)) });
-        if (this._config.liters_entity) diagnosticsLines.push({ label: "Liters", value: this._safeText(this._state(this._config.liters_entity)) });
-        if (this._config.cm_entity) diagnosticsLines.push({ label: "Height", value: this._safeText(this._state(this._config.cm_entity)) });
+    const diagnosticsLines = [
+      { label: "Raw", value: this._safeText(this._state(this._config.raw_entity)) },
+      { label: "Status", value: this._safeText(statusState) },
+      { label: "Probe", value: this._safeText(probeState) },
+      { label: "Calibration", value: this._safeText(this._state(this._config.calibration_entity)) },
+      { label: "Percent valid", value: this._safeText(this._state(this._config.percent_valid_entity)) },
+    ];
+    if (this._config.quality_reason_entity) diagnosticsLines.push({ label: "Quality reason", value: this._safeText(this._state(this._config.quality_reason_entity)) });
+    if (this._config.percent_entity) diagnosticsLines.push({ label: "Percent", value: this._safeText(this._state(this._config.percent_entity)) });
+    if (this._config.liters_entity) diagnosticsLines.push({ label: "Liters", value: this._safeText(this._state(this._config.liters_entity)) });
+    if (this._config.cm_entity) diagnosticsLines.push({ label: "Height", value: this._safeText(this._state(this._config.cm_entity)) });
 
-        const diagnosticsHtml = diagnosticsLines
-            .map((l) => `<div class="wt-diag-row"><span>${l.label}</span><b>${l.value}</b></div>`)
-            .join("");
+    const diagnosticsHtml = diagnosticsLines
+      .map((l) => `<div class="wt-diag-row"><span>${l.label}</span><b>${l.value}</b></div>`)
+      .join("");
 
-        const advancedPage = `
+    const advancedPage = `
       <div class="wt-modal-header">
         <button class="wt-link wt-modal-back"><ha-icon icon="mdi:chevron-left"></ha-icon><span>Back</span></button>
         <div class="wt-modal-actions">
@@ -382,7 +382,7 @@ class WaterTankCard extends HTMLElement {
       <div class="wt-section">
         <div class="wt-section-sub" style="margin-bottom:8px;">Simulation controls</div>
         ${this._config.simulation_enabled_entity
-                ? `<div class="wt-setup-row">
+          ? `<div class="wt-setup-row">
             <div class="wt-setup-icon"><ha-icon icon="mdi:toggle-switch"></ha-icon></div>
             <div class="wt-setup-body">
               <div class="wt-setup-label">Simulation enabled</div>
@@ -391,9 +391,9 @@ class WaterTankCard extends HTMLElement {
               </div>
             </div>
           </div>`
-                : ""}
+          : ""}
         ${this._config.simulation_mode_entity
-                ? `<div class="wt-setup-row">
+          ? `<div class="wt-setup-row">
             <div class="wt-setup-icon"><ha-icon icon="mdi:chart-line"></ha-icon></div>
             <div class="wt-setup-body">
               <div class="wt-setup-label">Simulation mode</div>
@@ -404,7 +404,7 @@ class WaterTankCard extends HTMLElement {
               </div>
             </div>
           </div>`
-                : ""}
+          : ""}
       </div>` : ""}
 
       <div class="wt-section">
@@ -416,267 +416,324 @@ class WaterTankCard extends HTMLElement {
       </div>
     `;
 
-        const content = this._modalPage === "advanced" ? advancedPage : mainPage;
+    const content = this._modalPage === "advanced" ? advancedPage : mainPage;
 
-        return `
+    return `
       <div class="wt-modal-overlay">
         <div class="wt-modal-card">
           ${content}
         </div>
       </div>
     `;
+  }
+
+  _bindModalHandlers() {
+    if (!this.shadowRoot) return;
+
+    const removeEsc = () => {
+      if (this._modalEscHandler) window.removeEventListener("keydown", this._modalEscHandler);
+    };
+
+    if (!this._modalOpen) {
+      removeEsc();
+      return;
     }
 
-    _bindModalHandlers() {
-        if (!this.shadowRoot) return;
+    if (!this._modalEscHandler) {
+      this._modalEscHandler = (e) => {
+        if (e.key === "Escape") this._closeModal();
+      };
+    }
+    window.addEventListener("keydown", this._modalEscHandler);
 
-        const removeEsc = () => {
-            if (this._modalEscHandler) window.removeEventListener("keydown", this._modalEscHandler);
-        };
-
-        if (!this._modalOpen) {
-            removeEsc();
-            return;
+    const sr = this.shadowRoot;
+    const overlay = sr.querySelector(".wt-modal-overlay");
+    if (overlay) {
+      overlay.addEventListener("click", (e) => {
+        if (e.target === overlay) {
+          e.stopPropagation();
+          this._closeModal();
         }
-
-        if (!this._modalEscHandler) {
-            this._modalEscHandler = (e) => {
-                if (e.key === "Escape") this._closeModal();
-            };
-        }
-        window.addEventListener("keydown", this._modalEscHandler);
-
-        const sr = this.shadowRoot;
-        const overlay = sr.querySelector(".wt-modal-overlay");
-        if (overlay) {
-            overlay.addEventListener("click", (e) => {
-                if (e.target === overlay) {
-                    e.stopPropagation();
-                    this._closeModal();
-                }
-            });
-        }
-
-        const closeBtn = sr.querySelector(".wt-modal-close");
-        if (closeBtn) closeBtn.onclick = (e) => {
-            e.stopPropagation();
-            this._closeModal();
-        };
-
-        const advLink = sr.querySelector(".wt-modal-advanced");
-        if (advLink) advLink.onclick = (e) => {
-            e.stopPropagation();
-            this._goModal("advanced");
-        };
-
-        const backLink = sr.querySelector(".wt-modal-back");
-        if (backLink) backLink.onclick = (e) => {
-            e.stopPropagation();
-            this._goModal("main");
-        };
-
-        const pressButton = (entityId) => {
-            if (!entityId) return;
-            this._callService("button", "press", { entity_id: entityId });
-        };
-
-        // Calibration buttons
-        const dryBtn = sr.getElementById("btnCalDry");
-        if (dryBtn && !dryBtn.classList.contains("disabled")) {
-            dryBtn.onclick = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                pressButton(dryBtn.dataset.entity);
-            };
-        }
-        const wetBtn = sr.getElementById("btnCalWet");
-        if (wetBtn && !wetBtn.classList.contains("disabled")) {
-            wetBtn.onclick = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                pressButton(wetBtn.dataset.entity);
-            };
-        }
-        const clearBtn = sr.getElementById("btnCalClear");
-        if (clearBtn) {
-            clearBtn.onclick = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                pressButton(this._config.clear_calibration_entity);
-            };
-        }
-
-        // Calibration value setters (optional)
-        const setNumber = (entityId, value) => {
-            if (!entityId || value === undefined) return;
-            const domain = this._domain(entityId);
-            this._callService(domain, "set_value", { entity_id: entityId, value });
-        };
-
-        const updateDraft = (key, inputId) => {
-            const el = sr.getElementById(inputId);
-            if (!el) return null;
-            el.addEventListener("input", (e) => {
-                e.stopPropagation();
-                this._draft[key] = e.target.value;
-            });
-            return el;
-        };
-
-        const dryInput = updateDraft("dryValue", "wt-dry-input");
-        const wetInput = updateDraft("wetValue", "wt-wet-input");
-        const drySet = sr.getElementById("wt-dry-set");
-        if (drySet) {
-            drySet.onclick = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setNumber(drySet.dataset.entity, dryInput ? dryInput.value : undefined);
-            };
-        }
-        const wetSet = sr.getElementById("wt-wet-set");
-        if (wetSet) {
-            wetSet.onclick = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setNumber(wetSet.dataset.entity, wetInput ? wetInput.value : undefined);
-            };
-        }
-
-        // Setup number fields with validation
-        const attachNumberField = (inputId, saveId, errorId, draftKey, entityId) => {
-            if (!entityId) return;
-            const input = sr.getElementById(inputId);
-            const save = sr.getElementById(saveId);
-            const err = sr.getElementById(errorId);
-            if (!input || !save) return;
-
-            const setError = (msg) => {
-                if (err) err.textContent = msg || "";
-            };
-
-            const validate = () => {
-                const raw = input.value?.trim() ?? "";
-                const valid = raw.length > 0 && this._isNumberLike(raw) && Number(raw) > 0;
-                const numVal = valid ? Number(raw) : NaN;
-                const current = this._num(entityId);
-                const unchanged = valid && current !== null && Math.abs(current - numVal) < 0.001;
-                setError(valid ? "" : "Enter a number greater than 0");
-                save.disabled = !valid || unchanged;
-                return { valid, numVal, unchanged };
-            };
-
-            input.addEventListener("input", (e) => {
-                e.stopPropagation();
-                this._draft[draftKey] = input.value;
-                validate();
-            });
-
-            save.addEventListener("click", (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const { valid, numVal, unchanged } = validate();
-                if (!valid || unchanged) return;
-                this._callService("number", "set_value", { entity_id: entityId, value: numVal });
-                const original = save.textContent;
-                save.textContent = "Saved";
-                save.disabled = true;
-                setTimeout(() => {
-                    save.textContent = original;
-                    validate();
-                }, 1200);
-            });
-
-            validate();
-        };
-
-        attachNumberField("tankVolumeInput", "tankVolumeSave", "tankVolumeError", "tankVolume", this._config.tank_volume_entity);
-        attachNumberField("rodLengthInput", "rodLengthSave", "rodLengthError", "rodLength", this._config.rod_length_entity);
-
-        // Simulation controls
-        const simToggle = sr.getElementById("simToggleBtn");
-        if (simToggle) {
-            simToggle.onclick = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const entityId = simToggle.dataset.entity;
-                if (!entityId) return;
-                const current = simToggle.dataset.state === "on";
-                this._callService("switch", current ? "turn_off" : "turn_on", { entity_id: entityId });
-            };
-        }
-
-        const simMode = sr.getElementById("simModeSelect");
-        if (simMode) {
-            simMode.onchange = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const entityId = simMode.dataset.entity;
-                if (!entityId) return;
-                this._callService("select", "select_option", { entity_id: entityId, option: simMode.value });
-            };
-        }
+      });
     }
 
-    // ---------- gauge ----------
-    _renderGaugeArc(percent) {
-        const size = 130;
-        const stroke = 12;
-        const r = (size - stroke) / 2;
-        const cx = size / 2;
-        const cy = size / 2;
+    const closeBtn = sr.querySelector(".wt-modal-close");
+    if (closeBtn) closeBtn.onclick = (e) => {
+      e.stopPropagation();
+      this._closeModal();
+    };
 
-        // 270° arc (from 135° to 405°)
-        const startAngle = (135 * Math.PI) / 180;
-        const endAngle = (405 * Math.PI) / 180;
-        const arcLen = endAngle - startAngle;
+    const advLink = sr.querySelector(".wt-modal-advanced");
+    if (advLink) advLink.onclick = (e) => {
+      e.stopPropagation();
+      this._goModal("advanced");
+    };
 
-        const p = this._clamp(percent ?? 0, 0, 100) / 100;
-        const a = startAngle + arcLen * p;
+    const backLink = sr.querySelector(".wt-modal-back");
+    if (backLink) backLink.onclick = (e) => {
+      e.stopPropagation();
+      this._goModal("main");
+    };
 
-        const polar = (ang) => ({
-            x: cx + r * Math.cos(ang),
-            y: cy + r * Math.sin(ang),
-        });
+    const pressButton = (entityId) => {
+      if (!entityId) return;
+      this._callService("button", "press", { entity_id: entityId });
+    };
 
-        const s = polar(startAngle);
-        const e = polar(endAngle);
-        const v = polar(a);
+    // Calibration buttons
+    const dryBtn = sr.getElementById("btnCalDry");
+    if (dryBtn && !dryBtn.classList.contains("disabled")) {
+      dryBtn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        pressButton(dryBtn.dataset.entity);
+      };
+    }
+    const wetBtn = sr.getElementById("btnCalWet");
+    if (wetBtn && !wetBtn.classList.contains("disabled")) {
+      wetBtn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        pressButton(wetBtn.dataset.entity);
+      };
+    }
+    const clearBtn = sr.getElementById("btnCalClear");
+    if (clearBtn) {
+      clearBtn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        pressButton(this._config.clear_calibration_entity);
+      };
+    }
 
-        // Large arc flag for SVG
-        const largeBg = 1; // always > 180° for the full background arc
-        const largeVal = p > 0.5 ? 1 : 0;
+    // Calibration value setters (optional)
+    const setNumber = (entityId, value) => {
+      if (!entityId || value === undefined) return;
+      const domain = this._domain(entityId);
+      this._callService(domain, "set_value", { entity_id: entityId, value });
+    };
 
-        const bgPath = `M ${s.x} ${s.y} A ${r} ${r} 0 ${largeBg} 1 ${e.x} ${e.y}`;
-        const valPath = `M ${s.x} ${s.y} A ${r} ${r} 0 ${largeVal} 1 ${v.x} ${v.y}`;
+    const updateDraft = (key, inputId) => {
+      const el = sr.getElementById(inputId);
+      if (!el) return null;
+      el.addEventListener("input", (e) => {
+        e.stopPropagation();
+        this._draft[key] = e.target.value;
+      });
+      return el;
+    };
 
-        return `
+    const dryInput = updateDraft("dryValue", "wt-dry-input");
+    const wetInput = updateDraft("wetValue", "wt-wet-input");
+    const drySet = sr.getElementById("wt-dry-set");
+    if (drySet) {
+      drySet.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setNumber(drySet.dataset.entity, dryInput ? dryInput.value : undefined);
+      };
+    }
+    const wetSet = sr.getElementById("wt-wet-set");
+    if (wetSet) {
+      wetSet.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setNumber(wetSet.dataset.entity, wetInput ? wetInput.value : undefined);
+      };
+    }
+
+    // Setup number fields with validation
+    const attachNumberField = (inputId, saveId, errorId, draftKey, entityId) => {
+      if (!entityId) return;
+      const input = sr.getElementById(inputId);
+      const save = sr.getElementById(saveId);
+      const err = sr.getElementById(errorId);
+      if (!input || !save) return;
+
+      const setError = (msg) => {
+        if (err) err.textContent = msg || "";
+      };
+
+      const validate = () => {
+        const raw = input.value?.trim() ?? "";
+        const valid = raw.length > 0 && this._isNumberLike(raw) && Number(raw) > 0;
+        const numVal = valid ? Number(raw) : NaN;
+        const current = this._num(entityId);
+        const unchanged = valid && current !== null && Math.abs(current - numVal) < 0.001;
+        setError(valid ? "" : "Enter a number greater than 0");
+        save.disabled = !valid || unchanged;
+        return { valid, numVal, unchanged };
+      };
+
+      input.addEventListener("input", (e) => {
+        e.stopPropagation();
+        this._draft[draftKey] = input.value;
+        validate();
+      });
+
+      save.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const { valid, numVal, unchanged } = validate();
+        if (!valid || unchanged) return;
+        this._callService("number", "set_value", { entity_id: entityId, value: numVal });
+        const original = save.textContent;
+        save.textContent = "Saved";
+        save.disabled = true;
+        setTimeout(() => {
+          save.textContent = original;
+          validate();
+        }, 1200);
+      });
+
+      validate();
+    };
+
+    attachNumberField("tankVolumeInput", "tankVolumeSave", "tankVolumeError", "tankVolume", this._config.tank_volume_entity);
+    attachNumberField("rodLengthInput", "rodLengthSave", "rodLengthError", "rodLength", this._config.rod_length_entity);
+
+    // Simulation controls
+    const simToggle = sr.getElementById("simToggleBtn");
+    if (simToggle) {
+      simToggle.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const entityId = simToggle.dataset.entity;
+        if (!entityId) return;
+        const current = simToggle.dataset.state === "on";
+        this._callService("switch", current ? "turn_off" : "turn_on", { entity_id: entityId });
+      };
+    }
+
+    const simMode = sr.getElementById("simModeSelect");
+    if (simMode) {
+      simMode.onchange = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const entityId = simMode.dataset.entity;
+        if (!entityId) return;
+        this._callService("select", "select_option", { entity_id: entityId, option: simMode.value });
+      };
+    }
+  }
+
+  // ---------- tank svg ----------
+  _renderTankSvg(percent, ui) {
+    const p = this._clamp(percent ?? 0, 0, 100);
+
+    // Layout sizing
+    const w = 150;
+    const h = 190;
+
+    // Inner tank area (where water can appear)
+    const pad = 14;
+    const innerX = pad;
+    const innerY = pad + 10;
+    const innerW = w - pad * 2;
+    const innerH = h - (pad * 2) - 18;
+
+    const fillH = Math.round((innerH * p) / 100);
+    const fillY = innerY + (innerH - fillH);
+
+    // If invalid/nullified, we show empty tank (p=0) but keep outline
+    const showFill = !(ui?.nullify);
+
+    return `
+      <svg class="tankSvg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-label="Water tank level">
+        <defs>
+          <linearGradient id="wtFillGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="var(--primary-color)" stop-opacity="0.85"></stop>
+            <stop offset="100%" stop-color="var(--primary-color)" stop-opacity="0.35"></stop>
+          </linearGradient>
+
+          <clipPath id="wtTankClip">
+            <rect x="${innerX}" y="${innerY}" width="${innerW}" height="${innerH}" rx="16" ry="16"></rect>
+          </clipPath>
+        </defs>
+
+        <!-- Outer glass / outline -->
+        <rect class="tankOutline" x="${pad}" y="${pad}" width="${w - pad * 2}" height="${h - pad * 2}" rx="20" ry="20"></rect>
+
+        <!-- Inner cavity -->
+        <rect class="tankInner" x="${innerX}" y="${innerY}" width="${innerW}" height="${innerH}" rx="16" ry="16"></rect>
+
+        <!-- Fill -->
+        <g clip-path="url(#wtTankClip)">
+          ${showFill
+        ? `<rect class="tankFill" x="${innerX}" y="${fillY}" width="${innerW}" height="${fillH}" fill="url(#wtFillGrad)"></rect>`
+        : ``
+      }
+          <!-- simple surface line -->
+          ${showFill && fillH > 0
+        ? `<path class="tankSurface" d="M ${innerX} ${fillY} H ${innerX + innerW}" />`
+        : ``
+      }
+        </g>
+      </svg>
+    `;
+  }
+
+  // ---------- gauge ----------
+  _renderGaugeArc(percent) {
+    const size = 130;
+    const stroke = 12;
+    const r = (size - stroke) / 2;
+    const cx = size / 2;
+    const cy = size / 2;
+
+    // 270° arc (from 135° to 405°)
+    const startAngle = (135 * Math.PI) / 180;
+    const endAngle = (405 * Math.PI) / 180;
+    const arcLen = endAngle - startAngle;
+
+    const p = this._clamp(percent ?? 0, 0, 100) / 100;
+    const a = startAngle + arcLen * p;
+
+    const polar = (ang) => ({
+      x: cx + r * Math.cos(ang),
+      y: cy + r * Math.sin(ang),
+    });
+
+    const s = polar(startAngle);
+    const e = polar(endAngle);
+    const v = polar(a);
+
+    // Large arc flag for SVG
+    const largeBg = 1; // always > 180° for the full background arc
+    const largeVal = p > 0.5 ? 1 : 0;
+
+    const bgPath = `M ${s.x} ${s.y} A ${r} ${r} 0 ${largeBg} 1 ${e.x} ${e.y}`;
+    const valPath = `M ${s.x} ${s.y} A ${r} ${r} 0 ${largeVal} 1 ${v.x} ${v.y}`;
+
+    return `
       <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" aria-hidden="true">
         <path d="${bgPath}" fill="none" stroke="rgba(0,0,0,0.10)" stroke-width="${stroke}" stroke-linecap="round"></path>
         <path d="${valPath}" fill="none" stroke="var(--primary-color)" stroke-width="${stroke}" stroke-linecap="round"></path>
       </svg>
     `;
-    }
+  }
 
-    _render() {
-        if (!this._config || !this._hass) return;
+  _render() {
+    if (!this._config || !this._hass) return;
 
-        const ui = this._computeUiState();
+    const ui = this._computeUiState();
 
-        const pct = this._num(this._config.percent_entity);
-        const liters = this._num(this._config.liters_entity);
-        const cm = this._num(this._config.cm_entity);
-        const raw = this._state(this._config.raw_entity);
 
-        const statusState = this._state(this._config.status_entity);
-        const onlineText = statusState === "online" ? "Online" : "Offline";
+    const pct = this._num(this._config.percent_entity);
+    const liters = this._num(this._config.liters_entity);
+    const cm = this._num(this._config.cm_entity);
+    const raw = this._state(this._config.raw_entity);
 
-        // Simulation mode enabled?
-        const simEnabled =
-            !!this._config.simulation_enabled_entity &&
-            this._isOn(this._config.simulation_enabled_entity);
-        const probeState = this._state(this._config.probe_entity);
+    const statusState = this._state(this._config.status_entity);
+    const onlineText = statusState === "online" ? "Online" : "Offline";
 
-        const css = `
+    // Simulation mode enabled?
+    const simEnabled =
+      !!this._config.simulation_enabled_entity &&
+      this._isOn(this._config.simulation_enabled_entity);
+    const probeState = this._state(this._config.probe_entity);
+
+    const css = `
       :host { display:block; }
       ha-card {
         border-radius: 20px;
@@ -753,6 +810,32 @@ class WaterTankCard extends HTMLElement {
       .gaugeOverlay.error .pill {
         background: rgba(255, 64, 64, 0.9);
         color: #fff;
+      }
+
+      .tankSvg {
+        display: block;
+      }
+
+      .tankOutline {
+        fill: rgba(255,255,255,0.02);
+        stroke: rgba(255,255,255,0.18);
+        stroke-width: 2;
+      }
+
+      .tankInner {
+        fill: rgba(0,0,0,0.08);
+        stroke: rgba(255,255,255,0.06);
+        stroke-width: 1;
+      }
+
+      .tankFill {
+        transition: all 200ms ease;
+      }
+
+      .tankSurface {
+        stroke: rgba(255,255,255,0.35);
+        stroke-width: 2;
+        opacity: 0.6;
       }
 
       .dim {
@@ -1104,34 +1187,38 @@ class WaterTankCard extends HTMLElement {
       }
     `;
 
-        const nullify = ui.display === "nullify";
-        const dim = ui.display === "dim";
+    const nullify = ui.display === "nullify";
+    const dim = ui.display === "dim";
 
-        const pctText = nullify ? "—%" : (pct !== null ? `${pct.toFixed(1)}%` : "—%");
-        const litersText = nullify ? "—" : this._safeText(liters !== null ? liters.toFixed(2) : null);
-        const cmText = nullify ? "—" : this._safeText(cm !== null ? cm.toFixed(1) : null);
-        const gaugeValue = nullify ? 0 : pct ?? 0;
-        const gauge = this._renderGaugeArc(gaugeValue);
+    const pctText = nullify ? "—%" : (pct !== null ? `${pct.toFixed(1)}%` : "—%");
+    const litersText = nullify ? "—" : this._safeText(liters !== null ? liters.toFixed(2) : null);
+    const cmText = nullify ? "—" : this._safeText(cm !== null ? cm.toFixed(1) : null);
 
-        const overlay =
-            ui.severity === "ok"
-                ? ""
-                : `<div class="gaugeOverlay ${ui.severity}">
+    const view = (this._config.view || "tank").toLowerCase();
+    const visual =
+      view === "gauge"
+        ? this._renderGaugeArc(ui.nullify ? 0 : (pct ?? 0))
+        : this._renderTankSvg(ui.nullify ? 0 : (pct ?? 0), ui);
+
+    const overlay =
+      ui.severity === "ok"
+        ? ""
+        : `<div class="gaugeOverlay ${ui.severity}">
                     <div class="pill"><ha-icon icon="${ui.icon}"></ha-icon>${this._safeText(ui.msg)}</div>
                    </div>`;
 
-        const footerIcon =
-            ui.severity === "ok"
-                ? "mdi:check-circle-outline"
-                : ui.severity === "warn"
-                    ? "mdi:alert-outline"
-                    : "mdi:alert-circle-outline";
-        const footerMsg = ui.msg || (ui.severity === "ok" ? "All readings valid" : "");
+    const footerIcon =
+      ui.severity === "ok"
+        ? "mdi:check-circle-outline"
+        : ui.severity === "warn"
+          ? "mdi:alert-outline"
+          : "mdi:alert-circle-outline";
+    const footerMsg = ui.msg || (ui.severity === "ok" ? "All readings valid" : "");
 
-        const bodyHtml = `
+    const bodyHtml = `
         <div class="layout ${dim ? "dim" : ""}">
           <div class="gaugeWrap">
-            ${gauge}
+            ${visual}
             ${overlay}
           </div>
 
@@ -1165,19 +1252,19 @@ class WaterTankCard extends HTMLElement {
         ${simEnabled ? `<div class="simNote">Values are simulated</div>` : ``}
       `;
 
-        const html = `
+    const html = `
       <style>${css}</style>
       <ha-card class="${simEnabled ? "simulation" : ""}">
         <div class="header">
           <div class="titleWrap">
             <div class="title">${this._config.title}</div>
             ${simEnabled
-                ? `
+        ? `
                   <span class="badge"><ha-icon icon="mdi:alert-outline"></ha-icon> SIMULATION</span>
                   <button class="simOffBtn" id="simOffBtn" title="Turn simulation off">Sim off</button>
                 `
-                : ``
-            }
+        : ``
+      }
           </div>
           <div class="corner">${onlineText}</div>
         </div>
@@ -1186,25 +1273,25 @@ class WaterTankCard extends HTMLElement {
       </ha-card>
     `;
 
-        this.shadowRoot.innerHTML = html;
+    this.shadowRoot.innerHTML = html;
 
-        const settingButtons = this.shadowRoot.querySelectorAll("#settingsBtn");
-        settingButtons.forEach((btn) => {
-            btn.onclick = () => this._openModal("main");
+    const settingButtons = this.shadowRoot.querySelectorAll("#settingsBtn");
+    settingButtons.forEach((btn) => {
+      btn.onclick = () => this._openModal("main");
+    });
+
+    const simOff = this.shadowRoot.getElementById("simOffBtn");
+    if (simOff && this._config.simulation_enabled_entity) {
+      simOff.onclick = (e) => {
+        e.stopPropagation();
+        this._hass.callService("switch", "turn_off", {
+          entity_id: this._config.simulation_enabled_entity,
         });
-
-        const simOff = this.shadowRoot.getElementById("simOffBtn");
-        if (simOff && this._config.simulation_enabled_entity) {
-            simOff.onclick = (e) => {
-                e.stopPropagation();
-                this._hass.callService("switch", "turn_off", {
-                    entity_id: this._config.simulation_enabled_entity,
-                });
-            };
-        }
-
-        this._bindModalHandlers();
+      };
     }
+
+    this._bindModalHandlers();
+  }
 }
 
 customElements.define(CARD_TAG, WaterTankCard);
