@@ -4,7 +4,7 @@
  */
 
 const CARD_TAG = "water-tank-card";
-const VERSION = "0.4.3";
+const VERSION = "0.4.4";
 
 class WaterTankCard extends HTMLElement {
   constructor() {
@@ -621,115 +621,114 @@ class WaterTankCard extends HTMLElement {
   _renderTankSvg(percent, ui) {
     const p = this._clamp(percent ?? 0, 0, 100);
 
-    // Layout sizing
     const w = 190;
     const h = 160;
 
-    // Inner tank area (where water can appear)
     const pad = 14;
-    const innerX = pad;
-    const innerY = pad + 10;
-    const innerW = w - pad * 2;
-    const innerH = h - (pad * 2) - 18;
+    const outerX = pad;
+    const outerY = pad;
+    const outerW = w - pad * 2;
+    const outerH = h - pad * 2;
+
+    // Inner cavity
+    const inset = 12;
+    const innerX = outerX + inset;
+    const innerY = outerY + 18; // leave space for lid region
+    const innerW = outerW - inset * 2;
+    const innerH = outerH - 26;
 
     const fillH = Math.round((innerH * p) / 100);
     const fillY = innerY + (innerH - fillH);
 
-    // Use the existing state model
     const nullify = ui?.display === "nullify";
     const showFill = !nullify;
 
-    // Corner radii (tighter = more tank-like / industrial)
+    // Shape language
     const outerR = 10;
     const innerR = 8;
 
-    // A) Lid / manhole cap
-    const lidW = 44;
-    const lidH = 10;
-    const lidX = (w - lidW) / 2;
-    const lidY = pad - 3;
+    // A) Lid (integrated ring + cap)
+    const lidCX = outerX + outerW / 2;
+    const lidY = outerY + 10;
+    const lidR = 12;
 
-    // B) Vertical ribs
-    const ribCount = 7;
+    // B) Ribs (subtle, inside cavity)
+    const ribCount = 6;
     const ribs = Array.from({ length: ribCount }, (_, i) => {
-      const x = innerX + Math.round(((i + 1) * innerW) / (ribCount + 1));
-      return `<line class="tankRib" x1="${x}" y1="${innerY + 4}" x2="${x}" y2="${innerY + innerH - 4}" />`;
+      const t = (i + 1) / (ribCount + 1);
+      const x = Math.round(innerX + t * innerW);
+      return `<line class="wt-rib" x1="${x}" y1="${innerY + 6}" x2="${x}" y2="${innerY + innerH - 6}" />`;
     }).join("");
 
-    // D) Level ticks (0/25/50/75/100)
-    const tickX1 = innerX - 10;
-    const tickX2 = innerX - 2;
-    const tickBoldX2 = innerX + 2;
-    const tickCount = 5;
+    // D) Ticks (short, aligned to cavity)
+    const tickCount = 5; // 0/25/50/75/100
     const ticks = Array.from({ length: tickCount }, (_, i) => {
-      const t = i / (tickCount - 1); // 0..1
+      const t = i / (tickCount - 1);
       const y = Math.round(innerY + t * innerH);
-      const bold = i === 0 || i === tickCount - 1 || i === 2; // 0, 50, 100
-      const x2 = bold ? tickBoldX2 : tickX2;
-      return `<line class="tankTick${bold ? " bold" : ""}" x1="${tickX1}" y1="${y}" x2="${x2}" y2="${y}" />`;
+      const major = i === 0 || i === 2 || i === 4;
+      const x1 = innerX - 8;
+      const x2 = innerX - (major ? 1 : 3);
+      return `<line class="wt-tick${major ? " major" : ""}" x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" />`;
     }).join("");
 
-    // C) Outlet pipe + valve (right side near bottom)
-    const pipeH = 12;
-    const pipeW = 22;
-    const pipeY = Math.round(innerY + innerH - 28);
-    const pipeX = w - pad;
-    const valveCx = pipeX + pipeW + 10;
-    const valveCy = pipeY + pipeH / 2;
-    const valveR = 6;
+    // C) Outlet port (clean “bulkhead fitting”)
+    const portY = Math.round(innerY + innerH - 22);
+    const portX = outerX + outerW + 2; // slightly outside body
+    const portR = 6;
 
     return `
       <svg class="tankSvg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-label="Water tank level">
         <defs>
           <linearGradient id="wtFillGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stop-color="var(--primary-color)" stop-opacity="0.85"></stop>
-            <stop offset="100%" stop-color="var(--primary-color)" stop-opacity="0.35"></stop>
+            <stop offset="0%" stop-color="var(--primary-color)" stop-opacity="0.75"></stop>
+            <stop offset="100%" stop-color="var(--primary-color)" stop-opacity="0.25"></stop>
           </linearGradient>
 
           <clipPath id="wtTankClip">
             <rect x="${innerX}" y="${innerY}" width="${innerW}" height="${innerH}" rx="${innerR}" ry="${innerR}"></rect>
           </clipPath>
+
+          <linearGradient id="wtGlass" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stop-color="rgba(255,255,255,0.10)"></stop>
+            <stop offset="35%" stop-color="rgba(255,255,255,0.02)"></stop>
+            <stop offset="100%" stop-color="rgba(0,0,0,0.08)"></stop>
+          </linearGradient>
         </defs>
 
-        <!-- A) Lid / manhole cap -->
-        <rect class="tankLid" x="${lidX}" y="${lidY}" width="${lidW}" height="${lidH}" rx="6" ry="6"></rect>
-        <line class="tankLidDetail" x1="${lidX + 10}" y1="${lidY + lidH / 2}" x2="${lidX + lidW - 10}" y2="${lidY + lidH / 2}" />
+        <!-- Tank body -->
+        <rect class="wt-body" x="${outerX}" y="${outerY}" width="${outerW}" height="${outerH}" rx="${outerR}" ry="${outerR}"></rect>
 
-        <!-- Outer glass / outline -->
-        <rect class="tankOutline"
-              x="${pad}" y="${pad}"
-              width="${w - pad * 2}" height="${h - pad * 2}"
-              rx="${outerR}" ry="${outerR}"></rect>
+        <!-- A) Lid ring + cap (minimal) -->
+        <circle class="wt-lidRing" cx="${lidCX}" cy="${lidY}" r="${lidR}"></circle>
+        <circle class="wt-lidCap" cx="${lidCX}" cy="${lidY}" r="${lidR - 5}"></circle>
 
-        <!-- D) Level ticks -->
-        <g class="tankTicks">${ticks}</g>
+        <!-- D) Ticks -->
+        <g class="wt-ticks">${ticks}</g>
 
         <!-- Inner cavity -->
-        <rect class="tankInner"
-              x="${innerX}" y="${innerY}"
-              width="${innerW}" height="${innerH}"
-              rx="${innerR}" ry="${innerR}"></rect>
+        <rect class="wt-cavity" x="${innerX}" y="${innerY}" width="${innerW}" height="${innerH}" rx="${innerR}" ry="${innerR}"></rect>
 
         <!-- B) Ribs -->
-        <g class="tankRibs">${ribs}</g>
+        <g class="wt-ribs">${ribs}</g>
 
         <!-- Fill -->
         <g clip-path="url(#wtTankClip)">
           ${showFill
-        ? `<rect class="tankFill" x="${innerX}" y="${fillY}" width="${innerW}" height="${fillH}" fill="url(#wtFillGrad)"></rect>`
+        ? `<rect class="wt-fill" x="${innerX}" y="${fillY}" width="${innerW}" height="${fillH}" fill="url(#wtFillGrad)"></rect>`
         : ``
       }
           ${showFill && fillH > 0
-        ? `<path class="tankSurface" d="M ${innerX} ${fillY} H ${innerX + innerW}" />`
+        ? `<path class="wt-surface" d="M ${innerX} ${fillY} H ${innerX + innerW}" />`
         : ``
       }
         </g>
 
-        <!-- C) Outlet pipe + valve -->
-        <rect class="tankPipe" x="${pipeX}" y="${pipeY}" width="${pipeW}" height="${pipeH}" rx="4" ry="4"></rect>
-        <circle class="tankValve" cx="${valveCx}" cy="${valveCy}" r="${valveR}"></circle>
-        <line class="tankValveHandle" x1="${valveCx - 8}" y1="${valveCy - 10}" x2="${valveCx + 8}" y2="${valveCy - 10}" />
-        <line class="tankValveHandle" x1="${valveCx}" y1="${valveCy - 10}" x2="${valveCx}" y2="${valveCy - 4}" />
+        <!-- Glass highlight overlay -->
+        <rect class="wt-glass" x="${outerX}" y="${outerY}" width="${outerW}" height="${outerH}" rx="${outerR}" ry="${outerR}" fill="url(#wtGlass)"></rect>
+
+        <!-- C) Outlet port -->
+        <circle class="wt-port" cx="${portX}" cy="${portY}" r="${portR}"></circle>
+        <circle class="wt-portInner" cx="${portX}" cy="${portY}" r="${portR - 3}"></circle>
       </svg>
     `;
   }
@@ -877,73 +876,86 @@ class WaterTankCard extends HTMLElement {
         display: block;
       }
 
-      .tankOutline {
+      /* modern x-ray tank stroke system */
+      .wt-body,
+      .wt-cavity,
+      .wt-lidRing,
+      .wt-lidCap,
+      .wt-port,
+      .wt-portInner {
+        vector-effect: non-scaling-stroke;
+      }
+
+      .wt-body,
+      .wt-cavity,
+      .wt-lidRing,
+      .wt-port {
+        stroke: rgba(255,255,255,0.20);
+        stroke-width: 2;
+      }
+
+      .wt-body {
         fill: rgba(255,255,255,0.02);
+      }
+
+      .wt-cavity {
+        fill: rgba(0,0,0,0.10);
+        stroke: rgba(255,255,255,0.10);
+      }
+
+      /* lid */
+      .wt-lidRing {
+        fill: rgba(255,255,255,0.03);
+      }
+
+      .wt-lidCap {
+        fill: rgba(0,0,0,0.08);
+        stroke: rgba(255,255,255,0.10);
+        stroke-width: 2;
+      }
+
+      /* ribs + ticks are subtle */
+      .wt-rib {
+        stroke: rgba(255,255,255,0.07);
+        stroke-width: 1;
+        vector-effect: non-scaling-stroke;
+      }
+
+      .wt-tick {
+        stroke: rgba(255,255,255,0.12);
+        stroke-width: 1;
+        stroke-linecap: round;
+        vector-effect: non-scaling-stroke;
+      }
+
+      .wt-tick.major {
         stroke: rgba(255,255,255,0.18);
         stroke-width: 2;
       }
 
-      .tankInner {
-        fill: rgba(0,0,0,0.08);
-        stroke: rgba(255,255,255,0.06);
-        stroke-width: 1;
-      }
-
-      .tankFill {
-        transition: all 200ms ease;
-      }
-
-      .tankSurface {
+      /* water */
+      .wt-surface {
         stroke: rgba(255,255,255,0.35);
         stroke-width: 2;
-        opacity: 0.6;
-      }
-
-            .tankLid {
-        fill: rgba(255,255,255,0.04);
-        stroke: rgba(255,255,255,0.22);
-        stroke-width: 2;
-      }
-
-      .tankLidDetail {
-        stroke: rgba(255,255,255,0.22);
-        stroke-width: 2;
         stroke-linecap: round;
-        opacity: 0.8;
+        opacity: 0.55;
+        vector-effect: non-scaling-stroke;
       }
 
-      .tankRib {
+      /* glass overlay */
+      .wt-glass {
+        opacity: 0.9;
+      }
+
+      /* outlet port */
+      .wt-port {
+        fill: rgba(255,255,255,0.02);
+      }
+
+      .wt-portInner {
+        fill: rgba(0,0,0,0.10);
         stroke: rgba(255,255,255,0.10);
-        stroke-width: 1;
-      }
-
-      .tankTick {
-        stroke: rgba(255,255,255,0.14);
-        stroke-width: 1;
-        stroke-linecap: round;
-      }
-
-      .tankTick.bold {
-        stroke: rgba(255,255,255,0.22);
         stroke-width: 2;
-      }
-
-      .tankPipe {
-        fill: rgba(255,255,255,0.03);
-        stroke: rgba(255,255,255,0.18);
-        stroke-width: 2;
-      }
-
-      .tankValve {
-        fill: rgba(0,0,0,0.06);
-        stroke: rgba(255,255,255,0.20);
-        stroke-width: 2;
-      }
-
-      .tankValveHandle {
-        stroke: rgba(255,255,255,0.20);
-        stroke-width: 2;
-        stroke-linecap: round;
       }
 
       .dim {
