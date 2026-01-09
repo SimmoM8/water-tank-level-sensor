@@ -4,7 +4,7 @@
  */
 
 const CARD_TAG = "water-tank-card";
-const VERSION = "0.4.4";
+const VERSION = "0.4.5";
 
 class WaterTankCard extends HTMLElement {
   constructor() {
@@ -621,117 +621,108 @@ class WaterTankCard extends HTMLElement {
   _renderTankSvg(percent, ui) {
     const p = this._clamp(percent ?? 0, 0, 100);
 
-    const w = 190;
-    const h = 160;
+    // If nullified, show an empty tank (outline only)
+    const showFill = ui?.display !== "nullify";
 
-    const pad = 14;
-    const outerX = pad;
-    const outerY = pad;
-    const outerW = w - pad * 2;
-    const outerH = h - pad * 2;
+    // The exported SVG uses a 200x200 viewBox.
+    // The inner cavity clip path spans roughly from y=46.9 (top) to y=195.75 (bottom).
+    const fillTop = 46.9;
+    const fillBottom = 195.75;
+    const fillRange = fillBottom - fillTop;
 
-    // Inner cavity
-    const inset = 12;
-    const innerX = outerX + inset;
-    const innerY = outerY + 18; // leave space for lid region
-    const innerW = outerW - inset * 2;
-    const innerH = outerH - 26;
+    const waterH = showFill ? (fillRange * p) / 100 : 0;
+    const waterY = fillBottom - waterH;
 
-    const fillH = Math.round((innerH * p) / 100);
-    const fillY = innerY + (innerH - fillH);
-
-    const nullify = ui?.display === "nullify";
-    const showFill = !nullify;
-
-    // Shape language
-    const outerR = 10;
-    const innerR = 8;
-
-    // A) Lid (integrated ring + cap)
-    const lidCX = outerX + outerW / 2;
-    const lidY = outerY + 10;
-    const lidR = 12;
-
-    // B) Ribs (subtle, inside cavity)
-    const ribCount = 6;
-    const ribs = Array.from({ length: ribCount }, (_, i) => {
-      const t = (i + 1) / (ribCount + 1);
-      const x = Math.round(innerX + t * innerW);
-      return `<line class="wt-rib" x1="${x}" y1="${innerY + 6}" x2="${x}" y2="${innerY + innerH - 6}" />`;
-    }).join("");
-
-    // D) Ticks (short, aligned to cavity)
-    const tickCount = 5; // 0/25/50/75/100
-    const ticks = Array.from({ length: tickCount }, (_, i) => {
-      const t = i / (tickCount - 1);
-      const y = Math.round(innerY + t * innerH);
-      const major = i === 0 || i === 2 || i === 4;
-      const x1 = innerX - 8;
-      const x2 = innerX - (major ? 1 : 3);
-      return `<line class="wt-tick${major ? " major" : ""}" x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" />`;
-    }).join("");
-
-    // C) Outlet port (clean “bulkhead fitting”)
-    const portY = Math.round(innerY + innerH - 22);
-    const portX = outerX + outerW + 2; // slightly outside body
-    const portR = 6;
+    // A subtle gradient based on theme color (keeps the “modern app” look without hardcoded blues)
+    const waterGradId = "wtWaterGrad";
 
     return `
-      <svg class="tankSvg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-label="Water tank level">
-        <defs>
-          <linearGradient id="wtFillGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stop-color="var(--primary-color)" stop-opacity="0.75"></stop>
-            <stop offset="100%" stop-color="var(--primary-color)" stop-opacity="0.25"></stop>
-          </linearGradient>
+    <svg class="tankSvg" viewBox="0 0 200 200" aria-label="Water tank level">
+      <defs>
+        <linearGradient id="linear-gradient" x1="90.76" y1="32.84" x2="90.76" y2="195.75" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#b3b3b3"/>
+          <stop offset=".17" stop-color="#aaa"/>
+          <stop offset=".43" stop-color="#939393"/>
+          <stop offset=".76" stop-color="#6d6d6d"/>
+          <stop offset="1" stop-color="#4d4d4d"/>
+        </linearGradient>
+        <linearGradient id="linear-gradient-2" x1="4.92" y1="114.29" x2="176.6" y2="114.29" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#000"/>
+          <stop offset=".12" stop-color="#575757" stop-opacity=".75"/>
+          <stop offset=".26" stop-color="#acacac" stop-opacity=".5"/>
+          <stop offset=".39" stop-color="#e0e0e0" stop-opacity=".35"/>
+          <stop offset=".49" stop-color="#f2f2f2" stop-opacity=".3"/>
+          <stop offset=".6" stop-color="#ddd" stop-opacity=".36"/>
+          <stop offset=".74" stop-color="#a2a2a2" stop-opacity=".53"/>
+          <stop offset=".9" stop-color="#424242" stop-opacity=".81"/>
+          <stop offset="1" stop-color="#000"/>
+        </linearGradient>
 
-          <clipPath id="wtTankClip">
-            <rect x="${innerX}" y="${innerY}" width="${innerW}" height="${innerH}" rx="${innerR}" ry="${innerR}"></rect>
-          </clipPath>
+        <!-- theme-based water gradient -->
+        <linearGradient id="${waterGradId}" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="var(--primary-color)" stop-opacity="0.75" />
+          <stop offset="100%" stop-color="var(--primary-color)" stop-opacity="0.25" />
+        </linearGradient>
 
-          <linearGradient id="wtGlass" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%" stop-color="rgba(255,255,255,0.10)"></stop>
-            <stop offset="35%" stop-color="rgba(255,255,255,0.02)"></stop>
-            <stop offset="100%" stop-color="rgba(0,0,0,0.08)"></stop>
-          </linearGradient>
-        </defs>
+        <clipPath id="clippath">
+          <path id="tank-water-clip" d="M4.96,46.9v138.94c0,5.61,4.53,10.16,10.11,10.16h151.38c5.58,0,10.11-4.55,10.11-10.16V46.47c0-3.46,2.3-4.96-5.93-6.88-30.19-7.02-66.32-7.02-79.87-7.01s-49.67-.01-79.78,6.88c-8.34,1.91-6.02,4.04-6.02,7.44Z" fill="none"/>
+        </clipPath>
+      </defs>
 
-        <!-- Tank body -->
-        <rect class="wt-body" x="${outerX}" y="${outerY}" width="${outerW}" height="${outerH}" rx="${outerR}" ry="${outerR}"></rect>
+      <g id="_2D">
+        <g id="tank-main">
+          <path d="M15.07,195.75c-5.44,0-9.86-4.45-9.86-9.91V46.9c0-.66-.08-1.27-.17-1.85-.33-2.32-.54-3.85,5.99-5.35,29.86-6.83,65.87-6.86,79.42-6.87h2.01c11.87,0,47.99,0,78.11,7,6.39,1.49,6.22,2.65,5.91,4.77-.08.55-.17,1.17-.17,1.86v139.37c0,5.46-4.42,9.91-9.86,9.91H15.07Z" fill="url(#linear-gradient)" opacity=".31"/>
+          <path d="M15.07,195.75c-5.44,0-9.86-4.45-9.86-9.91V46.9c0-.66-.08-1.27-.17-1.85-.33-2.32-.54-3.85,5.99-5.35,29.86-6.83,65.87-6.86,79.42-6.87h2.01c11.87,0,47.99,0,78.11,7,6.39,1.49,6.22,2.65,5.91,4.77-.08.55-.17,1.17-.17,1.86v139.37c0,5.46-4.42,9.91-9.86,9.91H15.07Z" fill="url(#linear-gradient-2)" opacity=".3"/>
+          <path d="M92.45,33.09c11.87,0,47.98,0,78.07,6.99,6.17,1.43,6.02,2.46,5.72,4.49-.08.56-.17,1.18-.17,1.9v139.37c0,5.33-4.31,9.66-9.61,9.66H15.07c-5.3,0-9.61-4.33-9.61-9.66V46.9c0-.68-.09-1.32-.17-1.88-.32-2.26-.51-3.63,5.8-5.07,29.83-6.82,65.81-6.85,79.36-6.86h.31s1.68,0,1.68,0M92.45,32.59c-.59,0-1.15,0-1.68,0-13.55.01-49.67-.01-79.78,6.88-8.34,1.91-6.02,4.04-6.02,7.44v138.94c0,5.61,4.53,10.16,10.11,10.16h151.38c5.58,0,10.11-4.55,10.11-10.16V46.47c0-3.46,2.3-4.96-5.93-6.88-29.02-6.74-63.52-7.01-78.18-7.01h0Z"/>
+          <path d="M92.45,32.59c14.67,0,49.17.26,78.18,7.01,8.23,1.91,5.93,3.42,5.93,6.88v139.37c0,5.61-4.53,10.16-10.11,10.16H15.07c-5.58,0-10.11-4.55-10.11-10.16V46.9c0-3.4-2.33-5.53,6.02-7.44,30.11-6.89,66.24-6.87,79.78-6.88.53,0,1.09,0,1.68,0M92.45,30.09h-1.68s-.31,0-.31,0c-13.64.01-49.87.04-80.03,6.94-7.56,1.73-8.68,4.29-8.1,8.41.07.51.14.99.14,1.46v138.94c0,6.98,5.66,12.66,12.61,12.66h151.38c6.95,0,12.61-5.68,12.61-12.66V46.47c0-.5.07-.97.14-1.46.65-4.44-1.22-6.27-8.01-7.85-30.43-7.07-66.8-7.07-78.75-7.07h0Z" fill="#e6e6e6"/>
+          <path d="M92.45,32.59c14.67,0,49.17.26,78.18,7.01,8.23,1.91,5.93,3.42,5.93,6.88v139.37c0,5.61-4.53,10.16-10.11,10.16H15.07c-5.58,0-10.11-4.55-10.11-10.16V46.9c0-3.4-2.33-5.53,6.02-7.44,30.11-6.89,66.24-6.87,79.78-6.88.53,0,1.09,0,1.68,0M92.45,30.59h-1.68s-.31,0-.31,0c-13.62.01-49.81.04-79.92,6.93-7.22,1.65-8.26,3.94-7.71,7.85.07.53.14,1.03.14,1.53v138.94c0,6.71,5.43,12.16,12.11,12.16h151.38c6.68,0,12.11-5.46,12.11-12.16V46.47c0-.53.07-.97.15-1.54.61-4.14-1.1-5.77-7.63-7.29-30.37-7.06-66.7-7.06-78.64-7.06h0Z" fill="#999"/>
+        </g>
 
-        <!-- A) Lid ring + cap (minimal) -->
-        <circle class="wt-lidRing" cx="${lidCX}" cy="${lidY}" r="${lidR}"></circle>
-        <circle class="wt-lidCap" cx="${lidCX}" cy="${lidY}" r="${lidR - 5}"></circle>
+        <g id="tank-ribs" opacity=".3">
+          <line x1="13.33" y1="40.33" x2="13.33" y2="195.33" fill="none" stroke="#4d4d4d" stroke-linejoin="round" stroke-width="3"/>
+          <line x1="13.33" y1="40.33" x2="13.33" y2="195.33" fill="none" stroke="#999" stroke-linejoin="round" stroke-width="2"/>
+          <line x1="13.33" y1="40.33" x2="13.33" y2="195.33" fill="none" stroke="#e6e6e6" stroke-linejoin="round" stroke-width=".5"/>
+          <line x1="33.33" y1="36.33" x2="33.33" y2="194.83" fill="none" stroke="#4d4d4d" stroke-linejoin="round" stroke-width="3"/>
+          <line x1="33.33" y1="36.33" x2="33.33" y2="194.83" fill="none" stroke="#999" stroke-linejoin="round" stroke-width="2"/>
+          <line x1="33.33" y1="36.33" x2="33.33" y2="194.83" fill="none" stroke="#e6e6e6" stroke-linejoin="round" stroke-width=".5"/>
+          <line x1="145.33" y1="36.33" x2="145.33" y2="195.33" fill="none" stroke="#4d4d4d" stroke-linejoin="round" stroke-width="3"/>
+          <line x1="145.33" y1="36.33" x2="145.33" y2="195.33" fill="none" stroke="#999" stroke-linejoin="round" stroke-width="2"/>
+          <line x1="145.33" y1="36.33" x2="145.33" y2="195.33" fill="none" stroke="#e6e6e6" stroke-linejoin="round" stroke-width=".5"/>
+          <line x1="114.33" y1="34.33" x2="114.33" y2="195.33" fill="none" stroke="#4d4d4d" stroke-linejoin="round" stroke-width="3"/>
+          <line x1="114.33" y1="34.33" x2="114.33" y2="195.33" fill="none" stroke="#999" stroke-linejoin="round" stroke-width="2"/>
+          <line x1="114.33" y1="34.33" x2="114.33" y2="195.33" fill="none" stroke="#e6e6e6" stroke-linejoin="round" stroke-width=".5"/>
+          <line x1="64.33" y1="33.83" x2="64.33" y2="194.83" fill="none" stroke="#4d4d4d" stroke-linejoin="round" stroke-width="3"/>
+          <line x1="64.33" y1="33.83" x2="64.33" y2="194.83" fill="none" stroke="#999" stroke-linejoin="round" stroke-width="2"/>
+          <line x1="64.33" y1="33.83" x2="64.33" y2="194.83" fill="none" stroke="#e6e6e6" stroke-linejoin="round" stroke-width=".5"/>
+          <line x1="165.33" y1="39.33" x2="165.33" y2="195.33" fill="none" stroke="#4d4d4d" stroke-linejoin="round" stroke-width="3"/>
+          <line x1="165.33" y1="39.33" x2="165.33" y2="195.33" fill="none" stroke="#999" stroke-linejoin="round" stroke-width="2"/>
+          <line x1="165.33" y1="39.33" x2="165.33" y2="195.33" fill="none" stroke="#e6e6e6" stroke-linejoin="round" stroke-width=".5"/>
+        </g>
 
-        <!-- D) Ticks -->
-        <g class="wt-ticks">${ticks}</g>
-
-        <!-- Inner cavity -->
-        <rect class="wt-cavity" x="${innerX}" y="${innerY}" width="${innerW}" height="${innerH}" rx="${innerR}" ry="${innerR}"></rect>
-
-        <!-- B) Ribs -->
-        <g class="wt-ribs">${ribs}</g>
-
-        <!-- Fill -->
-        <g clip-path="url(#wtTankClip)">
-          ${showFill
-        ? `<rect class="wt-fill" x="${innerX}" y="${fillY}" width="${innerW}" height="${fillH}" fill="url(#wtFillGrad)"></rect>`
-        : ``
-      }
-          ${showFill && fillH > 0
-        ? `<path class="wt-surface" d="M ${innerX} ${fillY} H ${innerX + innerW}" />`
+        <!-- Dynamic water: a simple rect clipped to the tank cavity -->
+        <g clip-path="url(#clippath)">
+          <rect id="tank-water-fill" x="0" y="${waterY.toFixed(2)}" width="200" height="${waterH.toFixed(2)}" fill="url(#${waterGradId})" opacity="0.9"></rect>
+          ${showFill && waterH > 0.5
+        ? `<line id="tank-water-surface" x1="10" y1="${waterY.toFixed(2)}" x2="170" y2="${waterY.toFixed(2)}"></line>`
         : ``
       }
         </g>
 
-        <!-- Glass highlight overlay -->
-        <rect class="wt-glass" x="${outerX}" y="${outerY}" width="${outerW}" height="${outerH}" rx="${outerR}" ry="${outerR}" fill="url(#wtGlass)"></rect>
+        <g id="tank-tap">
+          <g id="Tap_outline">
+            <path d="M192.5,181.16c0-1.85,0-3.59-1.22-4.8-1.05-1.05-2.84-1.54-5.63-1.54h-8.82v-5.99h8.82c11.57,0,12.79,5.77,12.84,12.33h-6Z" fill="#999"/>
+            <path d="M185.66,169.33c10.84,0,12.22,5.05,12.34,11.34h-4.99c0-1.77-.13-3.41-1.36-4.65-1.15-1.15-3.05-1.69-5.98-1.69h-8.32v-4.99h8.32M185.66,168.33h-9.32v7h9.32c6.62,0,6.34,2.84,6.34,6.34h7c0-6.99-1.21-13.33-13.34-13.34h0Z" fill="gray"/>
+            <path d="M199,181.66h-7c0-3.5.28-6.34-6.34-6.34h-9.32v-6.99h9.32c12.14,0,13.34,6.34,13.34,13.33Z" fill="none" stroke="#000" stroke-miterlimit="10" stroke-width=".5"/>
+          </g>
+          <path id="tap_handle" d="M184.83,165.99h-2.33c-1.17,1.17-1.17-.52-1.17-1.17h0c0-.64,0-2.33,1.17-1.17h6.99c1.17-1.17,1.17.52,1.17,1.17h0c0,.64,0,2.33-1.17,1.17h-2.33" fill="#e0b12b" stroke="#000" stroke-miterlimit="10" stroke-width=".5"/>
+          <polygon id="tap_neck" points="184.82 165.98 184.84 168.31 187.16 168.33 187.16 166 184.82 165.98" fill="#87453d" stroke="#000" stroke-miterlimit="10" stroke-width=".5"/>
+        </g>
 
-        <!-- C) Outlet port -->
-        <circle class="wt-port" cx="${portX}" cy="${portY}" r="${portR}"></circle>
-        <circle class="wt-portInner" cx="${portX}" cy="${portY}" r="${portR - 3}"></circle>
-      </svg>
-    `;
+        <path id="tank-man-hole" d="M104.6,31.13h0c0,.95.74,1.74,1.69,1.8l37.19,2.32c1.04.06,1.92-.76,1.92-1.8v-2.32c0-1-.81-1.8-1.8-1.8h-37.19c-1,0-1.8.81-1.8,1.8Z" fill="#999" stroke="#000" stroke-miterlimit="10" stroke-width=".5"/>
+      </g>
+    </svg>`;
   }
+
 
   // ---------- gauge ----------
   _renderGaugeArc(percent) {
@@ -874,88 +865,26 @@ class WaterTankCard extends HTMLElement {
 
       .tankSvg {
         display: block;
+        width: 140px;
+        height: 140px;
       }
 
-      /* modern x-ray tank stroke system */
-      .wt-body,
-      .wt-cavity,
-      .wt-lidRing,
-      .wt-lidCap,
-      .wt-port,
-      .wt-portInner {
-        vector-effect: non-scaling-stroke;
+      /* Make the exported tank feel modern + theme-aware */
+      #tank-water-fill {
+        filter: saturate(1.05);
       }
 
-      .wt-body,
-      .wt-cavity,
-      .wt-lidRing,
-      .wt-port {
-        stroke: rgba(255,255,255,0.20);
-        stroke-width: 2;
-      }
-
-      .wt-body {
-        fill: rgba(255,255,255,0.02);
-      }
-
-      .wt-cavity {
-        fill: rgba(0,0,0,0.10);
-        stroke: rgba(255,255,255,0.10);
-      }
-
-      /* lid */
-      .wt-lidRing {
-        fill: rgba(255,255,255,0.03);
-      }
-
-      .wt-lidCap {
-        fill: rgba(0,0,0,0.08);
-        stroke: rgba(255,255,255,0.10);
-        stroke-width: 2;
-      }
-
-      /* ribs + ticks are subtle */
-      .wt-rib {
-        stroke: rgba(255,255,255,0.07);
-        stroke-width: 1;
-        vector-effect: non-scaling-stroke;
-      }
-
-      .wt-tick {
-        stroke: rgba(255,255,255,0.12);
-        stroke-width: 1;
-        stroke-linecap: round;
-        vector-effect: non-scaling-stroke;
-      }
-
-      .wt-tick.major {
-        stroke: rgba(255,255,255,0.18);
-        stroke-width: 2;
-      }
-
-      /* water */
-      .wt-surface {
-        stroke: rgba(255,255,255,0.35);
+      #tank-water-surface {
+        stroke: rgba(255,255,255,0.45);
         stroke-width: 2;
         stroke-linecap: round;
-        opacity: 0.55;
+        opacity: 0.6;
         vector-effect: non-scaling-stroke;
       }
 
-      /* glass overlay */
-      .wt-glass {
-        opacity: 0.9;
-      }
-
-      /* outlet port */
-      .wt-port {
-        fill: rgba(255,255,255,0.02);
-      }
-
-      .wt-portInner {
-        fill: rgba(0,0,0,0.10);
-        stroke: rgba(255,255,255,0.10);
-        stroke-width: 2;
+      /* Ribs were exported with multiple strokes; keep them subtle */
+      #tank-ribs {
+        opacity: 0.12;
       }
 
       .dim {
