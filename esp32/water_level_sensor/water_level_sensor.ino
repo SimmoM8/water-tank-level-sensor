@@ -250,7 +250,7 @@ static uint16_t readRawValue();
 static void setupOTA()
 {
   ArduinoOTA.setHostname("water-tank-esp32");
-  ArduinoOTA.setPassword("supersecret");
+  ArduinoOTA.setPassword(OTA_PASS);
 
   ArduinoOTA.onStart([]()
                      { Serial.println("[OTA] Update started"); });
