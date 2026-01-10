@@ -1,10 +1,10 @@
 /* water-tank-card.js
  * Custom Home Assistant Lovelace card (no build step).
- * v0.4.1: arc gauge + error-only view + warning footer + in-card settings modal.
+ * v0.4.6: modal UX + sim select reliability + units + tap-to-edit calibration values.
  */
 
 const CARD_TAG = "water-tank-card";
-const VERSION = "0.4.5";
+const VERSION = "0.4.6";
 
 class WaterTankCard extends HTMLElement {
   constructor() {
@@ -14,11 +14,22 @@ class WaterTankCard extends HTMLElement {
     this._hass = null;
     this._modalOpen = false;
     this._modalPage = "main";
+    this._pendingSimMode = null;
+    this._pendingSimUntil = 0;
+    this._focusAfterRender = null;
     this._draft = {
       tankVolume: "",
       rodLength: "",
       dryValue: "",
       wetValue: "",
+      simMode: "",
+    };
+    this._editing = {
+      dryValue: false,
+      wetValue: false,
+      tankVolume: false,
+      rodLength: false,
+      simMode: false,
     };
   }
 
@@ -240,13 +251,29 @@ class WaterTankCard extends HTMLElement {
 
     const renderCalValue = (key, label, entityId, draftKey) => {
       if (!entityId) return `<div class="wt-cal-value"><div class="wt-cal-label">${label}</div><div class="wt-cal-read">—</div></div>`;
-      const val = this._safeText(this._state(entityId));
+      const rawValue = this._state(entityId);
+      const displayValue = this._safeText(rawValue);
+      const domain = this._domain(entityId);
+      const editable = domain === "number" || domain === "input_number";
+      const isEditing = !!this._editing[draftKey];
+      if (!isEditing) {
+        return `
+          <div class="wt-cal-value">
+            <div class="wt-cal-label">${label}</div>
+            <div class="wt-cal-input-row">
+              <button class="wt-cal-edit" id="wt-${key}-edit" data-entity="${entityId}" type="button">
+                <span class="wt-cal-edit-value">${displayValue}</span>
+                <span class="wt-cal-edit-hint">Edit</span>
+              </button>
+            </div>
+          </div>`;
+      }
       return `
           <div class="wt-cal-value">
             <div class="wt-cal-label">${label}</div>
             <div class="wt-cal-input-row">
-              <input id="wt-${key}-input" type="text" value="${this._safeText(this._draft[draftKey] || val, "")}" />
-              <button class="wt-mini-btn" id="wt-${key}-set" data-entity="${entityId}">Set</button>
+              <input id="wt-${key}-input" type="text" value="${this._safeText(this._draft[draftKey], "")}" />
+              <button class="wt-mini-btn" id="wt-${key}-set" data-entity="${entityId}" ${editable ? "" : "disabled"}>Set</button>
             </div>
           </div>`;
     };
@@ -286,6 +313,9 @@ class WaterTankCard extends HTMLElement {
         </div>
       </div>`;
 
+    const tankValue = this._editing.tankVolume ? this._draft.tankVolume : this._state(this._config.tank_volume_entity);
+    const rodValue = this._editing.rodLength ? this._draft.rodLength : this._state(this._config.rod_length_entity);
+
     const tankRow = this._config.tank_volume_entity
       ? `
         <div class="wt-setup-row">
@@ -293,7 +323,8 @@ class WaterTankCard extends HTMLElement {
           <div class="wt-setup-body">
             <div class="wt-setup-label">Tank volume</div>
             <div class="wt-setup-input">
-              <input id="tankVolumeInput" type="text" value="${this._safeText(this._draft.tankVolume || this._state(this._config.tank_volume_entity), "")}" />
+              <input id="tankVolumeInput" type="text" placeholder="Litres" value="${this._safeText(tankValue, "")}" />
+              <span class="wt-unit">L</span>
               <button class="wt-btn" id="tankVolumeSave" data-entity="${this._config.tank_volume_entity}">Save</button>
             </div>
             <div class="wt-error" id="tankVolumeError"></div>
@@ -309,7 +340,8 @@ class WaterTankCard extends HTMLElement {
           <div class="wt-setup-body">
             <div class="wt-setup-label">Rod length</div>
             <div class="wt-setup-input">
-              <input id="rodLengthInput" type="text" value="${this._safeText(this._draft.rodLength || this._state(this._config.rod_length_entity), "")}" />
+              <input id="rodLengthInput" type="text" placeholder="Centimeters" value="${this._safeText(rodValue, "")}" />
+              <span class="wt-unit">cm</span>
               <button class="wt-btn" id="rodLengthSave" data-entity="${this._config.rod_length_entity}">Save</button>
             </div>
             <div class="wt-error" id="rodLengthError"></div>
@@ -349,6 +381,21 @@ class WaterTankCard extends HTMLElement {
     const simEnabledState = this._config.simulation_enabled_entity ? this._isOn(this._config.simulation_enabled_entity) : false;
     const simModeEntity = this._config.simulation_mode_entity;
     const simModeState = simModeEntity ? this._state(simModeEntity) : "";
+    const simNow = Date.now();
+    if (this._pendingSimMode !== null) {
+      const matches = String(simModeState) === String(this._pendingSimMode);
+      const expired = simNow > this._pendingSimUntil;
+      if (matches || expired) {
+        this._pendingSimMode = null;
+        this._pendingSimUntil = 0;
+        this._editing.simMode = false;
+        this._draft.simMode = simModeState || "";
+      }
+    }
+    const simModeSelected =
+      this._pendingSimMode !== null
+        ? this._pendingSimMode
+        : (this._editing.simMode ? this._draft.simMode : simModeState);
     const simOptions = this._getOptions(simModeEntity);
 
     const diagnosticsLines = [
@@ -399,7 +446,7 @@ class WaterTankCard extends HTMLElement {
               <div class="wt-setup-label">Simulation mode</div>
               <div class="wt-setup-input">
                 <select id="simModeSelect" data-entity="${simModeEntity || ""}">
-                  ${simOptions.map((opt) => `<option value="${opt}" ${String(opt) === String(simModeState) ? "selected" : ""}>${opt}</option>`).join("")}
+                  ${simOptions.map((opt) => `<option value="${opt}" ${String(opt) === String(simModeSelected) ? "selected" : ""}>${opt}</option>`).join("")}
                 </select>
               </div>
             </div>
@@ -410,9 +457,6 @@ class WaterTankCard extends HTMLElement {
       <div class="wt-section">
         <div class="wt-section-sub" style="margin-bottom:8px;">Diagnostics</div>
         <div class="wt-diag-list">${diagnosticsHtml}</div>
-      </div>
-      <div class="wt-modal-footer">
-        <button class="wt-link wt-modal-back"><ha-icon icon="mdi:chevron-left"></ha-icon><span>Back</span></button>
       </div>
     `;
 
@@ -510,7 +554,18 @@ class WaterTankCard extends HTMLElement {
     const setNumber = (entityId, value) => {
       if (!entityId || value === undefined) return;
       const domain = this._domain(entityId);
-      this._callService(domain, "set_value", { entity_id: entityId, value });
+      if (domain === "number") {
+        this._callService("number", "set_value", { entity_id: entityId, value: Number(value) });
+      } else if (domain === "input_number") {
+        this._callService("input_number", "set_value", { entity_id: entityId, value: Number(value) });
+      }
+    };
+
+    const seedDraft = (key, entityId, force = false) => {
+      if (!entityId) return;
+      if (force || this._draft[key] === null || this._draft[key] === undefined || this._draft[key] === "") {
+        this._draft[key] = this._safeText(this._state(entityId), "");
+      }
     };
 
     const updateDraft = (key, inputId) => {
@@ -520,8 +575,37 @@ class WaterTankCard extends HTMLElement {
         e.stopPropagation();
         this._draft[key] = e.target.value;
       });
+      el.addEventListener("focus", (e) => {
+        e.stopPropagation();
+        this._editing[key] = true;
+      });
       return el;
     };
+
+    const startCalEdit = (key, draftKey, entityId) => {
+      if (!entityId) return;
+      this._editing[draftKey] = true;
+      seedDraft(draftKey, entityId, true);
+      this._focusAfterRender = `wt-${key}-input`;
+      this._render();
+    };
+
+    const dryEdit = sr.getElementById("wt-dry-edit");
+    if (dryEdit) {
+      dryEdit.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        startCalEdit("dry", "dryValue", dryEdit.dataset.entity);
+      };
+    }
+    const wetEdit = sr.getElementById("wt-wet-edit");
+    if (wetEdit) {
+      wetEdit.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        startCalEdit("wet", "wetValue", wetEdit.dataset.entity);
+      };
+    }
 
     const dryInput = updateDraft("dryValue", "wt-dry-input");
     const wetInput = updateDraft("wetValue", "wt-wet-input");
@@ -570,6 +654,16 @@ class WaterTankCard extends HTMLElement {
         this._draft[draftKey] = input.value;
         validate();
       });
+      input.addEventListener("focus", (e) => {
+        e.stopPropagation();
+        if (!this._editing[draftKey]) {
+          seedDraft(draftKey, entityId, true);
+        }
+        this._editing[draftKey] = true;
+      });
+      input.addEventListener("blur", () => {
+        this._editing[draftKey] = false;
+      });
 
       save.addEventListener("click", (e) => {
         e.preventDefault();
@@ -601,18 +695,37 @@ class WaterTankCard extends HTMLElement {
         const entityId = simToggle.dataset.entity;
         if (!entityId) return;
         const current = simToggle.dataset.state === "on";
-        this._callService("switch", current ? "turn_off" : "turn_on", { entity_id: entityId });
+        const domain = this._domain(entityId);
+        if (!domain) return;
+        this._callService(domain, current ? "turn_off" : "turn_on", { entity_id: entityId });
       };
     }
 
     const simMode = sr.getElementById("simModeSelect");
     if (simMode) {
+      simMode.addEventListener("focus", (e) => {
+        e.stopPropagation();
+        if (!this._editing.simMode) {
+          this._draft.simMode = simMode.value;
+        }
+        this._editing.simMode = true;
+      });
       simMode.onchange = (e) => {
         e.preventDefault();
         e.stopPropagation();
         const entityId = simMode.dataset.entity;
         if (!entityId) return;
-        this._callService("select", "select_option", { entity_id: entityId, option: simMode.value });
+        const selected = simMode.value;
+        this._editing.simMode = true;
+        this._pendingSimMode = selected;
+        this._pendingSimUntil = Date.now() + 5000;
+        this._draft.simMode = selected;
+        const domain = this._domain(entityId);
+        if (domain === "select") {
+          this._callService("select", "select_option", { entity_id: entityId, option: selected });
+        } else if (domain === "input_select") {
+          this._callService("input_select", "select_option", { entity_id: entityId, option: selected });
+        }
       };
     }
   }
@@ -766,6 +879,24 @@ class WaterTankCard extends HTMLElement {
 
   _render() {
     if (!this._config || !this._hass) return;
+
+    let modalScrollTop = null;
+    let modalFocusId = null;
+    let modalFocusSelection = null;
+
+    if (this._modalOpen && this.shadowRoot) {
+      const modalCard = this.shadowRoot.querySelector(".wt-modal-card");
+      if (modalCard) modalScrollTop = modalCard.scrollTop;
+      const activeEl = this.shadowRoot.activeElement;
+      if (activeEl && this.shadowRoot.contains(activeEl) && activeEl.id) {
+        modalFocusId = activeEl.id;
+        const tag = activeEl.tagName;
+        const isTextInput = tag === "INPUT" || tag === "TEXTAREA";
+        if (isTextInput && typeof activeEl.selectionStart === "number" && typeof activeEl.selectionEnd === "number") {
+          modalFocusSelection = { start: activeEl.selectionStart, end: activeEl.selectionEnd };
+        }
+      }
+    }
 
     const ui = this._computeUiState();
 
@@ -1142,9 +1273,35 @@ class WaterTankCard extends HTMLElement {
         gap: 6px;
         align-items: center;
       }
+      .wt-cal-edit {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        border-radius: 8px;
+        border: 1px solid rgba(0,0,0,0.2);
+        padding: 8px;
+        background: var(--input-background-color, #fff);
+        color: var(--primary-text-color, #111);
+        cursor: pointer;
+        font-size: 14px;
+        text-align: left;
+      }
+      .wt-cal-edit-hint {
+        font-size: 12px;
+        font-weight: 700;
+        opacity: 0.6;
+      }
+      .wt-cal-input-row,
+      .wt-cal-input-row input,
+      .wt-setup-input,
+      .wt-setup-input input {
+        min-width: 0;
+      }
       .wt-cal-input-row input,
       .wt-setup-input input,
-      select#wt-sim-mode {
+      .wt-setup-input select {
         flex: 1;
         border-radius: 8px;
         border: 1px solid rgba(0,0,0,0.2);
@@ -1152,6 +1309,11 @@ class WaterTankCard extends HTMLElement {
         font-size: 14px;
         background: var(--input-background-color, #fff);
         color: var(--primary-text-color, #111);
+      }
+      .wt-modal-card input,
+      .wt-modal-card select {
+        box-sizing: border-box;
+        width: 100%;
       }
       .wt-mini-btn,
       .wt-btn {
@@ -1189,6 +1351,13 @@ class WaterTankCard extends HTMLElement {
         gap: 8px;
         align-items: center;
         margin-top: 6px;
+      }
+      .wt-unit {
+        font-size: 12px;
+        font-weight: 700;
+        opacity: 0.7;
+        padding: 0 2px;
+        white-space: nowrap;
       }
       .wt-setup-help {
         font-size: 12px;
@@ -1233,6 +1402,14 @@ class WaterTankCard extends HTMLElement {
         display: flex;
         justify-content: space-between;
         gap: 10px;
+      }
+      @media (max-width: 379px) {
+        .wt-cal-values {
+          grid-template-columns: 1fr;
+        }
+        .wt-cal-row {
+          grid-template-columns: 1fr;
+        }
       }
     `;
 
@@ -1341,6 +1518,35 @@ class WaterTankCard extends HTMLElement {
     }
 
     this._bindModalHandlers();
+
+    if (this._modalOpen && this.shadowRoot) {
+      requestAnimationFrame(() => {
+        if (!this._modalOpen || !this.shadowRoot) return;
+        const modalCard = this.shadowRoot.querySelector(".wt-modal-card");
+        if (modalCard && modalScrollTop !== null) {
+          modalCard.scrollTop = modalScrollTop;
+          setTimeout(() => {
+            if (modalCard.isConnected) modalCard.scrollTop = modalScrollTop;
+          }, 0);
+        }
+        const focusId = this._focusAfterRender || modalFocusId;
+        const selection = focusId === modalFocusId ? modalFocusSelection : null;
+        this._focusAfterRender = null;
+        if (focusId) {
+          const focusEl = this.shadowRoot.getElementById(focusId);
+          if (focusEl && typeof focusEl.focus === "function") {
+            try {
+              focusEl.focus({ preventScroll: true });
+            } catch (err) {
+              focusEl.focus();
+            }
+            if (selection && typeof focusEl.setSelectionRange === "function") {
+              focusEl.setSelectionRange(selection.start, selection.end);
+            }
+          }
+        }
+      });
+    }
   }
 }
 
