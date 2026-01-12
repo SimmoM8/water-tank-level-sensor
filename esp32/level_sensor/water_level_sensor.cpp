@@ -1407,7 +1407,7 @@ static void ensureConnections()
 
 // ---------------- Arduino lifecycle ----------------
 
-void setup()
+void appSetup()
 {
   Serial.begin(115200);
   delay(1500);
@@ -1439,7 +1439,7 @@ void setup()
   setupOTA();
 }
 
-void loop()
+void appLoop()
 {
   ArduinoOTA.handle();
 
