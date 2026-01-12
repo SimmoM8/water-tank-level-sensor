@@ -152,16 +152,6 @@ static const uint16_t CAL_MIN_DIFF = CFG_CAL_MIN_DIFF; // minimum delta between 
 // ===== Network timeouts =====
 static const uint32_t WIFI_TIMEOUT_MS = 20000;
 
-// ===== Preferences (NVS) =====
-static const char *PREF_NAMESPACE = "water_level";
-static const char *PREF_KEY_DRY = "dry";
-static const char *PREF_KEY_WET = "wet";
-static const char *PREF_KEY_INV = "inv";
-static const char *PREF_KEY_TANK_VOL = "tank_vol";
-static const char *PREF_KEY_ROD_LEN = "rod_len";
-static const char *PREF_KEY_SIM_ENABLED = "sim_en";
-static const char *PREF_KEY_SIM_MODE = "sim_mode";
-
 // ===== MQTT Discovery =====
 static const bool ENABLE_DISCOVERY = true;
 static const char *DISCOVERY_PREFIX = "homeassistant";
@@ -699,10 +689,7 @@ static void recomputeDerivedFromPercent(bool force = false)
 
 static void loadConfigValues()
 {
-  tankVolumeLiters = prefs.getFloat(PREF_KEY_TANK_VOL, NAN);
-  rodLengthCm = prefs.getFloat(PREF_KEY_ROD_LEN, NAN);
-  simulationEnabled = prefs.getBool(PREF_KEY_SIM_ENABLED, false);
-  simulationMode = prefs.getUChar(PREF_KEY_SIM_MODE, 0);
+  loadTank(tankVolumeLiters, rodLengthCm);
   setSimulationMode(simulationMode);
 
   Serial.print("[CFG] Tank volume (L): ");
@@ -845,9 +832,7 @@ static void publishStatus(const char *status, bool retained, bool force)
 
 static void loadCalibration()
 {
-  calDry = prefs.getUShort(PREF_KEY_DRY, 0);
-  calWet = prefs.getUShort(PREF_KEY_WET, 0);
-  calInverted = prefs.getBool(PREF_KEY_INV, false);
+  loadActiveCalibration(calDry, calWet, calInverted);
 
   Serial.print("[CAL] Dry=");
   Serial.print(calDry);
