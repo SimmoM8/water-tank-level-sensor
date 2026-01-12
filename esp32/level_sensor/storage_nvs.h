@@ -31,17 +31,17 @@ void storageEnd(); // optional cleanup on shutdown/restart
 
 /* ---------------- Calibration ---------------- */
 bool loadActiveCalibration(int32_t &dry, int32_t &wet, bool &inverted);
-void saveCalibrationDry(int32_t dry);
-void saveCalibrationWet(int32_t wet);
-void saveCalibrationInverted(bool inverted);
+void updateCalibrationDry(int32_t dry);
+void updateCalibrationWet(int32_t wet);
+void updateCalibrationInverted(bool inverted);
 void clearCalibration();
 
 /* ---------------- Tank Configuration ---------------- */
 bool loadTank(float &volumeLiters, float &tankHeightCm);
-void saveTankVolume(float volumeLiters);
-void saveTankHeight(float tankHeightCm);
+void updateTankVolume(float volumeLiters);
+void updateTankHeight(float tankHeightCm);
 
 /* ---------------- Simulation Configuration ---------------- */
 bool loadSimulation(bool &enabled, uint8_t &mode);
-void saveSimulationEnabled(bool enabled);
-void saveSimulationMode(uint8_t mode);
+void updateSimulationEnabled(bool enabled);
+void updateSimulationMode(uint8_t mode);

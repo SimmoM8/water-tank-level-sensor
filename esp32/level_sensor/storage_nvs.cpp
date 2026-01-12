@@ -63,3 +63,45 @@ bool loadSimulation(bool &enabled, uint8_t &mode)
 
     return true;
 }
+
+void updateCalibrationDry(uint16_t dry)
+{
+    prefs.putUShort(PREF_KEY_DRY, dry);
+}
+
+void updateCalibrationWet(uint16_t wet)
+{
+    prefs.putUShort(PREF_KEY_WET, wet);
+}
+
+void updateCalibrationInverted(bool inverted)
+{
+    prefs.putBool(PREF_KEY_INV, inverted);
+}
+
+void clearCalibration()
+{
+    prefs.remove(PREF_KEY_DRY);
+    prefs.remove(PREF_KEY_WET);
+    prefs.remove(PREF_KEY_INV);
+}
+
+void updateTankVolume(float volumeLiters)
+{
+    prefs.putFloat(PREF_KEY_TANK_VOL, volumeLiters);
+}
+
+void updateTankHeight(float tankHeightCm)
+{
+    prefs.putFloat(PREF_KEY_TANK_HEIGHT, tankHeightCm);
+}
+
+void updateSimulationEnabled(bool enabled)
+{
+    prefs.putBool(PREF_KEY_SIM_ENABLED, enabled);
+}
+
+void updateSimulationMode(uint8_t mode)
+{
+    prefs.putUChar(PREF_KEY_SIM_MODE, mode);
+}
