@@ -1421,7 +1421,7 @@ void appSetup()
     logLine("[BOOT] WARNING: secrets.h looks empty. Wi‑Fi/MQTT may not connect.");
   }
 
-  prefs.begin(PREF_NAMESPACE, false);
+  storageBegin();
   wifiProvisioningBegin(prefs);
   loadCalibration();
   loadConfigValues();
