@@ -178,8 +178,25 @@ class WaterTankCard extends HTMLElement {
         this._editing[key] = false;
         if (this._activeEditKey === key) this._activeEditKey = null;
         if (!this._isUnknownState(current)) this._draft[key] = current;
-        if (this._modalOpen) this._showToast("Saved", "success");
-      } else if (expired) {
+        let toastText = "Saved";
+        let toastType = "success";
+
+        if ((key === "dryValue" || key === "wetValue")) {
+          const appliedEntity =
+            key === "dryValue" ? this._config.cal_dry_value_entity : this._config.cal_wet_value_entity;
+
+          if (appliedEntity && pending.entityId && appliedEntity !== pending.entityId) {
+            const appliedNow = this._state(appliedEntity);
+            if (!this._valuesMatch(appliedNow, pending.targetValue)) {
+              toastText = "Saved (awaiting apply)";
+              toastType = "warn";
+            }
+          }
+        }
+
+        if (this._modalOpen) this._showToast(toastText, toastType);
+      }
+      else if (expired) {
         delete this._pendingSet[key];
         if (this._modalOpen) this._showToast("Save failed (no update)", "error");
       }
@@ -294,7 +311,7 @@ class WaterTankCard extends HTMLElement {
 
   _cancelCalEdit(draftKey) {
     if (!draftKey || this._pendingSet?.[draftKey]) return;
-    const entityId = draftKey === "dryValue" ? this._config.cal_dry_value_entity : this._config.cal_wet_value_entity;
+    const entityId = this._getCalSetEntityId(draftKey);
     const current = entityId ? this._state(entityId) : null;
     if (!this._isUnknownState(current)) this._draft[draftKey] = current;
     this._editing[draftKey] = false;
@@ -355,8 +372,8 @@ class WaterTankCard extends HTMLElement {
 
     setIfEmpty("tankVolume", this._config.tank_volume_entity);
     setIfEmpty("rodLength", this._config.rod_length_entity);
-    setIfEmpty("dryValue", this._config.cal_dry_value_entity);
-    setIfEmpty("wetValue", this._config.cal_wet_value_entity);
+    setIfEmpty("dryValue", this._getCalSetEntityId("dryValue"));
+    setIfEmpty("wetValue", this._getCalSetEntityId("wetValue"));
   }
 
   _openModal(page = "main") {
@@ -422,35 +439,54 @@ class WaterTankCard extends HTMLElement {
       ? `<div class="wt-toast wt-toast--${this._toast.type}">${this._safeText(this._toast.text, "")}</div>`
       : "";
 
-    const renderCalValue = (key, label, entityId, draftKey) => {
-      if (!entityId) return `<div class="wt-cal-value"><div class="wt-cal-label">${label}</div><div class="wt-cal-read">—</div></div>`;
-      const rawValue = this._state(entityId);
-      const displayValue = this._safeText(rawValue);
-      const setEntityId = this._getCalSetEntityId(draftKey) || entityId;
+    const renderCalValue = (key, label, appliedEntityId, draftKey) => {
+      const setEntityId = this._getCalSetEntityId(draftKey);   // setpoint (input_number/number)
       const setDomain = this._domain(setEntityId);
       const editable = !!setEntityId && (setDomain === "number" || setDomain === "input_number");
       const isPending = !!this._pendingSet?.[draftKey];
       const isEditing = !!this._editing[draftKey];
+
+      const setValRaw = setEntityId ? this._state(setEntityId) : null;
+      const appliedValRaw = appliedEntityId ? this._state(appliedEntityId) : null;
+
+      // ✅ Primary display = setpoint if available, else applied
+      const primaryRaw = !this._isUnknownState(setValRaw) ? setValRaw : appliedValRaw;
+      const primary = this._safeText(primaryRaw);
+
+      const showSecondary =
+        appliedEntityId &&
+        setEntityId &&
+        appliedEntityId !== setEntityId &&
+        !this._isUnknownState(appliedValRaw) &&
+        !this._valuesMatch(appliedValRaw, setValRaw);
+
+      const secondary = showSecondary
+        ? `<div class="wt-cal-secondary">Applied: ${this._safeText(appliedValRaw)}</div>`
+        : "";
+
       if (!editable || !isEditing) {
         return `
-          <div class="wt-cal-value">
-            <div class="wt-cal-label">${label}</div>
-            <div class="wt-cal-input-row">
-              <button class="wt-cal-edit" id="wt-${key}-edit" data-entity="${entityId}" type="button" ${editable ? "" : "disabled"}>
-                <span class="wt-cal-edit-value">${displayValue}</span>
-                <span class="wt-cal-edit-hint">${editable ? "Edit" : "Read-only"}</span>
-              </button>
-            </div>
-          </div>`;
+      <div class="wt-cal-value">
+        <div class="wt-cal-label">${label}</div>
+        <div class="wt-cal-input-row">
+          <button class="wt-cal-edit" id="wt-${key}-edit" type="button" ${editable ? "" : "disabled"}>
+            <span class="wt-cal-edit-value">${primary}</span>
+            <span class="wt-cal-edit-hint">${editable ? (isPending ? "Saving…" : "Edit") : "Read-only"}</span>
+          </button>
+        </div>
+        ${secondary}
+      </div>`;
       }
+
       return `
-          <div class="wt-cal-value">
-            <div class="wt-cal-label">${label}</div>
-            <div class="wt-cal-input-row">
-              <input id="wt-${key}-input" type="text" value="${this._safeText(this._draft[draftKey], "")}" />
-              <button class="wt-mini-btn" id="wt-${key}-set" data-entity="${entityId}" ${editable && !isPending ? "" : "disabled"}>Set</button>
-            </div>
-          </div>`;
+    <div class="wt-cal-value">
+      <div class="wt-cal-label">${label}</div>
+      <div class="wt-cal-input-row">
+        <input id="wt-${key}-input" type="text" value="${this._safeText(this._draft[draftKey], "")}" />
+        <button class="wt-mini-btn" id="wt-${key}-set" ${editable && !isPending ? "" : "disabled"}>Set</button>
+      </div>
+      ${secondary}
+    </div>`;
     };
 
     const dryDisabled = probeDisconnected || !this._config.calibrate_dry_entity;
@@ -791,9 +827,8 @@ class WaterTankCard extends HTMLElement {
       const setDomain = this._domain(setEntityId);
       const editable = !!setEntityId && (setDomain === "number" || setDomain === "input_number");
       if (!editable) return;
-      const seedEntityId =
-        displayEntityId ||
-        (draftKey === "dryValue" ? this._config.cal_dry_value_entity : this._config.cal_wet_value_entity);
+      const seedEntityId = setEntityId || appliedEntityId;
+
       this._editing[draftKey] = true;
       this._activeEditKey = draftKey;
       seedDraft(draftKey, seedEntityId, true);
@@ -1579,6 +1614,11 @@ class WaterTankCard extends HTMLElement {
         display: flex;
         gap: 6px;
         align-items: center;
+      }
+      .wt-cal-secondary {
+        font-size: 12px;
+        opacity: 0.7;
+        margin-top: -2px;
       }
       .wt-cal-edit {
         flex: 1;
