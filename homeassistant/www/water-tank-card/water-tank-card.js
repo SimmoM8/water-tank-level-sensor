@@ -1,10 +1,10 @@
 /* water-tank-card.js
  * Custom Home Assistant Lovelace card (no build step).
- * v0.4.6: modal UX + sim select reliability + units + tap-to-edit calibration values.
+ * v0.4.7: calibration UX feedback + theme-safe modal inputs.
  */
 
 const CARD_TAG = "water-tank-card";
-const VERSION = "0.4.6";
+const VERSION = "0.4.7";
 
 class WaterTankCard extends HTMLElement {
   constructor() {
@@ -17,6 +17,11 @@ class WaterTankCard extends HTMLElement {
     this._pendingSimMode = null;
     this._pendingSimUntil = 0;
     this._focusAfterRender = null;
+    this._toast = { open: false, text: "", type: "info" };
+    this._toastTimer = null;
+    this._pendingSet = {};
+    this._activeEditKey = null;
+    this._modalPointerHandler = null;
     this._draft = {
       tankVolume: "",
       rodLength: "",
@@ -66,6 +71,8 @@ class WaterTankCard extends HTMLElement {
       // optional calibration value readouts
       cal_dry_value_entity: null,
       cal_wet_value_entity: null,
+      cal_dry_set_entity: null,
+      cal_wet_set_entity: null,
 
       // optional diagnostics
       quality_reason_entity: null,
@@ -78,6 +85,7 @@ class WaterTankCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    this._checkPendingSets();
     this._render();
   }
 
@@ -131,6 +139,167 @@ class WaterTankCard extends HTMLElement {
       // eslint-disable-next-line no-console
       console.warn(`${CARD_TAG}: service call failed`, domain, service, err);
     }
+  }
+
+  _showToast(text, type = "info", ms = 2200) {
+    if (!text) return;
+    this._toast = { open: true, text, type };
+    if (this._toastTimer) clearTimeout(this._toastTimer);
+    if (ms > 0) {
+      this._toastTimer = setTimeout(() => {
+        this._toast.open = false;
+        this._render();
+      }, ms);
+    }
+    this._render();
+  }
+
+  _valuesMatch(current, target) {
+    if (this._isUnknownState(current)) return false;
+    if (this._isNumberLike(current) && this._isNumberLike(target)) {
+      return Math.abs(Number(current) - Number(target)) < 0.001;
+    }
+    return String(current) === String(target);
+  }
+
+  _checkPendingSets() {
+    if (!this._pendingSet) return;
+    const keys = Object.keys(this._pendingSet);
+    if (!keys.length) return;
+    const now = Date.now();
+    keys.forEach((key) => {
+      const pending = this._pendingSet[key];
+      if (!pending) return;
+      const current = this._state(pending.entityId);
+      const matches = this._valuesMatch(current, pending.targetValue);
+      const expired = now - pending.startedAt > 5000;
+      if (matches) {
+        delete this._pendingSet[key];
+        this._editing[key] = false;
+        if (this._activeEditKey === key) this._activeEditKey = null;
+        if (!this._isUnknownState(current)) this._draft[key] = current;
+        if (this._modalOpen) this._showToast("Saved", "success");
+      } else if (expired) {
+        delete this._pendingSet[key];
+        if (this._modalOpen) this._showToast("Save failed (no update)", "error");
+      }
+    });
+  }
+
+  _setNumber(entityId, value) {
+    if (!entityId || value === undefined || !this._hass) return false;
+    const domain = this._domain(entityId);
+    const payload = { entity_id: entityId, value: Number(value) };
+    try {
+      if (domain === "number") {
+        this._hass.callService("number", "set_value", payload);
+        return true;
+      }
+      if (domain === "input_number") {
+        this._hass.callService("input_number", "set_value", payload);
+        return true;
+      }
+    } catch (err) {
+      this._showToast("Service failed", "error");
+    }
+    return false;
+  }
+
+  _getCalSetEntityId(draftKey) {
+    if (draftKey === "dryValue") {
+      return this._config.cal_dry_set_entity || this._config.cal_dry_value_entity;
+    }
+    if (draftKey === "wetValue") {
+      return this._config.cal_wet_set_entity || this._config.cal_wet_value_entity;
+    }
+    return null;
+  }
+
+  _commitCalEdit(draftKey) {
+    if (!draftKey || this._pendingSet?.[draftKey]) return false;
+    const entityId = this._getCalSetEntityId(draftKey);
+    if (!entityId) return false;
+    const domain = this._domain(entityId);
+    if (domain !== "number" && domain !== "input_number") return false;
+    const raw = this._draft[draftKey];
+    const trimmed = raw !== null && raw !== undefined ? String(raw).trim() : "";
+    if (!trimmed || !this._isNumberLike(trimmed)) {
+      this._showToast("Enter a valid number", "warn");
+      return false;
+    }
+    const numVal = Number(trimmed);
+    if (!this._setNumber(entityId, numVal)) return false;
+    const startedAt = Date.now();
+    this._pendingSet[draftKey] = { entityId, targetValue: numVal, startedAt };
+    this._showToast("Saving...", "info");
+    setTimeout(() => {
+      const p = this._pendingSet?.[draftKey];
+      if (!p || p.startedAt !== startedAt) return;
+
+      this._checkPendingSets();
+
+      // if still pending after check, force a failure toast + cleanup
+      if (this._pendingSet?.[draftKey]?.startedAt === startedAt) {
+        delete this._pendingSet[draftKey];
+        this._editing[draftKey] = false;
+        if (this._activeEditKey === draftKey) this._activeEditKey = null;
+        this._showToast("Save failed (no update)", "error");
+      }
+
+      if (this._modalOpen) this._render();
+    }, 5200);
+    return true;
+  }
+
+  _commitNumberEdit(draftKey, entityId, rawValue, opts = {}) {
+    if (!draftKey || !entityId || !this._hass) return false;
+    if (this._pendingSet?.[draftKey]) return false;
+
+    const label = opts.label || "Saved";
+
+    const trimmed = rawValue !== null && rawValue !== undefined ? String(rawValue).trim() : "";
+    if (!trimmed || !this._isNumberLike(trimmed)) {
+      this._showToast("Enter a valid number", "warn");
+      return false;
+    }
+
+    const numVal = Number(trimmed);
+    if (!(numVal > 0)) {
+      this._showToast("Enter a number greater than 0", "warn");
+      return false;
+    }
+
+    const current = this._num(entityId);
+    const unchanged = current !== null && Math.abs(current - numVal) < 0.001;
+    if (unchanged) return false;
+
+    if (!this._setNumber(entityId, numVal)) {
+      this._showToast("Service failed", "error");
+      return false;
+    }
+
+    const startedAt = Date.now();
+    this._pendingSet[draftKey] = { entityId, targetValue: numVal, startedAt, label };
+    this._showToast("Saving...", "info");
+
+    setTimeout(() => {
+      if (this._pendingSet?.[draftKey]?.startedAt === startedAt) {
+        this._checkPendingSets();
+        if (this._modalOpen) this._render();
+      }
+    }, 5200);
+
+    return true;
+  }
+
+  _cancelCalEdit(draftKey) {
+    if (!draftKey || this._pendingSet?.[draftKey]) return;
+    const entityId = draftKey === "dryValue" ? this._config.cal_dry_value_entity : this._config.cal_wet_value_entity;
+    const current = entityId ? this._state(entityId) : null;
+    if (!this._isUnknownState(current)) this._draft[draftKey] = current;
+    this._editing[draftKey] = false;
+    if (this._activeEditKey === draftKey) this._activeEditKey = null;
+    this._showToast("Canceled", "info");
   }
 
   _getOptions(entityId) {
@@ -199,6 +368,7 @@ class WaterTankCard extends HTMLElement {
 
   _closeModal() {
     this._modalOpen = false;
+    this._activeEditKey = null;
     this._render();
   }
 
@@ -248,22 +418,27 @@ class WaterTankCard extends HTMLElement {
     const probeState = this._state(this._config.probe_entity);
     const probeDisconnected = probeState === "off";
     const probeUnknown = this._isUnknownState(probeState);
+    const toastHtml = this._toast?.open && this._toast.text
+      ? `<div class="wt-toast wt-toast--${this._toast.type}">${this._safeText(this._toast.text, "")}</div>`
+      : "";
 
     const renderCalValue = (key, label, entityId, draftKey) => {
       if (!entityId) return `<div class="wt-cal-value"><div class="wt-cal-label">${label}</div><div class="wt-cal-read">—</div></div>`;
       const rawValue = this._state(entityId);
       const displayValue = this._safeText(rawValue);
-      const domain = this._domain(entityId);
-      const editable = domain === "number" || domain === "input_number";
+      const setEntityId = this._getCalSetEntityId(draftKey) || entityId;
+      const setDomain = this._domain(setEntityId);
+      const editable = !!setEntityId && (setDomain === "number" || setDomain === "input_number");
+      const isPending = !!this._pendingSet?.[draftKey];
       const isEditing = !!this._editing[draftKey];
-      if (!isEditing) {
+      if (!editable || !isEditing) {
         return `
           <div class="wt-cal-value">
             <div class="wt-cal-label">${label}</div>
             <div class="wt-cal-input-row">
-              <button class="wt-cal-edit" id="wt-${key}-edit" data-entity="${entityId}" type="button">
+              <button class="wt-cal-edit" id="wt-${key}-edit" data-entity="${entityId}" type="button" ${editable ? "" : "disabled"}>
                 <span class="wt-cal-edit-value">${displayValue}</span>
-                <span class="wt-cal-edit-hint">Edit</span>
+                <span class="wt-cal-edit-hint">${editable ? "Edit" : "Read-only"}</span>
               </button>
             </div>
           </div>`;
@@ -273,7 +448,7 @@ class WaterTankCard extends HTMLElement {
             <div class="wt-cal-label">${label}</div>
             <div class="wt-cal-input-row">
               <input id="wt-${key}-input" type="text" value="${this._safeText(this._draft[draftKey], "")}" />
-              <button class="wt-mini-btn" id="wt-${key}-set" data-entity="${entityId}" ${editable ? "" : "disabled"}>Set</button>
+              <button class="wt-mini-btn" id="wt-${key}-set" data-entity="${entityId}" ${editable && !isPending ? "" : "disabled"}>Set</button>
             </div>
           </div>`;
     };
@@ -370,6 +545,7 @@ class WaterTankCard extends HTMLElement {
           <button class="wt-modal-close" aria-label="Close">✕</button>
         </div>
       </div>
+      ${toastHtml}
       <div class="wt-warnings">${warningsHtml}</div>
       ${calibrationSection}
       ${setupSection}
@@ -422,6 +598,7 @@ class WaterTankCard extends HTMLElement {
           <button class="wt-modal-close" aria-label="Close">✕</button>
         </div>
       </div>
+      ${toastHtml}
       <div class="wt-section">
         <div class="wt-section-title">Advanced</div>
       </div>
@@ -474,21 +651,46 @@ class WaterTankCard extends HTMLElement {
   _bindModalHandlers() {
     if (!this.shadowRoot) return;
 
-    const removeEsc = () => {
+    const removeHandlers = () => {
       if (this._modalEscHandler) window.removeEventListener("keydown", this._modalEscHandler);
+      if (this._modalPointerHandler) document.removeEventListener("pointerdown", this._modalPointerHandler, true);
     };
 
     if (!this._modalOpen) {
-      removeEsc();
+      removeHandlers();
       return;
     }
 
     if (!this._modalEscHandler) {
       this._modalEscHandler = (e) => {
-        if (e.key === "Escape") this._closeModal();
+        if (e.key === "Escape") {
+          if (this._activeEditKey === "dryValue" || this._activeEditKey === "wetValue") {
+            e.preventDefault();
+            e.stopPropagation();
+            this._cancelCalEdit(this._activeEditKey);
+            return;
+          }
+          this._closeModal();
+        }
       };
     }
     window.addEventListener("keydown", this._modalEscHandler);
+
+    if (!this._modalPointerHandler) {
+      this._modalPointerHandler = (e) => {
+        if (!this._modalOpen || !this.shadowRoot) return;
+        if (this._activeEditKey !== "dryValue" && this._activeEditKey !== "wetValue") return;
+        if (this._pendingSet?.[this._activeEditKey]) return;
+        const inputId = this._activeEditKey === "dryValue" ? "wt-dry-input" : "wt-wet-input";
+        const input = this.shadowRoot.getElementById(inputId);
+        if (!input) return;
+        const row = input.closest(".wt-cal-input-row");
+        const path = typeof e.composedPath === "function" ? e.composedPath() : [];
+        if (row && path.includes(row)) return;
+        this._commitCalEdit(this._activeEditKey);
+      };
+    }
+    document.addEventListener("pointerdown", this._modalPointerHandler, true);
 
     const sr = this.shadowRoot;
     const overlay = sr.querySelector(".wt-modal-overlay");
@@ -523,6 +725,16 @@ class WaterTankCard extends HTMLElement {
       if (!entityId) return;
       this._callService("button", "press", { entity_id: entityId });
     };
+    const captureCal = (label, entityId) => {
+      const probeState = this._state(this._config.probe_entity);
+      if (probeState === "off") {
+        this._showToast("Probe disconnected", "error");
+        return;
+      }
+      if (!entityId) return;
+      this._showToast(`${label} captured...`, "info");
+      pressButton(entityId);
+    };
 
     // Calibration buttons
     const dryBtn = sr.getElementById("btnCalDry");
@@ -530,7 +742,7 @@ class WaterTankCard extends HTMLElement {
       dryBtn.onclick = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        pressButton(dryBtn.dataset.entity);
+        captureCal("Dry", dryBtn.dataset.entity);
       };
     }
     const wetBtn = sr.getElementById("btnCalWet");
@@ -538,7 +750,7 @@ class WaterTankCard extends HTMLElement {
       wetBtn.onclick = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        pressButton(wetBtn.dataset.entity);
+        captureCal("Wet", wetBtn.dataset.entity);
       };
     }
     const clearBtn = sr.getElementById("btnCalClear");
@@ -549,17 +761,6 @@ class WaterTankCard extends HTMLElement {
         pressButton(this._config.clear_calibration_entity);
       };
     }
-
-    // Calibration value setters (optional)
-    const setNumber = (entityId, value) => {
-      if (!entityId || value === undefined) return;
-      const domain = this._domain(entityId);
-      if (domain === "number") {
-        this._callService("number", "set_value", { entity_id: entityId, value: Number(value) });
-      } else if (domain === "input_number") {
-        this._callService("input_number", "set_value", { entity_id: entityId, value: Number(value) });
-      }
-    };
 
     const seedDraft = (key, entityId, force = false) => {
       if (!entityId) return;
@@ -578,14 +779,24 @@ class WaterTankCard extends HTMLElement {
       el.addEventListener("focus", (e) => {
         e.stopPropagation();
         this._editing[key] = true;
+        if (key === "dryValue" || key === "wetValue") {
+          this._activeEditKey = key;
+        }
       });
       return el;
     };
 
-    const startCalEdit = (key, draftKey, entityId) => {
-      if (!entityId) return;
+    const startCalEdit = (key, draftKey, displayEntityId) => {
+      const setEntityId = this._getCalSetEntityId(draftKey);
+      const setDomain = this._domain(setEntityId);
+      const editable = !!setEntityId && (setDomain === "number" || setDomain === "input_number");
+      if (!editable) return;
+      const seedEntityId =
+        displayEntityId ||
+        (draftKey === "dryValue" ? this._config.cal_dry_value_entity : this._config.cal_wet_value_entity);
       this._editing[draftKey] = true;
-      seedDraft(draftKey, entityId, true);
+      this._activeEditKey = draftKey;
+      seedDraft(draftKey, seedEntityId, true);
       this._focusAfterRender = `wt-${key}-input`;
       this._render();
     };
@@ -595,7 +806,7 @@ class WaterTankCard extends HTMLElement {
       dryEdit.onclick = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        startCalEdit("dry", "dryValue", dryEdit.dataset.entity);
+        startCalEdit("dry", "dryValue", this._config.cal_dry_value_entity);
       };
     }
     const wetEdit = sr.getElementById("wt-wet-edit");
@@ -603,18 +814,46 @@ class WaterTankCard extends HTMLElement {
       wetEdit.onclick = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        startCalEdit("wet", "wetValue", wetEdit.dataset.entity);
+        startCalEdit("wet", "wetValue", this._config.cal_wet_value_entity);
       };
     }
 
-    const dryInput = updateDraft("dryValue", "wt-dry-input");
-    const wetInput = updateDraft("wetValue", "wt-wet-input");
+    updateDraft("dryValue", "wt-dry-input");
+    updateDraft("wetValue", "wt-wet-input");
+    const dryInput = sr.getElementById("wt-dry-input");
+    if (dryInput) {
+      dryInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          e.stopPropagation();
+          this._commitCalEdit("dryValue");
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          this._cancelCalEdit("dryValue");
+        }
+      });
+    }
+    const wetInput = sr.getElementById("wt-wet-input");
+    if (wetInput) {
+      wetInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          e.stopPropagation();
+          this._commitCalEdit("wetValue");
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          this._cancelCalEdit("wetValue");
+        }
+      });
+    }
     const drySet = sr.getElementById("wt-dry-set");
     if (drySet) {
       drySet.onclick = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        setNumber(drySet.dataset.entity, dryInput ? dryInput.value : undefined);
+        this._commitCalEdit("dryValue");
       };
     }
     const wetSet = sr.getElementById("wt-wet-set");
@@ -622,7 +861,7 @@ class WaterTankCard extends HTMLElement {
       wetSet.onclick = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        setNumber(wetSet.dataset.entity, wetInput ? wetInput.value : undefined);
+        this._commitCalEdit("wetValue");
       };
     }
 
@@ -638,46 +877,84 @@ class WaterTankCard extends HTMLElement {
         if (err) err.textContent = msg || "";
       };
 
+      const getCurrent = () => this._num(entityId);
+
       const validate = () => {
         const raw = input.value?.trim() ?? "";
         const valid = raw.length > 0 && this._isNumberLike(raw) && Number(raw) > 0;
         const numVal = valid ? Number(raw) : NaN;
-        const current = this._num(entityId);
+        const current = getCurrent();
         const unchanged = valid && current !== null && Math.abs(current - numVal) < 0.001;
         setError(valid ? "" : "Enter a number greater than 0");
-        save.disabled = !valid || unchanged;
+        save.disabled = !valid || unchanged || !!this._pendingSet?.[draftKey];
         return { valid, numVal, unchanged };
+      };
+
+      const seed = () => {
+        const v = this._state(entityId);
+        if (!this._isUnknownState(v)) {
+          this._draft[draftKey] = String(v);
+          input.value = String(v);
+        }
+      };
+
+      const cancel = () => {
+        const v = this._state(entityId);
+        if (!this._isUnknownState(v)) {
+          this._draft[draftKey] = String(v);
+          input.value = String(v);
+        }
+        this._editing[draftKey] = false;
+        this._showToast("Canceled", "info");
+        validate();
+      };
+
+      const commit = () => {
+        const { valid, unchanged } = validate();
+        if (!valid || unchanged) return;
+        this._editing[draftKey] = true;
+        this._activeEditKey = draftKey;
+        this._commitNumberEdit(draftKey, entityId, input.value, { label: "Saved" });
+        validate();
       };
 
       input.addEventListener("input", (e) => {
         e.stopPropagation();
         this._draft[draftKey] = input.value;
+        this._editing[draftKey] = true;
         validate();
       });
+
       input.addEventListener("focus", (e) => {
         e.stopPropagation();
-        if (!this._editing[draftKey]) {
-          seedDraft(draftKey, entityId, true);
-        }
         this._editing[draftKey] = true;
+        if ((input.value ?? "").trim() === "") seed();
+        validate();
       });
+
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          e.stopPropagation();
+          commit();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          cancel();
+        }
+      });
+
       input.addEventListener("blur", () => {
+        if (this._pendingSet?.[draftKey]) return;
+        commit();
         this._editing[draftKey] = false;
+        if (this._activeEditKey === draftKey) this._activeEditKey = null;
       });
 
       save.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
-        const { valid, numVal, unchanged } = validate();
-        if (!valid || unchanged) return;
-        this._callService("number", "set_value", { entity_id: entityId, value: numVal });
-        const original = save.textContent;
-        save.textContent = "Saved";
-        save.disabled = true;
-        setTimeout(() => {
-          save.textContent = original;
-          validate();
-        }, 1200);
+        commit();
       });
 
       validate();
@@ -1175,6 +1452,36 @@ class WaterTankCard extends HTMLElement {
         font-size: 11px;
         border: 1px solid rgba(0,0,0,0.12);
       }
+      .wt-toast {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 700;
+        margin-bottom: 10px;
+        background: var(--secondary-background-color, rgba(0,0,0,0.06));
+        border: 1px solid var(--divider-color, rgba(127,127,127,0.35));
+      }
+      .wt-toast--info {
+        color: var(--primary-text-color);
+      }
+      .wt-toast--success {
+        color: var(--primary-text-color);
+        background: rgba(0,150,0,0.16);
+        border-color: rgba(0,150,0,0.35);
+      }
+      .wt-toast--warn {
+        color: var(--primary-text-color);
+        background: rgba(255,170,0,0.18);
+        border-color: rgba(255,170,0,0.4);
+      }
+      .wt-toast--error {
+        color: var(--primary-text-color);
+        background: rgba(255,64,64,0.18);
+        border-color: rgba(255,64,64,0.4);
+      }
       .wt-warnings {
         margin-bottom: 12px;
         font-size: 14px;
@@ -1280,10 +1587,10 @@ class WaterTankCard extends HTMLElement {
         justify-content: space-between;
         gap: 8px;
         border-radius: 8px;
-        border: 1px solid rgba(0,0,0,0.2);
         padding: 8px;
-        background: var(--input-background-color, #fff);
-        color: var(--primary-text-color, #111);
+        background: var(--input-fill-color, var(--secondary-background-color, rgba(0,0,0,0.06)));
+        border: 1px solid var(--divider-color, rgba(127,127,127,0.35));
+        color: var(--primary-text-color);
         cursor: pointer;
         font-size: 14px;
         text-align: left;
@@ -1304,16 +1611,26 @@ class WaterTankCard extends HTMLElement {
       .wt-setup-input select {
         flex: 1;
         border-radius: 8px;
-        border: 1px solid rgba(0,0,0,0.2);
+        border: 1px solid var(--divider-color, rgba(127,127,127,0.35));
         padding: 8px;
         font-size: 14px;
-        background: var(--input-background-color, #fff);
-        color: var(--primary-text-color, #111);
+        background: var(--input-fill-color, var(--secondary-background-color, rgba(0,0,0,0.06)));
+        color: var(--primary-text-color);
       }
       .wt-modal-card input,
       .wt-modal-card select {
         box-sizing: border-box;
         width: 100%;
+      }
+      .wt-modal-card input::placeholder {
+        color: var(--secondary-text-color);
+      }
+      .wt-modal-card input:focus,
+      .wt-modal-card select:focus,
+      .wt-cal-edit:focus {
+        outline: none;
+        border-color: var(--primary-color);
+        box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary-color) 30%, transparent);
       }
       .wt-mini-btn,
       .wt-btn {
