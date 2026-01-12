@@ -1,7 +1,6 @@
 #include <WiFi.h>
 #include <ArduinoOTA.h>
 #include <PubSubClient.h>
-#include <Preferences.h>
 #include <stdlib.h>
 #include <math.h>
 #include <memory>
@@ -729,7 +728,7 @@ static void updateTankVolume(float value, bool forcePublish = false)
     return;
   }
   tankVolumeLiters = next;
-  storage.updateTankVolume(tankVolumeLiters);
+  storage.saveTankVolume(tankVolumeLiters);
   Serial.print("[CFG] Tank volume set to ");
   Serial.println(tankVolumeLiters, 2);
   publishConfigValues(forcePublish);
@@ -747,7 +746,7 @@ static void updateRodLength(float value, bool forcePublish = false)
     return;
   }
   rodLengthCm = next;
-  storage.updateTankHeight(rodLengthCm);
+  storage.saveTankHeight(rodLengthCm);
   Serial.print("[CFG] Rod length set to ");
   Serial.println(rodLengthCm, 2);
   publishConfigValues(forcePublish);
@@ -760,7 +759,7 @@ static void setSimulationEnabled(bool enabled, bool forcePublish = false, const 
     return;
 
   simulationEnabled = enabled;
-  storage.updateSimulationEnabled(simulationEnabled);
+  storage.saveSimulationEnabled(simulationEnabled);
   percentEma = NAN;
   refreshValidityFlags(NAN, true);
   refreshCalibrationState(true);
@@ -788,7 +787,7 @@ static void setSimulationModeInternal(uint8_t mode, bool forcePublish = false, c
 
   simulationMode = clamped;
   setSimulationMode(simulationMode);
-  storage.updateSimulationMode(simulationMode);
+  storage.saveSimulationMode(simulationMode);
   publishConfigValues(true);
   if (simulationEnabled)
   {
@@ -976,14 +975,14 @@ static void captureCalibrationPoint(bool isDry)
   if (isDry)
   {
     calDry = sample;
-    storage.updateCalibrationDry(calDry);
+    storage.saveCalibrationDry(calDry);
     Serial.print("[CAL] Captured dry=");
     Serial.println(calDry);
   }
   else
   {
     calWet = sample;
-    storage.updateCalibrationWet(calWet);
+    storage.saveCalibrationWet(calWet);
     Serial.print("[CAL] Captured wet=");
     Serial.println(calWet);
   }
@@ -996,7 +995,7 @@ static void captureCalibrationPoint(bool isDry)
 static void handleInvertCalibration()
 {
   calInverted = !calInverted;
-  storage.updateCalibrationInverted(calInverted);
+  storage.saveCalibrationInverted(calInverted);
   percentEma = NAN;
   Serial.print("[CAL] Inverted set to ");
   Serial.println(calInverted ? "true" : "false");
