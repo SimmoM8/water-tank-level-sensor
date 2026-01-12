@@ -12,7 +12,7 @@ static const char *PREF_KEY_INV = "inv"; // NVS key for calibration inverted fla
 
 // ---------------- Tank Configuration ----------------
 static const char *PREF_KEY_TANK_VOL = "tank_vol";       // NVS key for tank volume in liters
-static const char *PREF_KEY_TANK_HEIGHT = "tank_height"; // NVS key for rod length in cm
+static const char *PREF_KEY_TANK_HEIGHT = "tank_height"; // NVS key for tank height in cm
 
 // ---------------- Simulation Configuration ----------------
 static const char *PREF_KEY_SIM_ENABLED = "sim_en"; // NVS key for simulation enabled flag
@@ -21,8 +21,8 @@ static const char *PREF_KEY_SIM_MODE = "sim_mode";  // NVS key for simulation mo
 bool storageBegin()
 {
     // Open NVS namespace for read/write. Keep this open for the life of the firmware.
-    prefs.begin(PREF_NAMESPACE, false);
-    return true;
+    // Preferences::begin returns true on success.
+    return prefs.begin(PREF_NAMESPACE, false);
 }
 
 void storageEnd()
@@ -45,11 +45,10 @@ bool loadTank(float &volumeLiters, float &tankHeightCm)
     const float DEFAULT_VOLUME_L = 0.0f;
     const float DEFAULT_HEIGHT_CM = 0.0f;
 
-    tankVolumeLiters = prefs.getFloat(PREF_KEY_TANK_VOL, DEFAULT_VOLUME_L);
-    rodLengthCm = prefs.getFloat(PREF_KEY_TANK_HEIGHT, DEFAULT_HEIGHT_CM);
-    simulationEnabled = prefs.getBool(PREF_KEY_SIM_ENABLED, false);
-    simulationMode = prefs.getUChar(PREF_KEY_SIM_MODE, 0);
+    volumeLiters = prefs.getFloat(PREF_KEY_TANK_VOL, DEFAULT_VOLUME_L);
+    tankHeightCm = prefs.getFloat(PREF_KEY_TANK_HEIGHT, DEFAULT_HEIGHT_CM);
 
+    // If you want this to reflect "has usable config", tighten this check later.
     return true;
 }
 

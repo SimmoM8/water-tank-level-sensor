@@ -729,7 +729,7 @@ static void updateTankVolume(float value, bool forcePublish = false)
     return;
   }
   tankVolumeLiters = next;
-  prefs.putFloat(PREF_KEY_TANK_VOL, tankVolumeLiters);
+  storage.updateTankVolume(tankVolumeLiters);
   Serial.print("[CFG] Tank volume set to ");
   Serial.println(tankVolumeLiters, 2);
   publishConfigValues(forcePublish);
@@ -747,7 +747,7 @@ static void updateRodLength(float value, bool forcePublish = false)
     return;
   }
   rodLengthCm = next;
-  prefs.putFloat(PREF_KEY_ROD_LEN, rodLengthCm);
+  storage.updateTankHeight(rodLengthCm);
   Serial.print("[CFG] Rod length set to ");
   Serial.println(rodLengthCm, 2);
   publishConfigValues(forcePublish);
@@ -760,7 +760,7 @@ static void setSimulationEnabled(bool enabled, bool forcePublish = false, const 
     return;
 
   simulationEnabled = enabled;
-  prefs.putBool(PREF_KEY_SIM_ENABLED, simulationEnabled);
+  storage.updateSimulationEnabled(simulationEnabled);
   percentEma = NAN;
   refreshValidityFlags(NAN, true);
   refreshCalibrationState(true);
@@ -788,7 +788,7 @@ static void setSimulationModeInternal(uint8_t mode, bool forcePublish = false, c
 
   simulationMode = clamped;
   setSimulationMode(simulationMode);
-  prefs.putUChar(PREF_KEY_SIM_MODE, simulationMode);
+  storage.updateSimulationMode(simulationMode);
   publishConfigValues(true);
   if (simulationEnabled)
   {
@@ -849,9 +849,7 @@ static void loadCalibration()
 
 static void clearCalibration()
 {
-  prefs.remove(PREF_KEY_DRY);
-  prefs.remove(PREF_KEY_WET);
-  prefs.remove(PREF_KEY_INV);
+  storage.clearCalibration();
   calDry = 0;
   calWet = 0;
   calInverted = false;
@@ -978,14 +976,14 @@ static void captureCalibrationPoint(bool isDry)
   if (isDry)
   {
     calDry = sample;
-    prefs.putUShort(PREF_KEY_DRY, calDry);
+    storage.updateCalibrationDry(calDry);
     Serial.print("[CAL] Captured dry=");
     Serial.println(calDry);
   }
   else
   {
     calWet = sample;
-    prefs.putUShort(PREF_KEY_WET, calWet);
+    storage.updateCalibrationWet(calWet);
     Serial.print("[CAL] Captured wet=");
     Serial.println(calWet);
   }
@@ -998,7 +996,7 @@ static void captureCalibrationPoint(bool isDry)
 static void handleInvertCalibration()
 {
   calInverted = !calInverted;
-  prefs.putBool(PREF_KEY_INV, calInverted);
+  storage.updateCalibrationInverted(calInverted);
   percentEma = NAN;
   Serial.print("[CAL] Inverted set to ");
   Serial.println(calInverted ? "true" : "false");
