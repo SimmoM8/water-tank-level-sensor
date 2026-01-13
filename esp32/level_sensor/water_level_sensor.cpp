@@ -5,8 +5,8 @@
 #include <math.h>
 #include <memory>
 #include <cstring>
-#include "simulation.h"
 #include "wifi_provisioning.h"
+#include "probe_reader.h"
 
 // Optional config overrides (see water_level_config.h)
 #ifdef __has_include
@@ -234,7 +234,7 @@ bool publishedCmValid = false;
 
 static void publishStatus(const char *status, bool retained = true, bool force = false);
 static void refreshValidityFlags(float currentPercent, bool forcePublish = false);
-static uint16_t readRawValue();
+static uint16_t getRaw();
 
 static void setupOTA()
 {
@@ -763,7 +763,7 @@ static void setSimulationEnabled(bool enabled, bool forcePublish = false, const 
   percentEma = NAN;
   refreshValidityFlags(NAN, true);
   refreshCalibrationState(true);
-  const uint16_t raw = readRawValue();
+  const uint16_t raw = getRaw();
   lastRawValue = raw;
   updateProbeStatus(raw, true);
   publishConfigValues(true);
@@ -791,7 +791,7 @@ static void setSimulationModeInternal(uint8_t mode, bool forcePublish = false, c
   publishConfigValues(true);
   if (simulationEnabled)
   {
-    const uint16_t raw = readRawValue();
+    const uint16_t raw = getRaw();
     lastRawValue = raw;
     updateProbeStatus(raw, true);
   }
@@ -872,56 +872,6 @@ static uint16_t readTouchAverage(uint8_t samples)
   return (uint16_t)(sum / samples);
 }
 
-static uint32_t readRcOnceUs()
-{
-  // High-resolution RC timing using CPU cycle counter.
-  // NOTE: Return value is CYCLES (not microseconds). We scale later.
-  const uint32_t DISCHARGE_US = 500;
-
-  // Timeout in cycles (~50 ms @ 240 MHz). Adjust if needed.
-  const uint32_t TIMEOUT_CYCLES = 240000000UL / 20UL; // 12,000,000 cycles
-
-  // Discharge the probe node
-  pinMode(TOUCH_PIN, OUTPUT);
-  digitalWrite(TOUCH_PIN, LOW);
-  delayMicroseconds(DISCHARGE_US);
-
-  // Float and time until the pin reads HIGH
-  pinMode(TOUCH_PIN, INPUT);
-
-  const uint32_t start = ESP.getCycleCount();
-  while (digitalRead(TOUCH_PIN) == LOW)
-  {
-    const uint32_t now = ESP.getCycleCount();
-    if ((uint32_t)(now - start) > TIMEOUT_CYCLES)
-      return TIMEOUT_CYCLES;
-  }
-
-  const uint32_t end = ESP.getCycleCount();
-  return (uint32_t)(end - start);
-}
-
-static uint16_t readRcAverageScaled(uint8_t samples)
-{
-  // Cycle scaling:
-  // - At 240 MHz, 1 us ≈ 240 cycles.
-  // - Your current readings (~2–8 us) become ~480–1920 cycles.
-  // - Scaling by 16 yields ~30–120 counts (much more usable than 1–3).
-  const uint32_t SCALE_DIV = 16;
-
-  uint32_t sum = 0;
-  for (uint8_t i = 0; i < samples; i++)
-  {
-    sum += (readRcOnceUs() / SCALE_DIV);
-    delay(2);
-  }
-
-  uint32_t avg = sum / samples;
-  if (avg > 65535u)
-    avg = 65535u;
-  return (uint16_t)avg;
-}
-
 static float computePercent(uint16_t raw)
 {
   if (!hasCalibrationValues() || calDry == calWet || !probeConnected)
@@ -936,7 +886,7 @@ static float computePercent(uint16_t raw)
   return constrain(percent, 0.0f, 100.0f);
 }
 
-static uint16_t readRawValue()
+static uint16_t getRaw()
 {
   if (simulationEnabled)
   {
@@ -968,7 +918,7 @@ static void finishCalibrationCapture()
 static void captureCalibrationPoint(bool isDry)
 {
   beginCalibrationCapture();
-  const uint16_t sample = readRawValue();
+  const uint16_t sample = getRaw();
   lastRawValue = sample;
   updateProbeStatus(sample, true);
 
@@ -1442,7 +1392,7 @@ void appLoop()
   if (now - lastRawPublish >= RAW_PUBLISH_MS)
   {
     lastRawPublish = now;
-    const uint16_t raw = readRawValue();
+    const uint16_t raw = getRaw();
     lastRawValue = raw;
     updateProbeStatus(raw);
 
