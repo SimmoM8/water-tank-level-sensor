@@ -12,8 +12,9 @@ enum ReadMode
 
 struct ProbeConfig
 {
-    uint8_t pin;     // Probe input pin
-    uint8_t samples; // Number of samples to average (higher = smoother/slower | lower = noisier/faster)
+    uint8_t pin;           // Probe input pin
+    uint8_t samples;       // Number of samples to average (higher = smoother/slower | lower = noisier/faster)
+    uint8_t samplingDelay; // Delay between samples in milliseconds
 };
 
 // Configure probe reader (called by app)
