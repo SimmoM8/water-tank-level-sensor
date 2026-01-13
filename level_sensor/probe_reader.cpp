@@ -31,7 +31,7 @@ static uint32_t readProbe(uint8_t pin, uint8_t samples)
     for (uint8_t i = 0; i < samples; i++)
     {
         averageRaw += (uint32_t)touchRead(pin);
-        delay(5); // 5 ms delay between samples
+        delay(probe.cfg.samplingDelay); // delay between samples
     }
     return averageRaw / samples;
 }
