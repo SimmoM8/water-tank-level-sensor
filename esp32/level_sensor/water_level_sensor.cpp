@@ -1,5 +1,4 @@
 #include <WiFi.h>
-#include <ArduinoOTA.h>
 #include <PubSubClient.h>
 #include <stdlib.h>
 #include <math.h>
@@ -235,24 +234,6 @@ bool publishedCmValid = false;
 static void publishStatus(const char *status, bool retained = true, bool force = false);
 static void refreshValidityFlags(float currentPercent, bool forcePublish = false);
 static uint16_t getRaw();
-
-static void setupOTA()
-{
-  ArduinoOTA.setHostname("water-tank-esp32");
-  ArduinoOTA.setPassword(OTA_PASS);
-
-  ArduinoOTA.onStart([]()
-                     { Serial.println("[OTA] Update started"); });
-
-  ArduinoOTA.onEnd([]()
-                   { Serial.println("[OTA] Update finished"); });
-
-  ArduinoOTA.onError([](ota_error_t error)
-                     { Serial.printf("[OTA] Error %u\n", error); });
-
-  ArduinoOTA.begin();
-  Serial.println("[OTA] Ready");
-}
 
 static void logLine(const char *msg)
 {
@@ -861,17 +842,6 @@ static void clearCalibration()
   Serial.println("[CAL] Cleared calibration.");
 }
 
-static uint16_t readTouchAverage(uint8_t samples)
-{
-  uint32_t sum = 0;
-  for (uint8_t i = 0; i < samples; i++)
-  {
-    sum += (uint32_t)touchRead(TOUCH_PIN);
-    delay(5);
-  }
-  return (uint16_t)(sum / samples);
-}
-
 static float computePercent(uint16_t raw)
 {
   if (!hasCalibrationValues() || calDry == calWet || !probeConnected)
@@ -1368,13 +1338,12 @@ void appSetup()
   mqtt.setCallback(mqttCallback);
 
   ensureConnections();
-  setupOTA();
+  ota_begin("water-tank-esp32", OTA_PASS);
 }
 
 void appLoop()
 {
-  ArduinoOTA.handle();
-
+  ota_handle();
   ensureConnections();
 
   if (mqtt.connected())
