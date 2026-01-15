@@ -1,18 +1,24 @@
 #include "wifi_provisioning.h"
 #include <WiFi.h>
 #include <WiFiManager.h>
+#include <Preferences.h>
 
 static const char *PREF_KEY_FORCE_PORTAL = "force_portal";
 
-void wifiProvisioningBegin(Preferences &prefs)
+static Preferences wifiPrefs; // WiFi-related preferences
+
+// Initialize WiFi provisioning module
+void wifi_begin()
 {
-    // Reserved for future use (MQTT provisioning, hostname, etc.)
-    (void)prefs;
+    wifiPrefs.begin("wifi", false); // namespace "wifi", read-write
 }
 
-static void startPortal(Preferences &prefs)
+static void startPortal()
 {
     Serial.println("[WIFI] Starting captive portal (setup mode)...");
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect(true, true);
+    delay(100);
 
     WiFiManager wm;
     wm.setConfigPortalTimeout(180); // seconds
@@ -34,19 +40,22 @@ static void startPortal(Preferences &prefs)
     Serial.print("[WIFI] IP: ");
     Serial.println(WiFi.localIP());
 
-    prefs.putBool(PREF_KEY_FORCE_PORTAL, false);
+    wifiPrefs.putBool(PREF_KEY_FORCE_PORTAL, false);
 }
 
-void wifiEnsureConnected(Preferences &prefs, uint32_t wifiTimeoutMs)
+// Ensure WiFi is connected, otherwise start captive portal
+void wifi_ensureConnected(uint32_t wifiTimeoutMs)
 {
+    // If already connected, return
     if (WiFi.status() == WL_CONNECTED)
         return;
 
-    WiFi.mode(WIFI_STA);
+    WiFi.mode(WIFI_STA); // station mode
 
-    if (prefs.getBool(PREF_KEY_FORCE_PORTAL, false))
+    // Check if we need to force the portal
+    if (wifiPrefs.getBool(PREF_KEY_FORCE_PORTAL, false))
     {
-        startPortal(prefs);
+        startPortal(); // start captive portal
         return;
     }
 
@@ -73,7 +82,7 @@ void wifiEnsureConnected(Preferences &prefs, uint32_t wifiTimeoutMs)
         {
             Serial.println();
             Serial.println("[WIFI] Connection failed, launching portal...");
-            startPortal(prefs);
+            startPortal(); // start captive portal
             return;
         }
     }
@@ -84,19 +93,19 @@ void wifiEnsureConnected(Preferences &prefs, uint32_t wifiTimeoutMs)
     Serial.println(WiFi.localIP());
 }
 
-void wifiForcePortalNext(Preferences &prefs)
+void wifi_requestPortal()
 {
     Serial.println("[WIFI] Forcing captive portal");
-    prefs.putBool(PREF_KEY_FORCE_PORTAL, true);
+    wifiPrefs.putBool(PREF_KEY_FORCE_PORTAL, true);
     WiFi.disconnect(true, true);
     delay(250);
 }
 
-void wifiWipeAndPortal(Preferences &prefs)
+void wifi_wipeCredentialsAndReboot()
 {
     Serial.println("[WIFI] Wiping WiFi credentials and rebooting");
     WiFi.disconnect(true, true);
-    prefs.putBool(PREF_KEY_FORCE_PORTAL, true);
+    wifiPrefs.putBool(PREF_KEY_FORCE_PORTAL, true);
     delay(500);
     ESP.restart();
 }

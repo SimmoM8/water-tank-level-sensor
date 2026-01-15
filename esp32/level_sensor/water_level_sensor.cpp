@@ -7,10 +7,10 @@
 #include "wifi_provisioning.h"
 #include "probe_reader.h"
 
-// Optional config overrides (see water_level_config.h)
+// Optional config overrides (see config.h)
 #ifdef __has_include
-#if __has_include("water_level_config.h")
-#include "water_level_config.h"
+#if __has_include("config.h")
+#include "config.h"
 #endif
 #endif
 
@@ -75,15 +75,9 @@
 // 6) Allows calibration via the Serial Monitor (no code edits needed)
 // =============================================================================
 
-// --------- Wi‑Fi / MQTT credentials (secrets.h) ---------
+// --------- MQTT credentials (secrets.h) ---------
 #include "secrets.h"
 
-#ifndef WIFI_SSID
-#define WIFI_SSID ""
-#endif
-#ifndef WIFI_PASS
-#define WIFI_PASS ""
-#endif
 #ifndef MQTT_USER
 #define MQTT_USER ""
 #endif
@@ -161,7 +155,6 @@ static const char *DEVICE_SW_VERSION = "1.3"; // update whenever pushing to main
 
 WiFiClient wifiClient;
 PubSubClient mqtt(wifiClient);
-Preferences prefs;
 
 uint16_t calDry = 0;
 uint16_t calWet = 0;
@@ -856,21 +849,6 @@ static float computePercent(uint16_t raw)
   return constrain(percent, 0.0f, 100.0f);
 }
 
-static uint16_t getRaw()
-{
-  if (simulationEnabled)
-  {
-    return readSimulatedRaw();
-  }
-
-  if (senseMode == SENSE_RC)
-  {
-    return readRcAverageScaled(TOUCH_SAMPLES);
-  }
-
-  return readTouchAverage(TOUCH_SAMPLES);
-}
-
 static void beginCalibrationCapture()
 {
   calibrationInProgress = true;
@@ -974,11 +952,11 @@ static void handleSerialCommands()
   }
   else if (cmd == "wifi")
   {
-    wifiForcePortalNext(prefs);
+    wifi_requestPortal();
   }
   else if (cmd == "wipewifi")
   {
-    wifiWipeAndPortal(prefs);
+    wifi_wipeCredentialsAndReboot();
   }
   else if (cmd == "help")
   {
@@ -1251,11 +1229,6 @@ static void publishDiscovery()
   Serial.println("[MQTT] Home Assistant discovery published.");
 }
 
-static void connectWiFi()
-{
-  wifiEnsureConnected(prefs, WIFI_TIMEOUT_MS);
-}
-
 static void connectMQTT()
 {
   if (mqtt.connected() || WiFi.status() != WL_CONNECTED)
@@ -1303,7 +1276,7 @@ static void connectMQTT()
 
 static void ensureConnections()
 {
-  connectWiFi();
+  wifi_ensureConnected(WIFI_TIMEOUT_MS);
   connectMQTT();
 }
 
@@ -1311,8 +1284,8 @@ static void ensureConnections()
 
 void appSetup()
 {
-  Serial.begin(115200);
-  delay(1500);
+  Serial.begin(115200); // start serial monitor for debug
+  delay(1500);          // wait for serial to initialize
 
   logLine("\n[BOOT] water_level_sensor starting...");
   Serial.print("[BOOT] TOUCH_PIN=");
@@ -1324,7 +1297,7 @@ void appSetup()
   }
 
   storageBegin();
-  wifiProvisioningBegin(prefs);
+  wifi_begin();
   loadCalibration();
   loadConfigValues();
   refreshCalibrationState(true);

@@ -2,8 +2,8 @@
 #include "simulation.h"
 
 #ifdef __has_include
-#if __has_include("water_level_config.h")
-#include "water_level_config.h"
+#if __has_include("config.h")
+#include "config.h"
 #endif
 #endif
 
