@@ -29,6 +29,14 @@ enum class ProbeQualityReason : uint8_t
     UNKNOWN
 };
 
+enum class CmdStatus : uint8_t
+{
+    RECEIVED = 0,
+    APPLIED = 1,
+    REJECTED = 2,
+    ERROR = 3
+};
+
 // --- Nested structs (composition) ---
 struct DeviceInfo
 {
@@ -84,6 +92,14 @@ struct ConfigInfo
     uint8_t simulationMode;
 };
 
+struct LastCmdInfo
+{
+    const char *requestId; // points to a buffer owned by commands.cpp
+    const char *type;      // e.g. "set_config"
+    CmdStatus status;      // applied/rejected/etc
+    const char *message;   // short human string
+    uint32_t ts;           // when applied (epoch or millis/1000)
+};
 struct DeviceState
 {
     uint8_t schema;
@@ -97,9 +113,12 @@ struct DeviceState
     CalibrationInfo calibration;
     LevelInfo level;
     ConfigInfo config;
+
+    LastCmdInfo lastCmd;
 };
 
 // --- enum → string helpers (we’ll implement in .cpp) ---
 const char *toString(SenseMode v);
 const char *toString(CalibrationState v);
 const char *toString(ProbeQualityReason v);
+const char *toString(CmdStatus v);

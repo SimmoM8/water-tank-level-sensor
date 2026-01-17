@@ -10,6 +10,10 @@
 #include "device_state.h"
 #include "state_json.h"
 #include "ota_service.h"
+#include "mqtt_transport.h"
+#include "storage_nvs.h"
+
+DeviceState g_state;
 
 // Optional config overrides (see config.h)
 #ifdef __has_include
@@ -181,12 +185,12 @@ float lastLiters = NAN;
 float lastCentimeters = NAN;
 bool simulationEnabled = false;
 uint8_t simulationMode = 0;
-enum SenseMode
+enum ProbeSenseMode
 {
-  SENSE_TOUCH = 0,
-  SENSE_RC = 1
+  PROBE_SENSE_TOUCH = 0,
+  PROBE_SENSE_SIM = 1
 };
-static SenseMode senseMode = SENSE_TOUCH;
+static ProbeSenseMode probeSenseMode = PROBE_SENSE_TOUCH;
 bool publishedCalDry = false;
 bool publishedCalWet = false;
 
@@ -918,13 +922,13 @@ static void handleSerialCommands()
 
   if (cmd == "mode touch")
   {
-    senseMode = SENSE_TOUCH;
+    probeSenseMode = PROBE_SENSE_TOUCH;
     Serial.println("[MODE] touch");
     return;
   }
   if (cmd == "mode rc")
   {
-    senseMode = SENSE_RC;
+    probeSenseMode = PROBE_SENSE_RC;
     Serial.println("[MODE] rc");
     return;
   }
@@ -1307,7 +1311,7 @@ static void publishStateSnapshot(bool retained = true)
       .probe = {
           .connected = probeConnected,
           .quality = (ProbeQualityReason)probeQualityReason, // if your enum matches, otherwise map it
-          .senseMode = (senseMode == SENSE_TOUCH ? SenseMode::TOUCH : SenseMode::RC),
+          .senseMode = (probeSenseMode == PROBE_SENSE_TOUCH ? SenseMode::TOUCH : SenseMode::SIM),
           .raw = lastRawValue,
           .rawValid = rawValid},
 
@@ -1361,6 +1365,7 @@ void appSetup()
 
   ensureConnections();
   ota_begin("water-tank-esp32", OTA_PASS);
+  mqtt_begin();
 }
 
 void appLoop()
@@ -1368,11 +1373,7 @@ void appLoop()
   ota_handle();
   ensureConnections();
 
-  if (mqtt.connected())
-  {
-    mqtt.loop();
-    publishDiscovery(); // re-publish on reconnect if needed
-  }
+  mqtt_loop();
 
   handleSerialCommands();
 
@@ -1425,7 +1426,7 @@ void appLoop()
 
     publishPercentAndDerived(percentEma);
     Serial.print("[SENSE MODE] ");
-    Serial.println(senseMode);
+    Serial.println(probeSenseMode);
     Serial.print("[PERCENT] ");
     if (isnan(percentEma))
     {
