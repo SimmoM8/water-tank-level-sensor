@@ -449,8 +449,6 @@ static void captureCalibrationPoint(bool isDry)
     storage_saveCalibrationDry(calDry);
     config_markDirty();
     reloadConfigIfDirty(false);
-    const AppliedConfig &cfg = config_get();
-    g_state.calibration.state = determineCalibrationState(cfg.calDry, cfg.calWet);
     LOG_INFO(LogDomain::CAL, "Captured dry=%ld", (long)calDry);
   }
   else
@@ -460,8 +458,6 @@ static void captureCalibrationPoint(bool isDry)
     storage_saveCalibrationWet(calWet);
     config_markDirty();
     reloadConfigIfDirty(false);
-    const AppliedConfig &cfg = config_get();
-    g_state.calibration.state = determineCalibrationState(cfg.calDry, cfg.calWet);
     LOG_INFO(LogDomain::CAL, "Captured wet=%ld", (long)calWet);
   }
 

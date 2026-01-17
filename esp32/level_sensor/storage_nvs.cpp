@@ -36,10 +36,10 @@ void storage_end()
 /*
 /
 */
-bool storage_loadActiveCalibration(uint16_t &dry, uint16_t &wet, bool &inverted)
+bool storage_loadActiveCalibration(int32_t &dry, int32_t &wet, bool &inverted)
 {
-    dry = prefs.getUShort(PREF_KEY_DRY, 0);
-    wet = prefs.getUShort(PREF_KEY_WET, 0);
+    dry = prefs.getInt(PREF_KEY_DRY, 0);
+    wet = prefs.getInt(PREF_KEY_WET, 0);
     inverted = prefs.getBool(PREF_KEY_INV, false);
 
     // Return true only if we appear to have a usable calibration pair.
@@ -72,14 +72,14 @@ bool storage_loadSimulation(bool &enabled, uint8_t &mode)
 /*
 /
 */
-void storage_saveCalibrationDry(uint16_t dry)
+void storage_saveCalibrationDry(int32_t dry)
 {
-    prefs.putUShort(PREF_KEY_DRY, dry);
+    prefs.putInt(PREF_KEY_DRY, dry);
 }
 
-void storage_saveCalibrationWet(uint16_t wet)
+void storage_saveCalibrationWet(int32_t wet)
 {
-    prefs.putUShort(PREF_KEY_WET, wet);
+    prefs.putInt(PREF_KEY_WET, wet);
 }
 
 void storage_saveCalibrationInverted(bool inverted)

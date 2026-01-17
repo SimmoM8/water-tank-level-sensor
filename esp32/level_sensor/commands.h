@@ -2,7 +2,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-struct DeviceState;
+#include "device_state.h"
 
 // Callback bundle that lets commands mutate state without globals.
 struct CommandsContext
