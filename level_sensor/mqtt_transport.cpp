@@ -7,12 +7,14 @@
 
 #include "state_json.h"
 #include "commands.h"
+#include "logger.h"
 
 static WiFiClient wifiClient;
 static PubSubClient mqtt(wifiClient);
 
 static MqttConfig s_cfg{};
 static CommandHandlerFn s_cmdHandler = nullptr;
+static bool s_initialized = false;
 
 struct Topics
 {
@@ -26,6 +28,8 @@ static Topics s_topics{};
 static bool stateDirty = true;
 static uint32_t lastStatePublishMs = 0;
 static const uint32_t STATE_PUBLISH_INTERVAL_MS = 30000; // periodic retained snapshot
+static uint32_t s_lastAttemptMs = 0;
+static const uint32_t RETRY_INTERVAL_MS = 5000;
 
 static const char *AVAIL_ONLINE = "online";
 static const char *AVAIL_OFFLINE = "offline";
@@ -60,24 +64,54 @@ static void mqtt_subscribe()
     mqtt.subscribe(s_topics.cmd);
 }
 
-static void mqtt_ensureConnected()
+static bool mqtt_ensureConnected()
 {
-    if (mqtt.connected() || WiFi.status() != WL_CONNECTED)
-        return;
+    if (!s_initialized)
+    {
+        return false;
+    }
 
-    const bool ok = mqtt.connect(
-        s_cfg.clientId,
-        s_cfg.user,
-        s_cfg.pass,
-        s_topics.avail, 0, true, AVAIL_OFFLINE);
+    const uint32_t now = millis();
 
-    if (!ok)
-        return;
+    if (!mqtt.connected())
+    {
+        if (WiFi.status() != WL_CONNECTED)
+        {
+            return false;
+        }
 
-    mqtt.publish(s_topics.avail, AVAIL_ONLINE, true);
-    mqtt_subscribe();
+        if ((uint32_t)(now - s_lastAttemptMs) >= RETRY_INTERVAL_MS)
+        {
+            LOG_INFO(LogDomain::MQTT, "MQTT connecting host=%s port=%d clientId=%s", s_cfg.host, s_cfg.port, s_cfg.clientId);
+            const bool ok = mqtt.connect(
+                s_cfg.clientId,
+                s_cfg.user,
+                s_cfg.pass,
+                s_topics.avail, 0, true, AVAIL_OFFLINE);
 
-    stateDirty = true; // force fresh retained snapshot after reconnect
+            s_lastAttemptMs = now;
+
+            if (ok)
+            {
+                mqtt.publish(s_topics.avail, AVAIL_ONLINE, true);
+                mqtt_subscribe();
+                stateDirty = true; // force fresh retained snapshot after reconnect
+                LOG_INFO(LogDomain::MQTT, "MQTT connected");
+            }
+            else
+            {
+                LOG_WARN(LogDomain::MQTT, "MQTT connect failed state=%d", mqtt.state());
+            }
+        }
+    }
+
+    if (!mqtt.connected())
+    {
+        return false;
+    }
+
+    mqtt.loop();
+    return true;
 }
 
 static bool publishState(const DeviceState &state)
@@ -119,15 +153,15 @@ void mqtt_begin(const MqttConfig &cfg, CommandHandlerFn cmdHandler)
     mqtt.setSocketTimeout(5);
     mqtt.setBufferSize(1024);
     mqtt.setCallback(mqttCallback);
+    s_initialized = true;
+
+    LOG_INFO(LogDomain::MQTT, "MQTT init baseTopic=%s cmdTopic=%s stateTopic=%s", s_cfg.baseTopic, s_topics.cmd, s_topics.state);
 }
 
 void mqtt_tick(const DeviceState &state)
 {
-    mqtt_ensureConnected();
-    if (!mqtt.connected())
+    if (!mqtt_ensureConnected())
         return;
-
-    mqtt.loop();
 
     const uint32_t now = millis();
     if (stateDirty || (now - lastStatePublishMs) >= STATE_PUBLISH_INTERVAL_MS)
