@@ -61,15 +61,15 @@ struct ProbeInfo
     bool connected;
     ProbeQualityReason quality;
     SenseMode senseMode;
-    uint16_t raw;
+    int32_t raw; // 32-bit raw reading for consistency across probe/calibration paths
     bool rawValid;
 };
 
 struct CalibrationInfo
 {
     CalibrationState state;
-    uint16_t dry;
-    uint16_t wet;
+    int32_t dry;
+    int32_t wet;
     bool inverted;
     uint16_t minDiff;
 };

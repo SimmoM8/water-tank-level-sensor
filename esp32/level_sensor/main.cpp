@@ -104,12 +104,12 @@ static const float PERCENT_EMA_ALPHA = 0.2f;
 static const uint32_t WIFI_TIMEOUT_MS = 20000;
 
 // ===== Runtime state (owned by this module) =====
-static uint16_t calDry = 0;
-static uint16_t calWet = 0;
+static int32_t calDry = 0;
+static int32_t calWet = 0;
 static bool calInverted = false;
 static bool calibrationInProgress = false;
 
-static uint16_t lastRawValue = 0;
+static int32_t lastRawValue = 0;
 static float percentEma = NAN;
 static bool probeConnected = false;
 static ProbeQualityReason probeQualityReason = ProbeQualityReason::UNKNOWN;
@@ -139,8 +139,8 @@ static void printHelpMenu()
   Serial.println("  show  -> print current calibration values");
   Serial.println("  clear -> clear stored calibration");
   Serial.println("  invert-> toggle inverted flag and save");
-  Serial.println("  wifi  -> start Wi‑Fi captive portal (setup mode)");
-  Serial.println("  wipewifi -> clear Wi‑Fi creds + reboot into setup portal");
+  Serial.println("  wifi  -> start WiFi captive portal (setup mode)");
+  Serial.println("  wipewifi -> clear WiFi creds + reboot into setup portal");
   Serial.println("  mode touch -> use touchRead()");
   Serial.println("  mode sim   -> use simulation backend");
   Serial.println("  help  -> show this menu");
@@ -148,7 +148,7 @@ static void printHelpMenu()
 
 static bool hasCalibrationValues()
 {
-  return calDry > 0 && calWet > 0 && (uint16_t)abs((int)calWet - (int)calDry) >= CFG_CAL_MIN_DIFF;
+  return calDry > 0 && calWet > 0 && (uint32_t)abs(calWet - calDry) >= CFG_CAL_MIN_DIFF;
 }
 
 static float clampNonNegative(float value)
@@ -156,7 +156,7 @@ static float clampNonNegative(float value)
   return value < 0.0f ? 0.0f : value;
 }
 
-static float computePercent(uint16_t raw)
+static float computePercent(int32_t raw)
 {
   if (!hasCalibrationValues() || calDry == calWet || !probeConnected)
   {
@@ -170,7 +170,7 @@ static float computePercent(uint16_t raw)
   return constrain(percent, 0.0f, 100.0f);
 }
 
-static bool evaluateProbeConnected(uint16_t raw)
+static bool evaluateProbeConnected(int32_t raw)
 {
   static bool hasLast = false;
   static uint16_t lastRaw = 0;
@@ -243,9 +243,9 @@ static bool evaluateProbeConnected(uint16_t raw)
   return reason == ProbeQualityReason::OK;
 }
 
-static uint16_t getRaw()
+static int32_t getRaw()
 {
-  return (uint16_t)probe_getRaw();
+  return (int32_t)probe_getRaw();
 }
 
 static void refreshCalibrationState()
@@ -307,7 +307,7 @@ static void refreshLevelFromPercent(float percent)
   }
 }
 
-static void refreshProbeState(uint16_t raw, bool forcePublish)
+static void refreshProbeState(int32_t raw, bool forcePublish)
 {
   const bool wasConnected = probeConnected;
   const ProbeQualityReason prevReason = probeQualityReason;
@@ -713,7 +713,8 @@ void appSetup()
       .clearCalibration = clearCalibration,
       .setSimulationEnabled = setSimulationEnabled,
       .setSimulationModeInternal = setSimulationModeInternal,
-      .requestStatePublish = mqtt_requestStatePublish};
+      .requestStatePublish = mqtt_requestStatePublish,
+      .publishAck = mqtt_publishAck};
   commands_begin(cmdCtx);
 
   MqttConfig mqttCfg{
