@@ -733,6 +733,7 @@ void appSetup()
       .clearCalibration = clearCalibration,
       .setSimulationEnabled = setSimulationEnabled,
       .setSimulationModeInternal = setSimulationModeInternal,
+      .reannounce = mqtt_reannounceDiscovery,
       .requestStatePublish = mqtt_requestStatePublish,
       .publishAck = mqtt_publishAck};
   commands_begin(cmdCtx);

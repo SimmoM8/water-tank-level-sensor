@@ -42,3 +42,6 @@ bool mqtt_isConnected();
 
 // Publish an arbitrary MQTT topic (raw topic).
 bool mqtt_publishRaw(const char *topic, const char *payload, bool retained = false);
+
+// Publish discovery topics (retained) immediately.
+void mqtt_reannounceDiscovery();

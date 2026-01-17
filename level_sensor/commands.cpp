@@ -133,6 +133,19 @@ static void handleSetSimulation(JsonObject data, const char *requestId)
            okAny ? "applied" : "no_fields");
 }
 
+static void handleReannounce(const char *requestId)
+{
+    if (s_ctx.reannounce)
+    {
+        s_ctx.reannounce();
+        finish(requestId, "reannounce", CmdStatus::APPLIED, "reannounced");
+    }
+    else
+    {
+        finish(requestId, "reannounce", CmdStatus::ERROR, "missing_callback");
+    }
+}
+
 void commands_begin(const CommandsContext &ctx)
 {
     s_ctx = ctx;
@@ -183,6 +196,12 @@ void commands_handle(const uint8_t *payload, size_t len)
     if (strcmp(type, "set_simulation") == 0)
     {
         handleSetSimulation(data, requestId);
+        return;
+    }
+
+    if (strcmp(type, "reannounce") == 0)
+    {
+        handleReannounce(requestId);
         return;
     }
 

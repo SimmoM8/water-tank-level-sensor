@@ -15,6 +15,7 @@ struct CommandsContext
     void (*clearCalibration)();
     void (*setSimulationEnabled)(bool enabled, bool forcePublish, const char *sourceMsg);
     void (*setSimulationModeInternal)(uint8_t mode, bool forcePublish, const char *sourceMsg);
+    void (*reannounce)();
 
     void (*requestStatePublish)();
     bool (*publishAck)(const char *requestId, const char *type, CmdStatus status, const char *msg);
