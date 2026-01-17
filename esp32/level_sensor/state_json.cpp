@@ -52,6 +52,23 @@ const char *toString(ProbeQualityReason v)
     }
 }
 
+const char *toString(CmdStatus v)
+{
+    switch (v)
+    {
+    case CmdStatus::RECEIVED:
+        return "received";
+    case CmdStatus::APPLIED:
+        return "applied";
+    case CmdStatus::REJECTED:
+        return "rejected";
+    case CmdStatus::ERROR:
+        return "error";
+    default:
+        return "unknown";
+    }
+}
+
 bool buildStateJson(const DeviceState &s, char *outBuf, size_t outSize)
 {
     // StaticJsonDocument lives on the stack; tune size as needed.
@@ -100,6 +117,13 @@ bool buildStateJson(const DeviceState &s, char *outBuf, size_t outSize)
     cfg["rod_length_cm"] = s.config.rodLengthCm;
     cfg["simulation_enabled"] = s.config.simulationEnabled;
     cfg["simulation_mode"] = s.config.simulationMode;
+
+    JsonObject lastCmd = doc["last_cmd"].to<JsonObject>();
+    lastCmd["request_id"] = s.lastCmd.requestId;
+    lastCmd["type"] = s.lastCmd.type;
+    lastCmd["status"] = toString(s.lastCmd.status);
+    lastCmd["message"] = s.lastCmd.message;
+    lastCmd["ts"] = s.lastCmd.ts;
 
     // Serialize to buffer
     const size_t written = serializeJson(doc, outBuf, outSize);
