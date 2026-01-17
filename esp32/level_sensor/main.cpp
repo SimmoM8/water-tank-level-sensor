@@ -12,6 +12,7 @@
 #include "simulation.h"
 #include "commands.h"
 #include "applied_config.h"
+#include "logger.h"
 
 DeviceState g_state;
 
@@ -152,7 +153,7 @@ static void runWindow(LoopWindow &w, uint32_t now)
 
 static void logLine(const char *msg)
 {
-  Serial.println(msg);
+  LOG_INFO(LogDomain::SYSTEM, "%s", msg);
 }
 
 static void printHelpMenu()
@@ -417,7 +418,7 @@ static void clearCalibration()
   g_state.calibration.inverted = false;
   refreshCalibrationState();
   mqtt_requestStatePublish();
-  logLine("[CAL] Cleared calibration.");
+  LOG_INFO(LogDomain::CAL, "Calibration cleared");
 }
 
 static void beginCalibrationCapture()
@@ -450,8 +451,7 @@ static void captureCalibrationPoint(bool isDry)
     reloadConfigIfDirty(false);
     const AppliedConfig &cfg = config_get();
     g_state.calibration.state = determineCalibrationState(cfg.calDry, cfg.calWet);
-    Serial.print("[CAL] Captured dry=");
-    Serial.println(calDry);
+    LOG_INFO(LogDomain::CAL, "Captured dry=%ld", (long)calDry);
   }
   else
   {
@@ -462,8 +462,7 @@ static void captureCalibrationPoint(bool isDry)
     reloadConfigIfDirty(false);
     const AppliedConfig &cfg = config_get();
     g_state.calibration.state = determineCalibrationState(cfg.calDry, cfg.calWet);
-    Serial.print("[CAL] Captured wet=");
-    Serial.println(calWet);
+    LOG_INFO(LogDomain::CAL, "Captured wet=%ld", (long)calWet);
   }
 
   percentEma = NAN;
@@ -481,6 +480,7 @@ static void handleInvertCalibration()
   percentEma = NAN;
   refreshCalibrationState();
   mqtt_requestStatePublish();
+  LOG_INFO(LogDomain::CAL, "Calibration inverted=%s", calInverted ? "true" : "false");
 }
 
 static void setSimulationEnabled(bool enabled, bool /*forcePublish*/ = false, const char * /*sourceMsg*/ = nullptr)
@@ -579,6 +579,7 @@ static void windowFast()
 
   if (reloadConfigIfDirty(true))
   {
+    LOG_INFO(LogDomain::CONFIG, "Config reloaded from NVS");
     refreshLevelFromPercent(percentEma);
     mqtt_requestStatePublish();
   }
@@ -720,10 +721,10 @@ void appSetup()
 {
   Serial.begin(115200);
   delay(1500);
-
-  logLine("\n[BOOT] water_level_sensor starting...");
-  Serial.print("[BOOT] TOUCH_PIN=");
-  Serial.println(TOUCH_PIN);
+  logger_begin(BASE_TOPIC, true, true);
+  logger_setHighFreqEnabled(false);
+  LOG_INFO(LogDomain::SYSTEM, "BOOT water_level_sensor starting...");
+  LOG_INFO(LogDomain::SYSTEM, "TOUCH_PIN=%d", TOUCH_PIN);
 
   storage_begin();
   wifi_begin();

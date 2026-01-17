@@ -8,13 +8,13 @@ struct DeviceState;
 
 struct MqttConfig
 {
-	const char *host;
-	int port;
-	const char *clientId;
-	const char *user;
-	const char *pass;
-	const char *baseTopic; // e.g. "water_tank/water_tank_esp32"
-	const char *deviceId;  // used for availability
+    const char *host;
+    int port;
+    const char *clientId;
+    const char *user;
+    const char *pass;
+    const char *baseTopic; // e.g. "water_tank/water_tank_esp32"
+    const char *deviceId;  // used for availability
 };
 
 using CommandHandlerFn = void (*)(const uint8_t *payload, size_t len);
@@ -30,6 +30,9 @@ void mqtt_requestStatePublish();
 
 // Publish ACK on the dedicated ack topic (not retained).
 bool mqtt_publishAck(const char *reqId, const char *type, CmdStatus status, const char *msg);
+
+// Publish a raw payload to a topic under baseTopic.
+bool mqtt_publishLog(const char *topicSuffix, const char *payload, bool retained = false);
 
 // MQTT connection status
 bool mqtt_isConnected();
