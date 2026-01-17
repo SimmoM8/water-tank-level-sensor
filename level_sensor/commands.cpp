@@ -3,7 +3,6 @@
 #include <string.h>
 
 #include "device_state.h"
-#include "mqtt_transport.h"
 
 static CommandsContext s_ctx{};
 
@@ -35,15 +34,13 @@ static void setLastCmd(const char *reqId, const char *type, CmdStatus st, const 
     s_ctx.state->lastCmd.ts = s_ctx.state->ts; // align to latest state snapshot time
 }
 
-static void publishAck(const char *reqId, const char *type, CmdStatus st, const char *msg)
-{
-    mqtt_publishAck(reqId ? reqId : "", type ? type : "", st, msg ? msg : "");
-}
-
 static void finish(const char *reqId, const char *type, CmdStatus st, const char *msg)
 {
     setLastCmd(reqId, type, st, msg);
-    publishAck(reqId, type, st, msg);
+    if (s_ctx.publishAck)
+    {
+        s_ctx.publishAck(reqId ? reqId : "", type ? type : "", st, msg ? msg : "");
+    }
     if (s_ctx.requestStatePublish)
     {
         s_ctx.requestStatePublish();

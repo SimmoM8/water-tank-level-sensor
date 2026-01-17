@@ -17,6 +17,7 @@ struct CommandsContext
     void (*setSimulationModeInternal)(uint8_t mode, bool forcePublish, const char *sourceMsg);
 
     void (*requestStatePublish)();
+    bool (*publishAck)(const char *requestId, const char *type, CmdStatus status, const char *msg);
 };
 
 // Initialize command handling with device-owned context.
