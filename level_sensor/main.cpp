@@ -11,6 +11,7 @@
 #include "storage_nvs.h"
 #include "simulation.h"
 #include "commands.h"
+#include "applied_config.h"
 
 DeviceState g_state;
 
@@ -104,9 +105,6 @@ static const float PERCENT_EMA_ALPHA = 0.2f;
 static const uint32_t WIFI_TIMEOUT_MS = 20000;
 
 // ===== Runtime state (owned by this module) =====
-static int32_t calDry = 0;
-static int32_t calWet = 0;
-static bool calInverted = false;
 static bool calibrationInProgress = false;
 
 static int32_t lastRawValue = 0;
@@ -114,19 +112,16 @@ static float percentEma = NAN;
 static bool probeConnected = false;
 static ProbeQualityReason probeQualityReason = ProbeQualityReason::UNKNOWN;
 
-struct AppliedConfig
-{
-  float tankVolumeLiters = NAN;
-  float rodLengthCm = NAN;
-  bool simulationEnabled = false;
-  uint8_t simulationMode = 0;
-};
+static int32_t calDry = 0;
+static int32_t calWet = 0;
+static bool calInverted = false;
 
-static AppliedConfig g_cfg;     // cached applied config (reloaded from NVS when dirty)
-static bool configDirty = true; // set true after successful writes
-static float lastLiters = NAN;  // Derived caches for change detection
+static float lastLiters = NAN; // Derived caches for change detection
 static float lastCentimeters = NAN;
 static char s_emptyStr[1] = {0};
+
+static void applyConfigFromCache(bool logValues);
+static bool reloadConfigIfDirty(bool logValues);
 
 // ----------------- Helpers -----------------
 
@@ -152,7 +147,8 @@ static void printHelpMenu()
 
 static bool hasCalibrationValues()
 {
-  return calDry > 0 && calWet > 0 && (uint32_t)abs(calWet - calDry) >= CFG_CAL_MIN_DIFF;
+  const AppliedConfig &cfg = config_get();
+  return cfg.calDry > 0 && cfg.calWet > 0 && (uint32_t)abs(cfg.calWet - cfg.calDry) >= CFG_CAL_MIN_DIFF;
 }
 
 static float clampNonNegative(float value)
@@ -167,8 +163,9 @@ static float computePercent(int32_t raw)
     return NAN;
   }
 
-  const float inputStart = calInverted ? (float)calWet : (float)calDry;
-  const float inputEnd = calInverted ? (float)calDry : (float)calWet;
+  const AppliedConfig &cfg = config_get();
+  const float inputStart = cfg.calInverted ? (float)cfg.calWet : (float)cfg.calDry;
+  const float inputEnd = cfg.calInverted ? (float)cfg.calDry : (float)cfg.calWet;
   const float percent = ((float)raw - inputStart) * 100.0f / (inputEnd - inputStart);
 
   return constrain(percent, 0.0f, 100.0f);
@@ -271,8 +268,9 @@ static void refreshCalibrationState()
 static void refreshValidityFlags(float currentPercent)
 {
   g_state.level.percentValid = probeConnected && g_state.calibration.state == CalibrationState::CALIBRATED && !isnan(currentPercent);
-  g_state.level.litersValid = g_state.level.percentValid && !isnan(g_cfg.tankVolumeLiters);
-  g_state.level.centimetersValid = g_state.level.percentValid && !isnan(g_cfg.rodLengthCm);
+  const AppliedConfig &cfg = config_get();
+  g_state.level.litersValid = g_state.level.percentValid && !isnan(cfg.tankVolumeLiters);
+  g_state.level.centimetersValid = g_state.level.percentValid && !isnan(cfg.rodLengthCm);
 }
 
 static void refreshLevelFromPercent(float percent)
@@ -282,8 +280,9 @@ static void refreshLevelFromPercent(float percent)
 
   if (g_state.level.percentValid)
   {
-    const float liters = clampNonNegative(g_cfg.tankVolumeLiters * percent / 100.0f);
-    const float centimeters = clampNonNegative(g_cfg.rodLengthCm * percent / 100.0f);
+    const AppliedConfig &cfg = config_get();
+    const float liters = clampNonNegative(cfg.tankVolumeLiters * percent / 100.0f);
+    const float centimeters = clampNonNegative(cfg.rodLengthCm * percent / 100.0f);
 
     g_state.level.liters = liters;
     g_state.level.litersValid = true;
@@ -322,7 +321,8 @@ static void refreshProbeState(int32_t raw, bool forcePublish)
   g_state.probe.quality = probeQualityReason;
   g_state.probe.raw = raw;
   g_state.probe.rawValid = probeConnected;
-  g_state.probe.senseMode = g_cfg.simulationEnabled ? SenseMode::SIM : SenseMode::TOUCH;
+  const AppliedConfig &cfg = config_get();
+  g_state.probe.senseMode = cfg.simulationEnabled ? SenseMode::SIM : SenseMode::TOUCH;
 
   refreshCalibrationState();
 
@@ -350,15 +350,11 @@ static void refreshDeviceMeta()
 
   g_state.mqtt.connected = mqtt_isConnected();
 
-  g_state.config.tankVolumeLiters = g_cfg.tankVolumeLiters;
-  g_state.config.rodLengthCm = g_cfg.rodLengthCm;
-  g_state.config.simulationEnabled = g_cfg.simulationEnabled;
-  g_state.config.simulationMode = g_cfg.simulationMode;
-}
-
-static void markConfigDirty()
-{
-  configDirty = true;
+  const AppliedConfig &cfg = config_get();
+  g_state.config.tankVolumeLiters = cfg.tankVolumeLiters;
+  g_state.config.rodLengthCm = cfg.rodLengthCm;
+  g_state.config.simulationEnabled = cfg.simulationEnabled;
+  g_state.config.simulationMode = cfg.simulationMode;
 }
 
 static void updateTankVolume(float value, bool /*forcePublish*/ = false)
@@ -368,7 +364,7 @@ static void updateTankVolume(float value, bool /*forcePublish*/ = false)
 
   const float next = clampNonNegative(value);
   storage_saveTankVolume(next);
-  markConfigDirty();
+  config_markDirty();
 }
 
 static void updateRodLength(float value, bool /*forcePublish*/ = false)
@@ -378,12 +374,14 @@ static void updateRodLength(float value, bool /*forcePublish*/ = false)
 
   const float next = clampNonNegative(value);
   storage_saveTankHeight(next);
-  markConfigDirty();
+  config_markDirty();
 }
 
 static void clearCalibration()
 {
   storage_clearCalibration();
+  config_markDirty();
+  reloadConfigIfDirty(false);
   calDry = 0;
   calWet = 0;
   calInverted = false;
@@ -423,6 +421,10 @@ static void captureCalibrationPoint(bool isDry)
     calDry = sample;
     g_state.calibration.dry = calDry;
     storage_saveCalibrationDry(calDry);
+    config_markDirty();
+    reloadConfigIfDirty(false);
+    const AppliedConfig &cfg = config_get();
+    g_state.calibration.state = determineCalibrationState(cfg.calDry, cfg.calWet);
     Serial.print("[CAL] Captured dry=");
     Serial.println(calDry);
   }
@@ -431,6 +433,10 @@ static void captureCalibrationPoint(bool isDry)
     calWet = sample;
     g_state.calibration.wet = calWet;
     storage_saveCalibrationWet(calWet);
+    config_markDirty();
+    reloadConfigIfDirty(false);
+    const AppliedConfig &cfg = config_get();
+    g_state.calibration.state = determineCalibrationState(cfg.calDry, cfg.calWet);
     Serial.print("[CAL] Captured wet=");
     Serial.println(calWet);
   }
@@ -445,6 +451,8 @@ static void handleInvertCalibration()
   calInverted = !calInverted;
   storage_saveCalibrationInverted(calInverted);
   g_state.calibration.inverted = calInverted;
+  config_markDirty();
+  reloadConfigIfDirty(false);
   percentEma = NAN;
   refreshCalibrationState();
   mqtt_requestStatePublish();
@@ -453,23 +461,68 @@ static void handleInvertCalibration()
 static void setSimulationEnabled(bool enabled, bool /*forcePublish*/ = false, const char * /*sourceMsg*/ = nullptr)
 {
   storage_saveSimulationEnabled(enabled);
-  markConfigDirty();
+  config_markDirty();
 }
 
 static void setSimulationModeInternal(uint8_t mode, bool /*forcePublish*/ = false, const char * /*sourceMsg*/ = nullptr)
 {
   uint8_t clamped = mode > 5 ? 5 : mode;
   storage_saveSimulationMode(clamped);
-  markConfigDirty();
+  config_markDirty();
 }
 
-static void loadCalibration()
+static void applyConfigFromCache(bool logValues)
 {
-  storage_loadActiveCalibration(calDry, calWet, calInverted);
+  const AppliedConfig &cfg = config_get();
+
+  calDry = cfg.calDry;
+  calWet = cfg.calWet;
+  calInverted = cfg.calInverted;
+
   g_state.calibration.dry = calDry;
   g_state.calibration.wet = calWet;
   g_state.calibration.inverted = calInverted;
   g_state.calibration.minDiff = CFG_CAL_MIN_DIFF;
+
+  g_state.config.tankVolumeLiters = cfg.tankVolumeLiters;
+  g_state.config.rodLengthCm = cfg.rodLengthCm;
+  g_state.config.simulationEnabled = cfg.simulationEnabled;
+  g_state.config.simulationMode = cfg.simulationMode;
+
+  setSimulationMode(cfg.simulationMode);
+  probe_updateMode(cfg.simulationEnabled ? READ_SIM : READ_PROBE);
+
+  refreshCalibrationState();
+
+  if (!logValues)
+  {
+    return;
+  }
+
+  Serial.print("[CFG] Tank volume (L): ");
+  if (isnan(cfg.tankVolumeLiters))
+  {
+    Serial.println("unset");
+  }
+  else
+  {
+    Serial.println(cfg.tankVolumeLiters, 2);
+  }
+
+  Serial.print("[CFG] Rod length (cm): ");
+  if (isnan(cfg.rodLengthCm))
+  {
+    Serial.println("unset");
+  }
+  else
+  {
+    Serial.println(cfg.rodLengthCm, 2);
+  }
+
+  Serial.print("[CFG] Simulation enabled: ");
+  Serial.println(cfg.simulationEnabled ? "true" : "false");
+  Serial.print("[CFG] Simulation mode: ");
+  Serial.println(cfg.simulationMode);
 
   Serial.print("[CAL] Dry=");
   Serial.print(calDry);
@@ -482,53 +535,16 @@ static void loadCalibration()
   {
     Serial.println("[CAL] Calibration missing or too close. Use 'dry' and 'wet' commands.");
   }
-
-  refreshCalibrationState();
 }
 
-static void reloadAppliedConfigFromNvs()
+static bool reloadConfigIfDirty(bool logValues)
 {
-  float vol = NAN;
-  float rod = NAN;
-  storage_loadTank(vol, rod);
-
-  bool simEnabled = false;
-  uint8_t simMode = 0;
-  storage_loadSimulation(simEnabled, simMode);
-
-  g_cfg.tankVolumeLiters = vol;
-  g_cfg.rodLengthCm = rod;
-  g_cfg.simulationEnabled = simEnabled;
-  g_cfg.simulationMode = simMode;
-
-  // Apply simulation runtime knobs from applied config
-  setSimulationMode(g_cfg.simulationMode);
-  probe_updateMode(g_cfg.simulationEnabled ? READ_SIM : READ_PROBE);
-
-  Serial.print("[CFG] Tank volume (L): ");
-  if (isnan(g_cfg.tankVolumeLiters))
+  if (config_reloadIfDirty())
   {
-    Serial.println("unset");
+    applyConfigFromCache(logValues);
+    return true;
   }
-  else
-  {
-    Serial.println(g_cfg.tankVolumeLiters, 2);
-  }
-
-  Serial.print("[CFG] Rod length (cm): ");
-  if (isnan(g_cfg.rodLengthCm))
-  {
-    Serial.println("unset");
-  }
-  else
-  {
-    Serial.println(g_cfg.rodLengthCm, 2);
-  }
-
-  Serial.print("[CFG] Simulation enabled: ");
-  Serial.println(g_cfg.simulationEnabled ? "true" : "false");
-  Serial.print("[CFG] Simulation mode: ");
-  Serial.println(g_cfg.simulationMode);
+  return false;
 }
 
 static void handleSerialCommands()
@@ -643,11 +659,10 @@ void appSetup()
 
   storage_begin();
   wifi_begin();
+  config_begin();
 
   probe_begin({(uint8_t)TOUCH_PIN, TOUCH_SAMPLES, TOUCH_SAMPLE_DELAY_MS});
-  loadCalibration();
-  reloadAppliedConfigFromNvs();
-  configDirty = false;
+  applyConfigFromCache(true);
   refreshStateSnapshot();
   printHelpMenu();
 
@@ -694,10 +709,8 @@ void appLoop()
   ota_handle();
   wifi_ensureConnected(WIFI_TIMEOUT_MS);
 
-  if (configDirty)
+  if (reloadConfigIfDirty(true))
   {
-    reloadAppliedConfigFromNvs();
-    configDirty = false;
     refreshLevelFromPercent(percentEma);
     mqtt_requestStatePublish();
   }
