@@ -4,8 +4,12 @@
 #include <math.h>
 #include <memory>
 #include <cstring>
-#include "wifi_provisioning.h"
+#include "main.h"
 #include "probe_reader.h"
+#include "wifi_provisioning.h"
+#include "device_state.h"
+#include "state_json.h"
+#include "ota_service.h"
 
 // Optional config overrides (see config.h)
 #ifdef __has_include
@@ -99,6 +103,8 @@ static const int MQTT_PORT = 1883;
 static const char *MQTT_CLIENT_ID = "water-tank-esp32";
 
 // MQTT Topics for publishing to Home Assistant
+static const char *TOPIC_TANK_STATE = "home/level_sensor/state";
+
 static const char *TOPIC_TANK_RAW = "home/water/tank/raw";
 static const char *TOPIC_TANK_PERCENT = "home/water/tank/percent";
 static const char *TOPIC_TANK_STATUS = "home/water/tank/status";
@@ -1280,6 +1286,49 @@ static void ensureConnections()
   connectMQTT();
 }
 
+static void publishStateSnapshot(bool retained = true)
+{
+  if (!mqtt.connected())
+    return;
+
+  // Build IP string into a stable buffer (avoid temporary String lifetimes)
+  static char ipBuf[16] = {0};
+  const IPAddress ip = WiFi.localIP();
+  snprintf(ipBuf, sizeof(ipBuf), "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+
+  DeviceState s{
+      .schema = STATE_SCHEMA_VERSION,
+      .ts = (uint32_t)(millis() / 1000),
+
+      .device = {DEVICE_ID, DEVICE_NAME, DEVICE_SW_VERSION},
+      .wifi = {WiFi.RSSI(), ipBuf},
+      .mqtt = {mqtt.connected()},
+
+      .probe = {
+          .connected = probeConnected,
+          .quality = (ProbeQualityReason)probeQualityReason, // if your enum matches, otherwise map it
+          .senseMode = (senseMode == SENSE_TOUCH ? SenseMode::TOUCH : SenseMode::RC),
+          .raw = lastRawValue,
+          .rawValid = rawValid},
+
+      .calibration = {.state = (CalibrationState)calibrationState, .dry = calDry, .wet = calWet, .inverted = calInverted, .minDiff = CAL_MIN_DIFF},
+
+      .level = {.percent = percentEma, .percentValid = percentValid, .liters = lastLiters, .litersValid = litersValid, .centimeters = lastCentimeters, .centimetersValid = centimetersValid},
+
+      .config = {.tankVolumeLiters = tankVolumeLiters, .rodLengthCm = rodLengthCm, .simulationEnabled = simulationEnabled, .simulationMode = simulationMode}};
+
+  // JSON buffer (must fit PubSubClient buffer too: you set 1024)
+  static char jsonBuf[768];
+  const bool ok = buildStateJson(s, jsonBuf, sizeof(jsonBuf));
+  if (!ok)
+  {
+    Serial.println("[STATE] JSON build failed (buffer too small?)");
+    return;
+  }
+
+  mqtt.publish(TOPIC_TANK_STATE, jsonBuf, retained);
+}
+
 // ---------------- Arduino lifecycle ----------------
 
 void appSetup()
@@ -1330,6 +1379,12 @@ void appLoop()
   static uint32_t lastRawPublish = 0;
   static uint32_t lastPercentPublish = 0;
   const uint32_t now = millis();
+  static uint32_t lastStatePublish = 0;
+  if (millis() - lastStatePublish >= 1000)
+  {
+    lastStatePublish = millis();
+    publishStateSnapshot(true);
+  }
 
   if (now - lastRawPublish >= RAW_PUBLISH_MS)
   {
