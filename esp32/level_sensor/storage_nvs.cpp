@@ -21,14 +21,14 @@ static const char *PREF_KEY_SIM_MODE = "sim_mode";  // NVS key for simulation mo
 /*
 /
 */
-bool storageBegin()
+bool storage_begin()
 {
     // Open NVS namespace for read/write. Keep this open for the life of the firmware.
     // Preferences::begin returns true on success.
     return prefs.begin(PREF_NAMESPACE, false);
 }
 
-void storageEnd()
+void storage_end()
 {
     prefs.end();
 }
@@ -36,7 +36,7 @@ void storageEnd()
 /*
 /
 */
-bool loadActiveCalibration(uint16_t &dry, uint16_t &wet, bool &inverted)
+bool storage_loadActiveCalibration(uint16_t &dry, uint16_t &wet, bool &inverted)
 {
     dry = prefs.getUShort(PREF_KEY_DRY, 0);
     wet = prefs.getUShort(PREF_KEY_WET, 0);
@@ -46,7 +46,7 @@ bool loadActiveCalibration(uint16_t &dry, uint16_t &wet, bool &inverted)
     return (dry != 0 && wet != 0);
 }
 
-bool loadTank(float &volumeLiters, float &tankHeightCm)
+bool storage_loadTank(float &volumeLiters, float &tankHeightCm)
 {
     const float DEFAULT_VOLUME_L = 0.0f;
     const float DEFAULT_HEIGHT_CM = 0.0f;
@@ -58,7 +58,7 @@ bool loadTank(float &volumeLiters, float &tankHeightCm)
     return true;
 }
 
-bool loadSimulation(bool &enabled, uint8_t &mode)
+bool storage_loadSimulation(bool &enabled, uint8_t &mode)
 {
     const bool DEFAULT_ENABLED = false;
     const uint8_t DEFAULT_MODE = 0;
@@ -72,44 +72,44 @@ bool loadSimulation(bool &enabled, uint8_t &mode)
 /*
 /
 */
-void saveCalibrationDry(uint16_t dry)
+void storage_saveCalibrationDry(uint16_t dry)
 {
     prefs.putUShort(PREF_KEY_DRY, dry);
 }
 
-void saveCalibrationWet(uint16_t wet)
+void storage_saveCalibrationWet(uint16_t wet)
 {
     prefs.putUShort(PREF_KEY_WET, wet);
 }
 
-void saveCalibrationInverted(bool inverted)
+void storage_saveCalibrationInverted(bool inverted)
 {
     prefs.putBool(PREF_KEY_INV, inverted);
 }
 
-void clearCalibration()
+void storage_clearCalibration()
 {
     prefs.remove(PREF_KEY_DRY);
     prefs.remove(PREF_KEY_WET);
     prefs.remove(PREF_KEY_INV);
 }
 
-void saveTankVolume(float volumeLiters)
+void storage_saveTankVolume(float volumeLiters)
 {
     prefs.putFloat(PREF_KEY_TANK_VOL, volumeLiters);
 }
 
-void saveTankHeight(float tankHeightCm)
+void storage_saveTankHeight(float tankHeightCm)
 {
     prefs.putFloat(PREF_KEY_TANK_HEIGHT, tankHeightCm);
 }
 
-void saveSimulationEnabled(bool enabled)
+void storage_saveSimulationEnabled(bool enabled)
 {
     prefs.putBool(PREF_KEY_SIM_ENABLED, enabled);
 }
 
-void saveSimulationMode(uint8_t mode)
+void storage_saveSimulationMode(uint8_t mode)
 {
     prefs.putUChar(PREF_KEY_SIM_MODE, mode);
 }

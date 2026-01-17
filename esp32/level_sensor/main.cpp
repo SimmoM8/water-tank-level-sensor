@@ -668,7 +668,7 @@ static void recomputeDerivedFromPercent(bool force = false)
 
 static void loadConfigValues()
 {
-  loadTank(tankVolumeLiters, rodLengthCm);
+  storage_loadTank(tankVolumeLiters, rodLengthCm);
   setSimulationMode(simulationMode);
 
   Serial.print("[CFG] Tank volume (L): ");
@@ -708,7 +708,7 @@ static void updateTankVolume(float value, bool forcePublish = false)
     return;
   }
   tankVolumeLiters = next;
-  storage.saveTankVolume(tankVolumeLiters);
+  storage_saveTankVolume(tankVolumeLiters);
   Serial.print("[CFG] Tank volume set to ");
   Serial.println(tankVolumeLiters, 2);
   publishConfigValues(forcePublish);
@@ -726,7 +726,7 @@ static void updateRodLength(float value, bool forcePublish = false)
     return;
   }
   rodLengthCm = next;
-  storage.saveTankHeight(rodLengthCm);
+  storage_saveTankHeight(rodLengthCm);
   Serial.print("[CFG] Rod length set to ");
   Serial.println(rodLengthCm, 2);
   publishConfigValues(forcePublish);
@@ -739,7 +739,7 @@ static void setSimulationEnabled(bool enabled, bool forcePublish = false, const 
     return;
 
   simulationEnabled = enabled;
-  storage.saveSimulationEnabled(simulationEnabled);
+  storage_saveSimulationEnabled(simulationEnabled);
   percentEma = NAN;
   refreshValidityFlags(NAN, true);
   refreshCalibrationState(true);
@@ -767,7 +767,7 @@ static void setSimulationModeInternal(uint8_t mode, bool forcePublish = false, c
 
   simulationMode = clamped;
   setSimulationMode(simulationMode);
-  storage.saveSimulationMode(simulationMode);
+  storage_saveSimulationMode(simulationMode);
   publishConfigValues(true);
   if (simulationEnabled)
   {
@@ -811,7 +811,7 @@ static void publishStatus(const char *status, bool retained, bool force)
 
 static void loadCalibration()
 {
-  loadActiveCalibration(calDry, calWet, calInverted);
+  storage_loadActiveCalibration(calDry, calWet, calInverted);
 
   Serial.print("[CAL] Dry=");
   Serial.print(calDry);
@@ -828,7 +828,7 @@ static void loadCalibration()
 
 static void clearCalibration()
 {
-  storage.clearCalibration();
+  storage_clearCalibration();
   calDry = 0;
   calWet = 0;
   calInverted = false;
@@ -879,14 +879,14 @@ static void captureCalibrationPoint(bool isDry)
   if (isDry)
   {
     calDry = sample;
-    storage.saveCalibrationDry(calDry);
+    storage_saveCalibrationDry(calDry);
     Serial.print("[CAL] Captured dry=");
     Serial.println(calDry);
   }
   else
   {
     calWet = sample;
-    storage.saveCalibrationWet(calWet);
+    storage_saveCalibrationWet(calWet);
     Serial.print("[CAL] Captured wet=");
     Serial.println(calWet);
   }
@@ -899,7 +899,7 @@ static void captureCalibrationPoint(bool isDry)
 static void handleInvertCalibration()
 {
   calInverted = !calInverted;
-  storage.saveCalibrationInverted(calInverted);
+  storage_saveCalibrationInverted(calInverted);
   percentEma = NAN;
   Serial.print("[CAL] Inverted set to ");
   Serial.println(calInverted ? "true" : "false");
@@ -1342,10 +1342,10 @@ void appSetup()
 
   if (String(MQTT_USER).length() == 0)
   {
-    logLine("[BOOT] WARNING: secrets.h looks empty. Wi‑Fi/MQTT may not connect.");
+    logLine("[BOOT] WARNING: secrets.h looks empty. WiFi/MQTT may not connect.");
   }
 
-  storageBegin();
+  storage_begin();
   wifi_begin();
   loadCalibration();
   loadConfigValues();

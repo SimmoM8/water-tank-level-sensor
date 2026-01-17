@@ -26,22 +26,22 @@ all references to storage found in water_level_sensor.cpp:
 #include <Arduino.h>
 
 /* ---------------- Boot Lifecycle ---------------- */
-bool storageBegin();
-void storageEnd(); // optional cleanup on shutdown/restart
+bool storage_begin();
+void storage_end(); // optional cleanup on shutdown/restart
 
 /* ---------------- Calibration ---------------- */
-bool loadActiveCalibration(int32_t &dry, int32_t &wet, bool &inverted);
-void saveCalibrationDry(int32_t dry);
-void saveCalibrationWet(int32_t wet);
-void saveCalibrationInverted(bool inverted);
-void clearCalibration();
+bool storage_loadActiveCalibration(int32_t &dry, int32_t &wet, bool &inverted);
+void storage_saveCalibrationDry(int32_t dry);
+void storage_saveCalibrationWet(int32_t wet);
+void storage_saveCalibrationInverted(bool inverted);
+void storage_clearCalibration();
 
 /* ---------------- Tank Configuration ---------------- */
-bool loadTank(float &volumeLiters, float &tankHeightCm);
-void saveTankVolume(float volumeLiters);
-void saveTankHeight(float tankHeightCm);
+bool storage_loadTank(float &volumeLiters, float &tankHeightCm);
+void storage_saveTankVolume(float volumeLiters);
+void storage_saveTankHeight(float tankHeightCm);
 
 /* ---------------- Simulation Configuration ---------------- */
-bool loadSimulation(bool &enabled, uint8_t &mode);
-void saveSimulationEnabled(bool enabled);
-void saveSimulationMode(uint8_t mode);
+bool storage_loadSimulation(bool &enabled, uint8_t &mode);
+void storage_saveSimulationEnabled(bool enabled);
+void storage_saveSimulationMode(uint8_t mode);
