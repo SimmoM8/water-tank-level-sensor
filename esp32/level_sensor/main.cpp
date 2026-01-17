@@ -122,6 +122,28 @@ static char s_emptyStr[1] = {0};
 
 static void applyConfigFromCache(bool logValues);
 static bool reloadConfigIfDirty(bool logValues);
+static void windowFast();
+static void windowSensor();
+static void windowCompute();
+static void windowStateMeta();
+static void windowMqtt();
+
+struct LoopWindow
+{
+  const char *name;
+  uint32_t intervalMs;
+  uint32_t lastMs;
+  void (*fn)();
+};
+
+static void runWindow(LoopWindow &w, uint32_t now)
+{
+  if (w.intervalMs == 0 || (uint32_t)(now - w.lastMs) >= w.intervalMs)
+  {
+    w.fn();
+    w.lastMs = now;
+  }
+}
 
 // ----------------- Helpers -----------------
 
@@ -547,6 +569,42 @@ static bool reloadConfigIfDirty(bool logValues)
   return false;
 }
 
+static void windowFast()
+{
+  ota_handle();
+  wifi_ensureConnected(WIFI_TIMEOUT_MS);
+
+  if (reloadConfigIfDirty(true))
+  {
+    refreshLevelFromPercent(percentEma);
+    mqtt_requestStatePublish();
+  }
+
+  handleSerialCommands();
+}
+
+static void windowSensor()
+{
+  lastRawValue = getRaw();
+  refreshProbeState(lastRawValue, false);
+  mqtt_requestStatePublish();
+}
+
+static void windowCompute()
+{
+  updatePercentFromRaw();
+}
+
+static void windowStateMeta()
+{
+  refreshStateSnapshot();
+}
+
+static void windowMqtt()
+{
+  mqtt_tick(g_state);
+}
+
 static void handleSerialCommands()
 {
   if (!Serial.available())
@@ -706,34 +764,16 @@ void appSetup()
 
 void appLoop()
 {
-  ota_handle();
-  wifi_ensureConnected(WIFI_TIMEOUT_MS);
-
-  if (reloadConfigIfDirty(true))
-  {
-    refreshLevelFromPercent(percentEma);
-    mqtt_requestStatePublish();
-  }
-
   const uint32_t now = millis();
-  static uint32_t lastRawMs = 0;
-  static uint32_t lastPercentMs = 0;
+  static LoopWindow windows[] = {
+      {"FAST", 0u, 0u, windowFast},
+      {"SENSOR", RAW_SAMPLE_MS, 0u, windowSensor},
+      {"COMPUTE", PERCENT_SAMPLE_MS, 0u, windowCompute},
+      {"STATE_META", 1000u, 0u, windowStateMeta},
+      {"MQTT", 0u, 0u, windowMqtt}};
 
-  if (now - lastRawMs >= RAW_SAMPLE_MS)
+  for (LoopWindow &w : windows)
   {
-    lastRawMs = now;
-    lastRawValue = getRaw();
-    refreshProbeState(lastRawValue, false);
-    mqtt_requestStatePublish();
+    runWindow(w, now);
   }
-
-  if (now - lastPercentMs >= PERCENT_SAMPLE_MS)
-  {
-    lastPercentMs = now;
-    updatePercentFromRaw();
-  }
-
-  handleSerialCommands();
-  refreshStateSnapshot();
-  mqtt_tick(g_state);
 }
