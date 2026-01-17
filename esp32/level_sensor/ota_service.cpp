@@ -1,6 +1,7 @@
 #include "ota_service.h"
 #include <ArduinoOTA.h>
 #include <WiFi.h>
+#include "logger.h"
 
 static const char *s_hostName = nullptr;
 static const char *s_password = nullptr;
@@ -32,19 +33,19 @@ void ota_handle()
         }
 
         ArduinoOTA.onStart([]()
-                           { Serial.println("[OTA] Update started"); });
+                           { LOG_INFO(LogDomain::OTA, "Update started"); });
 
         ArduinoOTA.onEnd([]()
-                         { Serial.println("[OTA] Update finished"); });
+                         { LOG_INFO(LogDomain::OTA, "Update finished"); });
 
         ArduinoOTA.onError([](ota_error_t error)
-                           { Serial.printf("[OTA] Error %u\n", error); });
+                           { LOG_WARN(LogDomain::OTA, "Error %u", (unsigned int)error); });
 
         ArduinoOTA.begin();
         s_started = true;
 
         IPAddress ip = WiFi.localIP();
-        Serial.printf("[OTA] started on %u.%u.%u.%u\n", ip[0], ip[1], ip[2], ip[3]);
+        LOG_INFO(LogDomain::OTA, "started on %u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
         return;
     }
 

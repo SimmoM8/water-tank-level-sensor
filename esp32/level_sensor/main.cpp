@@ -158,17 +158,17 @@ static void logLine(const char *msg)
 
 static void printHelpMenu()
 {
-  Serial.println("\n[CAL] Serial commands:");
-  Serial.println("  dry   -> capture current averaged raw as dry, save to NVS");
-  Serial.println("  wet   -> capture current averaged raw as wet, save to NVS");
-  Serial.println("  show  -> print current calibration values");
-  Serial.println("  clear -> clear stored calibration");
-  Serial.println("  invert-> toggle inverted flag and save");
-  Serial.println("  wifi  -> start WiFi captive portal (setup mode)");
-  Serial.println("  wipewifi -> clear WiFi creds + reboot into setup portal");
-  Serial.println("  mode touch -> use touchRead()");
-  Serial.println("  mode sim   -> use simulation backend");
-  Serial.println("  help  -> show this menu");
+  LOG_INFO(LogDomain::SYSTEM, "[CAL] Serial commands:");
+  LOG_INFO(LogDomain::SYSTEM, "  dry   -> capture current averaged raw as dry, save to NVS");
+  LOG_INFO(LogDomain::SYSTEM, "  wet   -> capture current averaged raw as wet, save to NVS");
+  LOG_INFO(LogDomain::SYSTEM, "  show  -> print current calibration values");
+  LOG_INFO(LogDomain::SYSTEM, "  clear -> clear stored calibration");
+  LOG_INFO(LogDomain::SYSTEM, "  invert-> toggle inverted flag and save");
+  LOG_INFO(LogDomain::SYSTEM, "  wifi  -> start WiFi captive portal (setup mode)");
+  LOG_INFO(LogDomain::SYSTEM, "  wipewifi -> clear WiFi creds + reboot into setup portal");
+  LOG_INFO(LogDomain::SYSTEM, "  mode touch -> use touchRead()");
+  LOG_INFO(LogDomain::SYSTEM, "  mode sim   -> use simulation backend");
+  LOG_INFO(LogDomain::SYSTEM, "  help  -> show this menu");
 }
 
 static bool hasCalibrationValues()
@@ -520,41 +520,26 @@ static void applyConfigFromCache(bool logValues)
     return;
   }
 
-  Serial.print("[CFG] Tank volume (L): ");
-  if (isnan(cfg.tankVolumeLiters))
+  LOG_INFO(LogDomain::CONFIG, "[CFG] Tank volume (L): %s", isnan(cfg.tankVolumeLiters) ? "unset" : "set");
+  if (!isnan(cfg.tankVolumeLiters))
   {
-    Serial.println("unset");
-  }
-  else
-  {
-    Serial.println(cfg.tankVolumeLiters, 2);
+    LOG_INFO(LogDomain::CONFIG, "[CFG] Tank volume (L) value=%.2f", cfg.tankVolumeLiters);
   }
 
-  Serial.print("[CFG] Rod length (cm): ");
-  if (isnan(cfg.rodLengthCm))
+  LOG_INFO(LogDomain::CONFIG, "[CFG] Rod length (cm): %s", isnan(cfg.rodLengthCm) ? "unset" : "set");
+  if (!isnan(cfg.rodLengthCm))
   {
-    Serial.println("unset");
-  }
-  else
-  {
-    Serial.println(cfg.rodLengthCm, 2);
+    LOG_INFO(LogDomain::CONFIG, "[CFG] Rod length (cm) value=%.2f", cfg.rodLengthCm);
   }
 
-  Serial.print("[CFG] Simulation enabled: ");
-  Serial.println(cfg.simulationEnabled ? "true" : "false");
-  Serial.print("[CFG] Simulation mode: ");
-  Serial.println(cfg.simulationMode);
+  LOG_INFO(LogDomain::CONFIG, "[CFG] Simulation enabled: %s", cfg.simulationEnabled ? "true" : "false");
+  LOG_INFO(LogDomain::CONFIG, "[CFG] Simulation mode: %u", cfg.simulationMode);
 
-  Serial.print("[CAL] Dry=");
-  Serial.print(calDry);
-  Serial.print(" Wet=");
-  Serial.print(calWet);
-  Serial.print(" Inverted=");
-  Serial.println(calInverted ? "true" : "false");
+  LOG_INFO(LogDomain::CAL, "[CAL] Dry=%ld Wet=%ld Inverted=%s", (long)calDry, (long)calWet, calInverted ? "true" : "false");
 
   if (!hasCalibrationValues())
   {
-    Serial.println("[CAL] Calibration missing or too close. Use 'dry' and 'wet' commands.");
+    LOG_WARN(LogDomain::CAL, "[CAL] Calibration missing or too close. Use 'dry' and 'wet' commands.");
   }
 }
 
@@ -637,14 +622,8 @@ static void handleSerialCommands()
   }
   else if (cmd == "show")
   {
-    Serial.print("[CAL] Dry=");
-    Serial.print(calDry);
-    Serial.print(" Wet=");
-    Serial.print(calWet);
-    Serial.print(" Inverted=");
-    Serial.println(calInverted ? "true" : "false");
-    Serial.print("[CAL] Valid=");
-    Serial.println(hasCalibrationValues() ? "yes" : "no");
+    LOG_INFO(LogDomain::CAL, "[CAL] Dry=%ld Wet=%ld Inverted=%s", (long)calDry, (long)calWet, calInverted ? "true" : "false");
+    LOG_INFO(LogDomain::CAL, "[CAL] Valid=%s", hasCalibrationValues() ? "yes" : "no");
   }
   else if (cmd == "clear")
   {

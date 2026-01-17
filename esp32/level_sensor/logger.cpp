@@ -5,12 +5,12 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "mqtt_transport.h"
-
 static const char *s_baseTopic = nullptr;
 static bool s_serialEnabled = true;
 static bool s_mqttEnabled = true;
-static bool s_highFreqEnabled = true;
+static bool s_highFreqEnabled = false;
+static LoggerMqttPublishFn s_mqttPublisher = nullptr;
+static LoggerMqttConnectedFn s_mqttConnectedFn = nullptr;
 
 struct ThrottleEntry
 {
@@ -84,6 +84,12 @@ void logger_setMqttEnabled(bool enabled)
     s_mqttEnabled = enabled;
 }
 
+void logger_setMqttPublisher(LoggerMqttPublishFn publishFn, LoggerMqttConnectedFn isConnectedFn)
+{
+    s_mqttPublisher = publishFn;
+    s_mqttConnectedFn = isConnectedFn;
+}
+
 void logger_setHighFreqEnabled(bool enabled)
 {
     if (s_highFreqEnabled == enabled)
@@ -116,7 +122,10 @@ static void logToSerial(uint32_t tsSec, LogLevel lvl, LogDomain dom, const char 
 
 static void logToMqtt(uint32_t tsSec, LogLevel lvl, LogDomain dom, const char *msg)
 {
-    if (!s_mqttEnabled || !mqtt_isConnected() || s_baseTopic == nullptr)
+    if (!s_mqttEnabled || s_baseTopic == nullptr || s_mqttPublisher == nullptr)
+        return;
+
+    if (s_mqttConnectedFn && !s_mqttConnectedFn())
         return;
 
     char safeMsg[192];
@@ -128,7 +137,7 @@ static void logToMqtt(uint32_t tsSec, LogLevel lvl, LogDomain dom, const char *m
     snprintf(jsonBuf, sizeof(jsonBuf), "{\"ts\":%lu,\"lvl\":\"%s\",\"dom\":\"%s\",\"msg\":\"%s\"}",
              (unsigned long)tsSec, levelToString(lvl), domainToString(dom), safeMsg);
 
-    mqtt_publishLog("event/log", jsonBuf, false);
+    s_mqttPublisher("event/log", jsonBuf, false);
 }
 
 void logger_log(LogLevel lvl, LogDomain dom, const char *fmt, ...)

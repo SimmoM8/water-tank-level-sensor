@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <WiFiManager.h>
 #include <Preferences.h>
+#include "logger.h"
 
 static const char *PREF_KEY_FORCE_PORTAL = "force_portal";
 
@@ -15,7 +16,7 @@ void wifi_begin()
 
 static void startPortal()
 {
-    Serial.println("[WIFI] Starting captive portal (setup mode)...");
+    LOG_INFO(LogDomain::WIFI, "Starting captive portal (setup mode)...");
     WiFi.mode(WIFI_STA);
     WiFi.disconnect(true, true);
     delay(100);
@@ -31,14 +32,12 @@ static void startPortal()
 
     if (!ok)
     {
-        Serial.println("[WIFI] Portal timed out or failed. Rebooting...");
+        LOG_WARN(LogDomain::WIFI, "Portal timed out or failed. Rebooting...");
         delay(500);
         ESP.restart();
     }
 
-    Serial.println("[WIFI] WiFi configured and connected");
-    Serial.print("[WIFI] IP: ");
-    Serial.println(WiFi.localIP());
+    LOG_INFO(LogDomain::WIFI, "WiFi configured and connected ip=%s", WiFi.localIP().toString().c_str());
 
     wifiPrefs.putBool(PREF_KEY_FORCE_PORTAL, false);
 }
@@ -59,15 +58,10 @@ void wifi_ensureConnected(uint32_t wifiTimeoutMs)
         return;
     }
 
-    Serial.print("[WIFI] Connecting to saved WiFi");
+    LOG_INFO(LogDomain::WIFI, "Connecting to saved WiFi%s", WiFi.SSID().length() ? "" : " (no saved SSID)");
     if (WiFi.SSID().length())
     {
-        Serial.print(": ");
-        Serial.println(WiFi.SSID());
-    }
-    else
-    {
-        Serial.println(" (no saved SSID)");
+        LOG_INFO(LogDomain::WIFI, "SSID=%s", WiFi.SSID().c_str());
     }
 
     WiFi.begin(); // use stored credentials
@@ -76,26 +70,21 @@ void wifi_ensureConnected(uint32_t wifiTimeoutMs)
     while (WiFi.status() != WL_CONNECTED)
     {
         delay(250);
-        Serial.print(".");
 
         if (millis() - start > wifiTimeoutMs)
         {
-            Serial.println();
-            Serial.println("[WIFI] Connection failed, launching portal...");
+            LOG_WARN(LogDomain::WIFI, "Connection failed, launching portal...");
             startPortal(); // start captive portal
             return;
         }
     }
 
-    Serial.println();
-    Serial.println("[WIFI] Connected");
-    Serial.print("[WIFI] IP: ");
-    Serial.println(WiFi.localIP());
+    LOG_INFO(LogDomain::WIFI, "Connected ip=%s", WiFi.localIP().toString().c_str());
 }
 
 void wifi_requestPortal()
 {
-    Serial.println("[WIFI] Forcing captive portal");
+    LOG_INFO(LogDomain::WIFI, "Forcing captive portal");
     wifiPrefs.putBool(PREF_KEY_FORCE_PORTAL, true);
     WiFi.disconnect(true, true);
     delay(250);
@@ -103,7 +92,7 @@ void wifi_requestPortal()
 
 void wifi_wipeCredentialsAndReboot()
 {
-    Serial.println("[WIFI] Wiping WiFi credentials and rebooting");
+    LOG_WARN(LogDomain::WIFI, "Wiping WiFi credentials and rebooting");
     WiFi.disconnect(true, true);
     wifiPrefs.putBool(PREF_KEY_FORCE_PORTAL, true);
     delay(500);
