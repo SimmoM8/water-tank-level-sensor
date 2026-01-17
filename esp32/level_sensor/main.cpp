@@ -166,6 +166,7 @@ static void printHelpMenu()
   LOG_INFO(LogDomain::SYSTEM, "  invert-> toggle inverted flag and save");
   LOG_INFO(LogDomain::SYSTEM, "  wifi  -> start WiFi captive portal (setup mode)");
   LOG_INFO(LogDomain::SYSTEM, "  wipewifi -> clear WiFi creds + reboot into setup portal");
+  LOG_INFO(LogDomain::SYSTEM, "  log hf on/off -> enable/disable high-frequency logs");
   LOG_INFO(LogDomain::SYSTEM, "  mode touch -> use touchRead()");
   LOG_INFO(LogDomain::SYSTEM, "  mode sim   -> use simulation backend");
   LOG_INFO(LogDomain::SYSTEM, "  help  -> show this menu");
@@ -572,6 +573,9 @@ static void windowSensor()
 {
   lastRawValue = getRaw();
   refreshProbeState(lastRawValue, false);
+  logger_logEvery("raw_sample", 1000, LogLevel::DEBUG, LogDomain::PROBE,
+                  "raw=%ld connected=%s quality=%d", (long)lastRawValue,
+                  probeConnected ? "true" : "false", (int)probeQualityReason);
   mqtt_requestStatePublish();
 }
 
@@ -632,6 +636,16 @@ static void handleSerialCommands()
   else if (cmd == "invert")
   {
     handleInvertCalibration();
+  }
+  else if (cmd == "log hf on" || cmd == "loghf on")
+  {
+    logger_setHighFreqEnabled(true);
+    LOG_INFO(LogDomain::SYSTEM, "High-frequency logging enabled (serial command)");
+  }
+  else if (cmd == "log hf off" || cmd == "loghf off")
+  {
+    logger_setHighFreqEnabled(false);
+    LOG_INFO(LogDomain::SYSTEM, "High-frequency logging disabled (serial command)");
   }
   else if (cmd == "wifi")
   {

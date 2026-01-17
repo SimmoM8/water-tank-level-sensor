@@ -8,7 +8,7 @@
 static const char *s_baseTopic = nullptr;
 static bool s_serialEnabled = true;
 static bool s_mqttEnabled = true;
-static bool s_highFreqEnabled = false;
+static bool s_highFreqEnabled = true;
 static LoggerMqttPublishFn s_mqttPublisher = nullptr;
 static LoggerMqttConnectedFn s_mqttConnectedFn = nullptr;
 
