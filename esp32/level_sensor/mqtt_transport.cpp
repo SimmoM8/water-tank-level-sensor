@@ -15,6 +15,7 @@ static PubSubClient mqtt(wifiClient);
 
 static MqttConfig s_cfg{};
 static CommandHandlerFn s_cmdHandler = nullptr;
+static bool s_haDiscoveryBegun = false;
 
 bool mqtt_publishRaw(const char *topic, const char *payload, bool retained)
 {
@@ -55,7 +56,6 @@ static void buildTopics()
     buildTopic(s_topics.cmd, sizeof(s_topics.cmd), "cmd");
     buildTopic(s_topics.ack, sizeof(s_topics.ack), "ack");
     buildTopic(s_topics.avail, sizeof(s_topics.avail), "availability");
-    ha_discovery_publishAll();
 }
 
 static void mqttCallback(char *topic, byte *payload, unsigned int length)
@@ -89,14 +89,18 @@ static bool mqtt_ensureConnected()
             return false;
         }
 
-        HaDiscoveryConfig haCfg{
-            .baseTopic = s_cfg.baseTopic,
-            .deviceId = s_cfg.deviceId,
-            .deviceName = s_cfg.deviceName,
-            .deviceModel = s_cfg.deviceModel,
-            .deviceSw = s_cfg.deviceSw,
-            .publish = mqtt_publishRaw};
-        ha_discovery_begin(haCfg);
+        if (!s_haDiscoveryBegun)
+        {
+            HaDiscoveryConfig haCfg{
+                .baseTopic = s_cfg.baseTopic,
+                .deviceId = s_cfg.deviceId,
+                .deviceName = s_cfg.deviceName,
+                .deviceModel = s_cfg.deviceModel,
+                .deviceSw = s_cfg.deviceSw,
+                .publish = mqtt_publishRaw};
+            ha_discovery_begin(haCfg);
+            s_haDiscoveryBegun = true;
+        }
         if ((uint32_t)(now - s_lastAttemptMs) >= RETRY_INTERVAL_MS)
         {
             LOG_INFO(LogDomain::MQTT, "MQTT connecting host=%s port=%d clientId=%s", s_cfg.host, s_cfg.port, s_cfg.clientId);
@@ -113,7 +117,7 @@ static bool mqtt_ensureConnected()
                 mqtt.publish(s_topics.avail, AVAIL_ONLINE, true);
                 mqtt_subscribe();
                 stateDirty = true; // force fresh retained snapshot after reconnect
-                LOG_INFO(LogDomain::MQTT, "MQTT connected");
+                LOG_INFO(LogDomain::MQTT, "MQTT connected; attempting HA discovery publish");
             }
             else
             {
@@ -177,10 +181,20 @@ void mqtt_begin(const MqttConfig &cfg, CommandHandlerFn cmdHandler)
     LOG_INFO(LogDomain::MQTT, "MQTT init baseTopic=%s cmdTopic=%s stateTopic=%s", s_cfg.baseTopic, s_topics.cmd, s_topics.state);
 }
 
+void mqtt_reannounceDiscovery()
+{
+    ha_discovery_publishAll();
+}
+
 void mqtt_tick(const DeviceState &state)
 {
     if (!mqtt_ensureConnected())
         return;
+
+    if (mqtt_isConnected())
+    {
+        ha_discovery_publishAll();
+    }
 
     const uint32_t now = millis();
     if (stateDirty || (now - lastStatePublishMs) >= STATE_PUBLISH_INTERVAL_MS)

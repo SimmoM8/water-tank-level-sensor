@@ -1,16 +1,149 @@
 /* water-tank-card.js
  * Custom Home Assistant Lovelace card (no build step).
- * v0.4.7: calibration UX feedback + theme-safe modal inputs.
+ * v0.5.0: device_id auto-resolve for one-click install.
  */
 
 const CARD_TAG = "water-tank-card";
-const VERSION = "0.4.7";
+const VERSION = "0.5.0";
+
+// Required logical entity keys for the card to render.
+const REQUIRED_ENTITY_KEYS = [
+  "percent_entity",
+  "liters_entity",
+  "cm_entity",
+  "status_entity",
+  "probe_entity",
+  "percent_valid_entity",
+  "calibration_entity",
+  "raw_entity",
+];
+
+// Optional logical entity keys we attempt to auto-resolve when a device_id is provided.
+const OPTIONAL_ENTITY_KEYS = [
+  "quality_reason_entity",
+  "tank_volume_entity",
+  "rod_length_entity",
+  "calibrate_dry_entity",
+  "calibrate_wet_entity",
+  "clear_calibration_entity",
+  "simulation_enabled_entity",
+  "simulation_mode_entity",
+  "cal_dry_value_entity",
+  "cal_wet_value_entity",
+  "cal_dry_set_entity",
+  "cal_wet_set_entity",
+];
+
+// Expected unique_id suffixes (or contains) for each logical key.
+const UNIQUE_ID_SUFFIX_MAP = {
+  status_entity: ["_status", "_availability", "_online"],
+  probe_entity: ["_probe_connected"],
+  percent_entity: ["_percent"],
+  liters_entity: ["_liters"],
+  cm_entity: ["_centimeters", "_cm"],
+  raw_entity: ["_raw"],
+  percent_valid_entity: ["_percent_valid"],
+  calibration_entity: ["_calibration_state", "_calibration"],
+  quality_reason_entity: ["_quality"],
+  tank_volume_entity: ["_tank_volume_l"],
+  rod_length_entity: ["_rod_length_cm"],
+  calibrate_dry_entity: ["_calibrate_dry"],
+  calibrate_wet_entity: ["_calibrate_wet"],
+  clear_calibration_entity: ["_clear_calibration"],
+  simulation_enabled_entity: ["_simulation_enabled"],
+  simulation_mode_entity: ["_simulation_mode"],
+  cal_dry_value_entity: ["_cal_dry"],
+  cal_wet_value_entity: ["_cal_wet"],
+  cal_dry_set_entity: ["_cal_dry_set", "_cal_dry"],
+  cal_wet_set_entity: ["_cal_wet_set", "_cal_wet"],
+};
+
+// Matching rules per logical key (domains and entity_id fallbacks).
+const ENTITY_MATCH_RULES = {
+  status_entity: { domains: ["binary_sensor", "sensor"], entitySuffixes: ["_status", "_availability", "_online", "_probe_connected"] },
+  probe_entity: { domains: ["binary_sensor"], entitySuffixes: ["_probe_connected", "_probe"] },
+  percent_entity: { domains: ["sensor"], entitySuffixes: ["_percent"] },
+  liters_entity: { domains: ["sensor"], entitySuffixes: ["_liters"] },
+  cm_entity: { domains: ["sensor"], entitySuffixes: ["_centimeters", "_cm"] },
+  raw_entity: { domains: ["sensor"], entitySuffixes: ["_raw"] },
+  percent_valid_entity: { domains: ["binary_sensor", "sensor"], entitySuffixes: ["_percent_valid"] },
+  calibration_entity: { domains: ["sensor"], entitySuffixes: ["_calibration_state", "_calibration"] },
+  quality_reason_entity: { domains: ["sensor"], entitySuffixes: ["_quality"] },
+  tank_volume_entity: { domains: ["number", "input_number", "sensor"], entitySuffixes: ["_tank_volume_l", "_tank_volume"] },
+  rod_length_entity: { domains: ["number", "input_number", "sensor"], entitySuffixes: ["_rod_length_cm", "_rod_length"] },
+  calibrate_dry_entity: { domains: ["button"], entitySuffixes: ["_calibrate_dry"] },
+  calibrate_wet_entity: { domains: ["button"], entitySuffixes: ["_calibrate_wet"] },
+  clear_calibration_entity: { domains: ["button"], entitySuffixes: ["_clear_calibration"] },
+  simulation_enabled_entity: { domains: ["switch"], entitySuffixes: ["_simulation_enabled"] },
+  simulation_mode_entity: { domains: ["select", "input_select"], entitySuffixes: ["_simulation_mode"] },
+  cal_dry_value_entity: { domains: ["sensor", "number", "input_number"], entitySuffixes: ["_cal_dry"] },
+  cal_wet_value_entity: { domains: ["sensor", "number", "input_number"], entitySuffixes: ["_cal_wet"] },
+  cal_dry_set_entity: { domains: ["number", "input_number"], entitySuffixes: ["_cal_dry_set", "_cal_dry"] },
+  cal_wet_set_entity: { domains: ["number", "input_number"], entitySuffixes: ["_cal_wet_set", "_cal_wet"] },
+};
+
+// Cache resolved configs per device_id to avoid repeated websocket queries.
+const DEVICE_RESOLUTION_CACHE = new Map();
+
+const normalizeStr = (v) => (v === null || v === undefined ? "" : String(v)).toLowerCase();
+const matchesSuffix = (value, suffixes = []) => suffixes.some((suf) => value.endsWith(suf) || value.includes(suf));
+const domainOf = (entityId) => normalizeStr(entityId).split(".")[0];
+
+const pickEntityIdForKey = (entries, key) => {
+  const rules = ENTITY_MATCH_RULES[key] || {};
+  const uniqueSuffixes = UNIQUE_ID_SUFFIX_MAP[key] || [];
+  const entitySuffixes = rules.entitySuffixes || uniqueSuffixes;
+  const domains = rules.domains;
+
+  const inDomain = (entry) => !domains || domains.includes(domainOf(entry.entity_id));
+  const scoped = entries.filter(inDomain);
+
+  const byUnique = scoped.find((e) => matchesSuffix(normalizeStr(e.unique_id), uniqueSuffixes));
+  if (byUnique) return byUnique.entity_id;
+
+  const byEntityId = scoped.find((e) => matchesSuffix(normalizeStr(e.entity_id), entitySuffixes));
+  if (byEntityId) return byEntityId.entity_id;
+
+  return null;
+};
+
+const buildResolvedConfigFromRegistry = (deviceId, registryEntries) => {
+  const scoped = (registryEntries || []).filter((e) => e && e.device_id === deviceId);
+  const keys = [...REQUIRED_ENTITY_KEYS, ...OPTIONAL_ENTITY_KEYS];
+  const resolved = {};
+  const missing = [];
+
+  keys.forEach((key) => {
+    const entityId = pickEntityIdForKey(scoped, key);
+    if (entityId) {
+      resolved[key] = entityId;
+    }
+    else if (REQUIRED_ENTITY_KEYS.includes(key)) {
+      missing.push(key);
+    }
+  });
+
+  // Fallback: if no dedicated status entity found, mirror probe or percent_valid so the card can still render.
+  if (!resolved.status_entity) {
+    resolved.status_entity = resolved.probe_entity || resolved.percent_valid_entity || null;
+    if (resolved.status_entity) {
+      const idx = missing.indexOf("status_entity");
+      if (idx >= 0) missing.splice(idx, 1);
+    }
+  }
+
+  return { resolved, missing };
+};
 
 class WaterTankCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
     this._config = null;
+    this._configInput = null;
+    this._resolutionState = { status: "idle", error: null };
+    this._resolutionRequestId = 0;
+    this._warnedResolution = false;
     this._hass = null;
     this._modalOpen = false;
     this._modalPage = "main";
@@ -39,24 +172,10 @@ class WaterTankCard extends HTMLElement {
   }
 
   setConfig(config) {
-    const required = [
-      "percent_entity",
-      "liters_entity",
-      "cm_entity",
-      "status_entity",
-      "probe_entity",
-      "percent_valid_entity",
-      "calibration_entity",
-      "raw_entity",
-    ];
-
-    for (const key of required) {
-      if (!config[key]) throw new Error(`Missing required config key: ${key}`);
-    }
-
-    // Optional entities for modal controls (strongly recommended)
-    this._config = {
+    const defaults = {
       title: "Water Tank",
+      view: "tank",
+      device_id: null,
       // modal entities (optional)
       tank_volume_entity: null,
       rod_length_entity: null,
@@ -76,21 +195,135 @@ class WaterTankCard extends HTMLElement {
 
       // optional diagnostics
       quality_reason_entity: null,
-
-      ...config,
     };
 
+    const cfg = { ...defaults, ...config };
+    this._configInput = cfg;
+    this._warnedResolution = false;
+
+    const hasAllEntities = REQUIRED_ENTITY_KEYS.every((k) => !!cfg[k]);
+
+    if (!cfg.device_id && !hasAllEntities) {
+      throw new Error(`Provide either device_id or explicit entity ids for: ${REQUIRED_ENTITY_KEYS.join(", ")}`);
+    }
+
+    // If user supplied everything, skip auto-resolve entirely.
+    if (hasAllEntities) {
+      this._config = cfg;
+      this._resolutionState = { status: "done", error: null };
+      this._render();
+      return;
+    }
+
+    // Seed config with user-provided values; fill missing after resolution.
+    this._config = cfg;
+    this._resolutionState = { status: "pending", error: null };
     this._render();
+    this._maybeResolveWithHass();
   }
 
   set hass(hass) {
     this._hass = hass;
+    this._maybeResolveWithHass();
     this._checkPendingSets();
     this._render();
   }
 
   getCardSize() {
     return 3;
+  }
+
+  _isFullyConfigured() {
+    return this._config && REQUIRED_ENTITY_KEYS.every((k) => !!this._config[k]);
+  }
+
+  _maybeResolveWithHass() {
+    if (!this._hass || !this._configInput?.device_id) return;
+    if (!this._hass.connection || typeof this._hass.connection.sendMessagePromise !== "function") return;
+    if (this._isFullyConfigured()) return;
+
+    const deviceId = this._configInput.device_id;
+    const cached = DEVICE_RESOLUTION_CACHE.get(deviceId);
+    if (cached) {
+      this._applyResolvedConfig(cached.resolved || {}, cached.missing || [], cached.error || null);
+      return;
+    }
+
+    const reqId = ++this._resolutionRequestId;
+    this._resolutionState = { status: "loading", error: null };
+    this._render();
+
+    this._hass.connection
+      .sendMessagePromise({ type: "config/entity_registry/list" })
+      .then((entries) => {
+        if (this._resolutionRequestId !== reqId) return;
+        const { resolved, missing } = buildResolvedConfigFromRegistry(deviceId, entries);
+        DEVICE_RESOLUTION_CACHE.set(deviceId, { resolved, missing, error: null });
+        this._applyResolvedConfig(resolved, missing, null);
+      })
+      .catch((err) => {
+        if (this._resolutionRequestId !== reqId) return;
+        const error = err?.message || "Failed to load entity registry";
+        DEVICE_RESOLUTION_CACHE.set(deviceId, { resolved: {}, missing: REQUIRED_ENTITY_KEYS, error });
+        this._applyResolvedConfig({}, REQUIRED_ENTITY_KEYS, error);
+      });
+  }
+
+  _applyResolvedConfig(resolved, missing = [], error = null) {
+    const merged = { ...this._configInput };
+    [...REQUIRED_ENTITY_KEYS, ...OPTIONAL_ENTITY_KEYS].forEach((key) => {
+      if (!merged[key] && resolved[key]) {
+        merged[key] = resolved[key];
+      }
+    });
+
+    this._config = merged;
+
+    if (error || (missing && missing.length)) {
+      this._resolutionState = {
+        status: error ? "error" : "incomplete",
+        error: error || `Missing entities: ${missing.join(", ")}`,
+      };
+    }
+    else {
+      this._resolutionState = { status: "done", error: null };
+    }
+
+    this._render();
+  }
+
+  _renderErrorCard(title, message) {
+    if (!this.shadowRoot) return;
+    const safeTitle = this._safeText(title || "Water Tank");
+    const safeMsg = this._safeText(message || "Missing configuration");
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display:block; }
+        ha-card { padding: 16px; border-radius: 16px; }
+        .err-title { font-size: 16px; font-weight: 800; margin-bottom: 6px; }
+        .err-body { font-size: 14px; opacity: 0.8; }
+      </style>
+      <ha-card>
+        <div class="err-title">${safeTitle}</div>
+        <div class="err-body">${safeMsg}</div>
+      </ha-card>`;
+  }
+
+  _renderLoadingCard(title, message) {
+    if (!this.shadowRoot) return;
+    const safeTitle = this._safeText(title || "Water Tank");
+    const safeMsg = this._safeText(message || "Resolving device entities…");
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display:block; }
+        ha-card { padding: 16px; border-radius: 16px; }
+        .load-title { font-size: 16px; font-weight: 800; margin-bottom: 6px; }
+        .load-body { font-size: 14px; opacity: 0.8; }
+      </style>
+      <ha-card>
+        <div class="load-title">${safeTitle}</div>
+        <div class="load-body">${safeMsg}</div>
+      </ha-card>`;
   }
 
   // ---------- helpers ----------
@@ -1235,7 +1468,26 @@ class WaterTankCard extends HTMLElement {
   }
 
   _render() {
-    if (!this._config || !this._hass) return;
+    if (!this._hass || !this._config) return;
+
+    const resState = this._resolutionState?.status || "done";
+
+    if (resState === "pending" || resState === "loading") {
+      this._renderLoadingCard(this._config.title, "Resolving device entities…");
+      return;
+    }
+
+    const missingKeys = REQUIRED_ENTITY_KEYS.filter((k) => !this._config[k]);
+    if (missingKeys.length || resState === "error" || resState === "incomplete") {
+      const msg = this._resolutionState?.error || `Missing entities: ${missingKeys.join(", ")}`;
+      if (!this._warnedResolution) {
+        // eslint-disable-next-line no-console
+        console.warn(`${CARD_TAG}: configuration incomplete`, msg);
+        this._warnedResolution = true;
+      }
+      this._renderErrorCard(this._config.title, msg);
+      return;
+    }
 
     let modalScrollTop = null;
     let modalFocusId = null;
