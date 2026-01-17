@@ -98,6 +98,16 @@ static bool publishState(const DeviceState &state)
     return ok;
 }
 
+bool mqtt_publishLog(const char *topicSuffix, const char *payload, bool retained)
+{
+    if (!mqtt.connected() || s_cfg.baseTopic == nullptr)
+        return false;
+
+    char topic[128];
+    snprintf(topic, sizeof(topic), "%s/%s", s_cfg.baseTopic, topicSuffix ? topicSuffix : "");
+    return mqtt.publish(topic, payload, retained);
+}
+
 void mqtt_begin(const MqttConfig &cfg, CommandHandlerFn cmdHandler)
 {
     s_cfg = cfg;
