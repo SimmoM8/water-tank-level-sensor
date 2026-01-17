@@ -28,6 +28,9 @@ void logger_begin(const char *baseTopic, bool serialEnabled = true, bool mqttEna
 void logger_setMqttEnabled(bool enabled);
 void logger_setHighFreqEnabled(bool enabled);
 bool logger_isHighFreqEnabled();
+using LoggerMqttPublishFn = bool (*)(const char *topicSuffix, const char *payload, bool retained);
+using LoggerMqttConnectedFn = bool (*)();
+void logger_setMqttPublisher(LoggerMqttPublishFn publishFn, LoggerMqttConnectedFn isConnectedFn = nullptr);
 void logger_log(LogLevel lvl, LogDomain dom, const char *fmt, ...);
 void logger_logEvery(const char *key, uint32_t intervalMs, LogLevel lvl, LogDomain dom, const char *fmt, ...);
 

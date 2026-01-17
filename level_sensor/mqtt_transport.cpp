@@ -155,6 +155,8 @@ void mqtt_begin(const MqttConfig &cfg, CommandHandlerFn cmdHandler)
     mqtt.setCallback(mqttCallback);
     s_initialized = true;
 
+    logger_setMqttPublisher(mqtt_publishLog, mqtt_isConnected);
+
     LOG_INFO(LogDomain::MQTT, "MQTT init baseTopic=%s cmdTopic=%s stateTopic=%s", s_cfg.baseTopic, s_topics.cmd, s_topics.state);
 }
 
