@@ -12,6 +12,11 @@
 // #define CFG_STUCK_MS 8000u
 // #define CFG_PROBE_MIN_RAW 0u
 // #define CFG_PROBE_MAX_RAW 65535u
+// #define CFG_CAL_RECOMMEND_MARGIN 2000u
+// #define CFG_CAL_RECOMMEND_COUNT 3u
+// #define CFG_CAL_RECOMMEND_WINDOW_MS 60000u
+// #define CFG_ZERO_HIT_COUNT 2u
+// #define CFG_ZERO_WINDOW_MS 5000u
 
 // — Tank Volume Number entity (display/input) —
 #define CFG_TANK_VOLUME_UNIT "L" // "L" or "mL"

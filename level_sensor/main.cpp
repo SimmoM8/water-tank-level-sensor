@@ -13,6 +13,7 @@
 #include "commands.h"
 #include "applied_config.h"
 #include "logger.h"
+#include "quality.h"
 
 DeviceState g_state;
 
@@ -52,6 +53,21 @@ DeviceState g_state;
 #endif
 #ifndef CFG_PROBE_MAX_RAW
 #define CFG_PROBE_MAX_RAW 65535u
+#endif
+#ifndef CFG_CAL_RECOMMEND_MARGIN
+#define CFG_CAL_RECOMMEND_MARGIN 2000u
+#endif
+#ifndef CFG_CAL_RECOMMEND_COUNT
+#define CFG_CAL_RECOMMEND_COUNT 3u
+#endif
+#ifndef CFG_CAL_RECOMMEND_WINDOW_MS
+#define CFG_CAL_RECOMMEND_WINDOW_MS 60000u
+#endif
+#ifndef CFG_ZERO_HIT_COUNT
+#define CFG_ZERO_HIT_COUNT 2u
+#endif
+#ifndef CFG_ZERO_WINDOW_MS
+#define CFG_ZERO_WINDOW_MS 5000u
 #endif
 
 // =============================================================================
@@ -112,6 +128,7 @@ static int32_t lastRawValue = 0;
 static float percentEma = NAN;
 static bool probeConnected = false;
 static ProbeQualityReason probeQualityReason = ProbeQualityReason::UNKNOWN;
+static QualityRuntime probeQualityRt{};
 
 static int32_t calDry = 0;
 static int32_t calWet = 0;
@@ -343,13 +360,32 @@ static void refreshProbeState(int32_t raw, bool forcePublish)
   const bool wasConnected = probeConnected;
   const ProbeQualityReason prevReason = probeQualityReason;
 
-  probeConnected = evaluateProbeConnected(raw);
+  const AppliedConfig &cfg = config_get();
+  QualityConfig qc{
+      .disconnectedBelowRaw = CFG_PROBE_DISCONNECTED_BELOW_RAW,
+      .rawMin = CFG_PROBE_MIN_RAW,
+      .rawMax = CFG_PROBE_MAX_RAW,
+      .rapidFluctuationDelta = CFG_RAPID_FLUCTUATION_DELTA,
+      .spikeDelta = CFG_SPIKE_DELTA,
+      .spikeCountThreshold = (uint8_t)CFG_SPIKE_COUNT_THRESHOLD,
+      .spikeWindowMs = CFG_SPIKE_WINDOW_MS,
+      .stuckDelta = CFG_STUCK_EPS,
+      .stuckMs = CFG_STUCK_MS,
+      .calRecommendMargin = CFG_CAL_RECOMMEND_MARGIN,
+      .calRecommendCount = (uint8_t)CFG_CAL_RECOMMEND_COUNT,
+      .calRecommendWindowMs = CFG_CAL_RECOMMEND_WINDOW_MS,
+      .zeroHitCount = (uint8_t)CFG_ZERO_HIT_COUNT,
+      .zeroWindowMs = CFG_ZERO_WINDOW_MS};
+
+  const QualityResult qr = quality_evaluate((uint32_t)raw, cfg, qc, probeQualityRt, millis());
+
+  probeConnected = qr.connected;
+  probeQualityReason = qr.reason;
 
   g_state.probe.connected = probeConnected;
   g_state.probe.quality = probeQualityReason;
   g_state.probe.raw = raw;
   g_state.probe.rawValid = probeConnected;
-  const AppliedConfig &cfg = config_get();
   g_state.probe.senseMode = cfg.simulationEnabled ? SenseMode::SIM : SenseMode::TOUCH;
 
   refreshCalibrationState();
@@ -741,6 +777,7 @@ void appSetup()
   delay(1500);
   logger_begin(BASE_TOPIC, true, true);
   logger_setHighFreqEnabled(false);
+  quality_init(probeQualityRt);
   LOG_INFO(LogDomain::SYSTEM, "BOOT water_level_sensor starting...");
   LOG_INFO(LogDomain::SYSTEM, "TOUCH_PIN=%d", TOUCH_PIN);
 
