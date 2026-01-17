@@ -122,6 +122,9 @@ static char s_emptyStr[1] = {0};
 
 static void applyConfigFromCache(bool logValues);
 static bool reloadConfigIfDirty(bool logValues);
+static void handleSerialCommands();
+static void updatePercentFromRaw();
+static void refreshStateSnapshot();
 static void windowFast();
 static void windowSensor();
 static void windowCompute();
@@ -704,6 +707,13 @@ static void refreshStateSnapshot()
   g_state.calibration.minDiff = CFG_CAL_MIN_DIFF;
 }
 
+static LoopWindow g_windows[] = {
+    {"FAST", 0u, 0u, windowFast},
+    {"SENSOR", RAW_SAMPLE_MS, 0u, windowSensor},
+    {"COMPUTE", PERCENT_SAMPLE_MS, 0u, windowCompute},
+    {"STATE_META", 1000u, 0u, windowStateMeta},
+    {"MQTT", 0u, 0u, windowMqtt}};
+
 // ---------------- Arduino lifecycle ----------------
 
 void appSetup()
@@ -765,14 +775,7 @@ void appSetup()
 void appLoop()
 {
   const uint32_t now = millis();
-  static LoopWindow windows[] = {
-      {"FAST", 0u, 0u, windowFast},
-      {"SENSOR", RAW_SAMPLE_MS, 0u, windowSensor},
-      {"COMPUTE", PERCENT_SAMPLE_MS, 0u, windowCompute},
-      {"STATE_META", 1000u, 0u, windowStateMeta},
-      {"MQTT", 0u, 0u, windowMqtt}};
-
-  for (LoopWindow &w : windows)
+  for (LoopWindow &w : g_windows)
   {
     runWindow(w, now);
   }
