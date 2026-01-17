@@ -45,6 +45,10 @@ const char *toString(ProbeQualityReason v)
         return "unreliable_stuck";
     case ProbeQualityReason::OUT_OF_BOUNDS:
         return "out_of_bounds";
+    case ProbeQualityReason::CALIBRATION_RECOMMENDED:
+        return "calibration_recommended";
+    case ProbeQualityReason::ZERO_HITS:
+        return "zero_hits";
     case ProbeQualityReason::UNKNOWN:
         return "unknown";
     default:

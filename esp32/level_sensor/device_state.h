@@ -26,6 +26,8 @@ enum class ProbeQualityReason : uint8_t
     UNRELIABLE_RAPID,
     UNRELIABLE_STUCK,
     OUT_OF_BOUNDS,
+    CALIBRATION_RECOMMENDED,
+    ZERO_HITS,
     UNKNOWN
 };
 

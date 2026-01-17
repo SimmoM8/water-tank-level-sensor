@@ -4,7 +4,7 @@
  */
 
 const CARD_TAG = "water-tank-card";
-const VERSION = "0.5.0";
+const VERSION = "0.5.1";
 
 // Required logical entity keys for the card to render.
 const REQUIRED_ENTITY_KEYS = [
@@ -619,6 +619,25 @@ class WaterTankCard extends HTMLElement {
     return `<span class="wt-badge" style="background:${bg};border-color:${br};">${online ? "Online" : "Offline"}</span>`;
   }
 
+  _qualityMeta(reason) {
+    if (this._isUnknownState(reason)) return null;
+    const key = String(reason || "").toLowerCase();
+    if (!key || key === "ok") return null;
+
+    const map = {
+      disconnected_low_raw: { label: "Probe reading too low (likely unplugged)", icon: "mdi:power-plug-off-outline", severity: "error", display: "nullify" },
+      unreliable_spikes: { label: "Signal spiking (noise)", icon: "mdi:waveform", severity: "warn" },
+      unreliable_rapid_fluctuation: { label: "Rapid fluctuation", icon: "mdi:chart-bell-curve", severity: "warn" },
+      unreliable_stuck: { label: "Signal stuck (flatline)", icon: "mdi:sine-wave", severity: "warn" },
+      out_of_bounds: { label: "Raw reading out of bounds", icon: "mdi:ruler", severity: "error", display: "dim" },
+      calibration_recommended: { label: "Recalibrate: raw drifted past saved range", icon: "mdi:target-account", severity: "warn", display: "normal" },
+      zero_hits: { label: "Zero readings seen (check wiring)", icon: "mdi:equal", severity: "warn" },
+      unknown: { label: "Quality unknown", icon: "mdi:help-circle-outline", severity: "warn" },
+    };
+
+    return map[key] || { label: `Quality issue (${key})`, icon: "mdi:waveform", severity: "warn" };
+  }
+
   _collectWarnings() {
     const statusState = this._state(this._config.status_entity);
     const probeState = this._state(this._config.probe_entity);
@@ -637,8 +656,9 @@ class WaterTankCard extends HTMLElement {
 
     if (this._config.quality_reason_entity) {
       const qr = this._state(this._config.quality_reason_entity);
-      if (!this._isUnknownState(qr) && qr && qr !== "ok") {
-        warnings.push({ icon: "mdi:waveform", text: `Quality: ${qr}` });
+      const qm = this._qualityMeta(qr);
+      if (qm) {
+        warnings.push({ icon: qm.icon, text: qm.label });
       }
     }
 
@@ -683,6 +703,7 @@ class WaterTankCard extends HTMLElement {
     const probeState = this._state(this._config.probe_entity);
     const percentValidState = this._state(this._config.percent_valid_entity);
     const calState = this._state(this._config.calibration_entity);
+    const qualityReason = this._config.quality_reason_entity ? this._state(this._config.quality_reason_entity) : null;
 
     const offline = this._isUnknownState(status) || status === "offline";
     if (offline) return { display: "nullify", severity: "error", icon: "mdi:lan-disconnect", msg: "Device offline" };
@@ -696,6 +717,12 @@ class WaterTankCard extends HTMLElement {
     if (calState === "needs_calibration") return { display: "dim", severity: "warn", icon: "mdi:ruler", msg: "Needs calibration" };
 
     if (percentValidState !== "on") return { display: "dim", severity: "warn", icon: "mdi:alert-outline", msg: "Readings not valid" };
+
+    const qm = this._qualityMeta(qualityReason);
+    if (qm) {
+      const display = qm.display || (qm.severity === "error" ? "dim" : "normal");
+      return { display, severity: qm.severity || "warn", icon: qm.icon || "mdi:waveform", msg: qm.label };
+    }
 
     return { display: "normal", severity: "ok", icon: "mdi:check-circle-outline", msg: "All readings valid" };
   }
@@ -896,7 +923,12 @@ class WaterTankCard extends HTMLElement {
       { label: "Calibration", value: this._safeText(this._state(this._config.calibration_entity)) },
       { label: "Percent valid", value: this._safeText(this._state(this._config.percent_valid_entity)) },
     ];
-    if (this._config.quality_reason_entity) diagnosticsLines.push({ label: "Quality reason", value: this._safeText(this._state(this._config.quality_reason_entity)) });
+    if (this._config.quality_reason_entity) {
+      const qualityReason = this._state(this._config.quality_reason_entity);
+      const qm = this._qualityMeta(qualityReason);
+      const qualityLabel = qm ? `${qm.label} (${qualityReason})` : qualityReason;
+      diagnosticsLines.push({ label: "Quality", value: this._safeText(qualityLabel) });
+    }
     if (this._config.percent_entity) diagnosticsLines.push({ label: "Percent", value: this._safeText(this._state(this._config.percent_entity)) });
     if (this._config.liters_entity) diagnosticsLines.push({ label: "Liters", value: this._safeText(this._state(this._config.liters_entity)) });
     if (this._config.cm_entity) diagnosticsLines.push({ label: "Height", value: this._safeText(this._state(this._config.cm_entity)) });
