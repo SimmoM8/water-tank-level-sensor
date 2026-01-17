@@ -1,58 +1,63 @@
 #include "mqtt_transport.h"
 #include <WiFi.h>
 #include <PubSubClient.h>
+#include <ArduinoJson.h>
+#include <Arduino.h>
+#include <string.h>
 
-#include "device_state.h"
 #include "state_json.h"
-#include "commands.h" // we’ll build next
-
-// ---- topics ----
-static const char *DEVICE_ID = "water_tank_esp32";
-static const char *BASE = "water_tank/water_tank_esp32";
-static const char *TOPIC_STATE = "water_tank/water_tank_esp32/state";
-static const char *TOPIC_CMD = "water_tank/water_tank_esp32/cmd";
-static const char *TOPIC_AVAIL = "water_tank/water_tank_esp32/availability";
-
-static const char *AVAIL_ONLINE = "online";
-static const char *AVAIL_OFFLINE = "offline";
-
-// broker host/creds come from your secrets.h usage in main (or keep them here if you prefer)
-extern const char *MQTT_HOST;
-extern const int MQTT_PORT;
-extern const char *MQTT_CLIENT_ID;
-extern const char *MQTT_USER;
-extern const char *MQTT_PASS;
+#include "commands.h"
 
 static WiFiClient wifiClient;
 static PubSubClient mqtt(wifiClient);
 
-static bool g_publishStateRequested = true;
+static MqttConfig s_cfg{};
+static CommandHandlerFn s_cmdHandler = nullptr;
+
+struct Topics
+{
+    char state[96];
+    char cmd[96];
+    char ack[96];
+    char avail[96];
+};
+static Topics s_topics{};
+
+static bool stateDirty = true;
+static uint32_t lastStatePublishMs = 0;
+static const uint32_t STATE_PUBLISH_INTERVAL_MS = 30000; // periodic retained snapshot
+
+static const char *AVAIL_ONLINE = "online";
+static const char *AVAIL_OFFLINE = "offline";
+
+static void buildTopic(char *out, size_t outSize, const char *suffix)
+{
+    if (outSize == 0 || s_cfg.baseTopic == nullptr)
+        return;
+    snprintf(out, outSize, "%s/%s", s_cfg.baseTopic, suffix);
+}
+
+static void buildTopics()
+{
+    buildTopic(s_topics.state, sizeof(s_topics.state), "state");
+    buildTopic(s_topics.cmd, sizeof(s_topics.cmd), "cmd");
+    buildTopic(s_topics.ack, sizeof(s_topics.ack), "ack");
+    buildTopic(s_topics.avail, sizeof(s_topics.avail), "availability");
+}
 
 static void mqttCallback(char *topic, byte *payload, unsigned int length)
 {
-    // Only care about cmd topic
-    if (strcmp(topic, TOPIC_CMD) != 0)
+    if (!s_cmdHandler)
+        return;
+    if (strcmp(topic, s_topics.cmd) != 0)
         return;
 
-    // Hand off to commands module (central API)
-    commands_handle(payload, length);
-
-    // After applying command, we want a fresh retained state publish
-    g_publishStateRequested = true;
-}
-
-void mqtt_begin()
-{
-    mqtt.setServer(MQTT_HOST, MQTT_PORT);
-    mqtt.setKeepAlive(30);
-    mqtt.setSocketTimeout(5);
-    mqtt.setBufferSize(1024);
-    mqtt.setCallback(mqttCallback);
+    s_cmdHandler(payload, length);
 }
 
 static void mqtt_subscribe()
 {
-    mqtt.subscribe(TOPIC_CMD);
+    mqtt.subscribe(s_topics.cmd);
 }
 
 static void mqtt_ensureConnected()
@@ -60,51 +65,92 @@ static void mqtt_ensureConnected()
     if (mqtt.connected() || WiFi.status() != WL_CONNECTED)
         return;
 
-    // LWT: broker publishes OFFLINE if we drop unexpectedly
     const bool ok = mqtt.connect(
-        MQTT_CLIENT_ID,
-        MQTT_USER,
-        MQTT_PASS,
-        TOPIC_AVAIL, 0, true, AVAIL_OFFLINE);
+        s_cfg.clientId,
+        s_cfg.user,
+        s_cfg.pass,
+        s_topics.avail, 0, true, AVAIL_OFFLINE);
 
     if (!ok)
         return;
 
-    mqtt.publish(TOPIC_AVAIL, AVAIL_ONLINE, true);
+    mqtt.publish(s_topics.avail, AVAIL_ONLINE, true);
     mqtt_subscribe();
 
-    // request a fresh retained state after reconnect
-    g_publishStateRequested = true;
+    stateDirty = true; // force fresh retained snapshot after reconnect
 }
 
-void mqtt_loop()
+static bool publishState(const DeviceState &state)
+{
+    if (!mqtt.connected())
+        return false;
+
+    static char buf[1024]; // tuned for current state payload size
+    if (!buildStateJson(state, buf, sizeof(buf)))
+        return false;
+
+    const bool ok = mqtt.publish(s_topics.state, buf, true);
+    if (ok)
+    {
+        stateDirty = false;
+        lastStatePublishMs = millis();
+    }
+    return ok;
+}
+
+void mqtt_begin(const MqttConfig &cfg, CommandHandlerFn cmdHandler)
+{
+    s_cfg = cfg;
+    s_cmdHandler = cmdHandler;
+    buildTopics();
+
+    mqtt.setServer(cfg.host, cfg.port);
+    mqtt.setKeepAlive(30);
+    mqtt.setSocketTimeout(5);
+    mqtt.setBufferSize(1024);
+    mqtt.setCallback(mqttCallback);
+}
+
+void mqtt_tick(const DeviceState &state)
 {
     mqtt_ensureConnected();
-    if (mqtt.connected())
-        mqtt.loop();
+    if (!mqtt.connected())
+        return;
+
+    mqtt.loop();
+
+    const uint32_t now = millis();
+    if (stateDirty || (now - lastStatePublishMs) >= STATE_PUBLISH_INTERVAL_MS)
+    {
+        publishState(state);
+    }
+}
+
+void mqtt_requestStatePublish()
+{
+    stateDirty = true;
+}
+
+bool mqtt_publishAck(const char *reqId, const char *type, CmdStatus status, const char *msg)
+{
+    if (!mqtt.connected())
+        return false;
+
+    StaticJsonDocument<256> doc;
+    doc["request_id"] = reqId ? reqId : "";
+    doc["type"] = type ? type : "";
+    doc["status"] = toString(status);
+    doc["message"] = msg ? msg : "";
+
+    char buf[256];
+    const size_t written = serializeJson(doc, buf, sizeof(buf));
+    if (written == 0 || written >= sizeof(buf))
+        return false;
+
+    return mqtt.publish(s_topics.ack, buf, false);
 }
 
 bool mqtt_isConnected()
 {
     return mqtt.connected();
-}
-
-void mqtt_requestStatePublish()
-{
-    g_publishStateRequested = true;
-}
-
-bool mqtt_publishState(const DeviceState &state)
-{
-    if (!mqtt.connected())
-        return false;
-
-    static char buf[768]; // tune if needed
-    if (!buildStateJson(state, buf, sizeof(buf)))
-        return false;
-
-    // retained snapshot
-    const bool ok = mqtt.publish(TOPIC_STATE, buf, true);
-    g_publishStateRequested = false;
-    return ok;
 }
