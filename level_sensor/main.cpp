@@ -167,6 +167,7 @@ static void printHelpMenu()
   LOG_INFO(LogDomain::SYSTEM, "  wifi  -> start WiFi captive portal (setup mode)");
   LOG_INFO(LogDomain::SYSTEM, "  wipewifi -> clear WiFi creds + reboot into setup portal");
   LOG_INFO(LogDomain::SYSTEM, "  log hf on/off -> enable/disable high-frequency logs");
+  LOG_INFO(LogDomain::SYSTEM, "  sim <0-5> -> set simulation mode and enable sim backend");
   LOG_INFO(LogDomain::SYSTEM, "  mode touch -> use touchRead()");
   LOG_INFO(LogDomain::SYSTEM, "  mode sim   -> use simulation backend");
   LOG_INFO(LogDomain::SYSTEM, "  help  -> show this menu");
@@ -609,10 +610,38 @@ static void handleSerialCommands()
     probe_updateMode(READ_PROBE);
     return;
   }
+  if (cmd.startsWith("mode sim "))
+  {
+    int m = cmd.substring(9).toInt();
+    if (m < 0)
+      m = 0;
+    if (m > 5)
+      m = 5;
+    setSimulationEnabled(true, true, "serial");
+    setSimulationModeInternal((uint8_t)m, true, "serial");
+    setSimulationMode((uint8_t)m);
+    probe_updateMode(READ_SIM);
+    LOG_INFO(LogDomain::SYSTEM, "Simulation mode set to %d (serial)", m);
+    return;
+  }
   if (cmd == "mode sim")
   {
     setSimulationEnabled(true, true, "serial");
     probe_updateMode(READ_SIM);
+    return;
+  }
+  if (cmd.startsWith("sim "))
+  {
+    int m = cmd.substring(4).toInt();
+    if (m < 0)
+      m = 0;
+    if (m > 5)
+      m = 5;
+    setSimulationEnabled(true, true, "serial");
+    setSimulationModeInternal((uint8_t)m, true, "serial");
+    setSimulationMode((uint8_t)m);
+    probe_updateMode(READ_SIM);
+    LOG_INFO(LogDomain::SYSTEM, "Simulation mode set to %d (serial)", m);
     return;
   }
 
