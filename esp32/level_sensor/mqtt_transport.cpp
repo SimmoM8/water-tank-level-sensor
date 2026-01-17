@@ -4,6 +4,7 @@
 #include <ArduinoJson.h>
 #include <Arduino.h>
 #include <string.h>
+#include "ha_discovery.h"
 
 #include "state_json.h"
 #include "commands.h"
@@ -14,6 +15,13 @@ static PubSubClient mqtt(wifiClient);
 
 static MqttConfig s_cfg{};
 static CommandHandlerFn s_cmdHandler = nullptr;
+
+bool mqtt_publishRaw(const char *topic, const char *payload, bool retained)
+{
+    if (!mqtt.connected())
+        return false;
+    return mqtt.publish(topic, payload, retained);
+}
 static bool s_initialized = false;
 
 struct Topics
@@ -47,6 +55,7 @@ static void buildTopics()
     buildTopic(s_topics.cmd, sizeof(s_topics.cmd), "cmd");
     buildTopic(s_topics.ack, sizeof(s_topics.ack), "ack");
     buildTopic(s_topics.avail, sizeof(s_topics.avail), "availability");
+    ha_discovery_publishAll();
 }
 
 static void mqttCallback(char *topic, byte *payload, unsigned int length)
@@ -80,6 +89,14 @@ static bool mqtt_ensureConnected()
             return false;
         }
 
+        HaDiscoveryConfig haCfg{
+            .baseTopic = s_cfg.baseTopic,
+            .deviceId = s_cfg.deviceId,
+            .deviceName = s_cfg.deviceName,
+            .deviceModel = s_cfg.deviceModel,
+            .deviceSw = s_cfg.deviceSw,
+            .publish = mqtt_publishRaw};
+        ha_discovery_begin(haCfg);
         if ((uint32_t)(now - s_lastAttemptMs) >= RETRY_INTERVAL_MS)
         {
             LOG_INFO(LogDomain::MQTT, "MQTT connecting host=%s port=%d clientId=%s", s_cfg.host, s_cfg.port, s_cfg.clientId);

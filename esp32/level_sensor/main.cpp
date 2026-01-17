@@ -744,7 +744,10 @@ void appSetup()
       .user = MQTT_USER,
       .pass = MQTT_PASS,
       .baseTopic = BASE_TOPIC,
-      .deviceId = DEVICE_ID};
+      .deviceId = DEVICE_ID,
+      .deviceName = DEVICE_NAME,
+      .deviceModel = DEVICE_NAME,
+      .deviceSw = DEVICE_FW};
   mqtt_begin(mqttCfg, commands_handle);
 }
 

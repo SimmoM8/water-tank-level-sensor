@@ -15,6 +15,9 @@ struct MqttConfig
     const char *pass;
     const char *baseTopic; // e.g. "water_tank/water_tank_esp32"
     const char *deviceId;  // used for availability
+    const char *deviceName;
+    const char *deviceModel;
+    const char *deviceSw;
 };
 
 using CommandHandlerFn = void (*)(const uint8_t *payload, size_t len);
@@ -36,3 +39,6 @@ bool mqtt_publishLog(const char *topicSuffix, const char *payload, bool retained
 
 // MQTT connection status
 bool mqtt_isConnected();
+
+// Publish an arbitrary MQTT topic (raw topic).
+bool mqtt_publishRaw(const char *topic, const char *payload, bool retained = false);
