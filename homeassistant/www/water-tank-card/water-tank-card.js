@@ -42,7 +42,7 @@ const UNIQUE_ID_SUFFIX_MAP = {
   liters_entity: ["_liters"],
   cm_entity: ["_centimeters", "_cm"],
   raw_entity: ["_raw"],
-  percent_valid_entity: ["_percent_valid"],
+  percent_valid_entity: ["_percent_valid", "_percent_valid_bool"],
   calibration_entity: ["_calibration_state", "_calibration"],
   quality_reason_entity: ["_quality"],
   tank_volume_entity: ["_tank_volume_l"],
@@ -66,7 +66,7 @@ const ENTITY_MATCH_RULES = {
   liters_entity: { domains: ["sensor"], entitySuffixes: ["_liters"] },
   cm_entity: { domains: ["sensor"], entitySuffixes: ["_centimeters", "_cm"] },
   raw_entity: { domains: ["sensor"], entitySuffixes: ["_raw"] },
-  percent_valid_entity: { domains: ["binary_sensor", "sensor"], entitySuffixes: ["_percent_valid"] },
+  percent_valid_entity: { domains: ["binary_sensor", "sensor"], entitySuffixes: ["_percent_valid", "_percent_valid_bool"] },
   calibration_entity: { domains: ["sensor"], entitySuffixes: ["_calibration_state", "_calibration"] },
   quality_reason_entity: { domains: ["sensor"], entitySuffixes: ["_quality"] },
   tank_volume_entity: { domains: ["number", "input_number", "sensor"], entitySuffixes: ["_tank_volume_l", "_tank_volume"] },
@@ -342,6 +342,13 @@ class WaterTankCard extends HTMLElement {
 
   _isOff(entityId) {
     return this._state(entityId) === "off";
+  }
+
+  _isTruthyState(state) {
+    if (state === true) return true;
+    if (state === false || state === null || state === undefined) return false;
+    const s = String(state).toLowerCase();
+    return s === "on" || s === "true" || s === "1";
   }
 
   _isUnknownState(s) {
@@ -652,7 +659,7 @@ class WaterTankCard extends HTMLElement {
     if (calState === "needs_calibration") warnings.push({ icon: "mdi:ruler", text: "Needs calibration" });
     else if (calState === "calibrating") warnings.push({ icon: "mdi:cog", text: "Calibrating…" });
 
-    if (percentValidState !== "on") warnings.push({ icon: "mdi:alert-outline", text: "Readings not valid" });
+    if (!this._isTruthyState(percentValidState)) warnings.push({ icon: "mdi:alert-outline", text: "Readings not valid" });
 
     if (this._config.quality_reason_entity) {
       const qr = this._state(this._config.quality_reason_entity);
@@ -716,7 +723,7 @@ class WaterTankCard extends HTMLElement {
 
     if (calState === "needs_calibration") return { display: "dim", severity: "warn", icon: "mdi:ruler", msg: "Needs calibration" };
 
-    if (percentValidState !== "on") return { display: "dim", severity: "warn", icon: "mdi:alert-outline", msg: "Readings not valid" };
+    if (!this._isTruthyState(percentValidState)) return { display: "dim", severity: "warn", icon: "mdi:alert-outline", msg: "Readings not valid" };
 
     const qm = this._qualityMeta(qualityReason);
     if (qm) {
