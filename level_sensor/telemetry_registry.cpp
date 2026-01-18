@@ -23,79 +23,6 @@ static JsonVariant ensurePath(JsonObject root, const char *path)
     return current;
 }
 
-// Local string helpers for enums to avoid cross-file deps.
-static const char *toString(SenseMode v)
-{
-    switch (v)
-    {
-    case SenseMode::TOUCH:
-        return "touch";
-    case SenseMode::SIM:
-        return "simulation";
-    default:
-        return "unknown";
-    }
-}
-
-static const char *toString(CalibrationState v)
-{
-    switch (v)
-    {
-    case CalibrationState::NEEDS:
-        return "needs_calibration";
-    case CalibrationState::CALIBRATING:
-        return "calibrating";
-    case CalibrationState::CALIBRATED:
-        return "calibrated";
-    default:
-        return "unknown";
-    }
-}
-
-static const char *toString(ProbeQualityReason v)
-{
-    switch (v)
-    {
-    case ProbeQualityReason::OK:
-        return "ok";
-    case ProbeQualityReason::DISCONNECTED_LOW_RAW:
-        return "disconnected_low_raw";
-    case ProbeQualityReason::UNRELIABLE_SPIKES:
-        return "unreliable_spikes";
-    case ProbeQualityReason::UNRELIABLE_RAPID:
-        return "unreliable_rapid_fluctuation";
-    case ProbeQualityReason::UNRELIABLE_STUCK:
-        return "unreliable_stuck";
-    case ProbeQualityReason::OUT_OF_BOUNDS:
-        return "out_of_bounds";
-    case ProbeQualityReason::CALIBRATION_RECOMMENDED:
-        return "calibration_recommended";
-    case ProbeQualityReason::ZERO_HITS:
-        return "zero_hits";
-    case ProbeQualityReason::UNKNOWN:
-        return "unknown";
-    default:
-        return "unknown";
-    }
-}
-
-static const char *toString(CmdStatus v)
-{
-    switch (v)
-    {
-    case CmdStatus::RECEIVED:
-        return "received";
-    case CmdStatus::APPLIED:
-        return "applied";
-    case CmdStatus::REJECTED:
-        return "rejected";
-    case CmdStatus::ERROR:
-        return "error";
-    default:
-        return "unknown";
-    }
-}
-
 // Writers
 static void write_schema(const DeviceState &, JsonObject &root)
 {
@@ -256,7 +183,7 @@ static const TelemetryFieldDef TELEMETRY_FIELDS[] = {
     {HaComponent::Sensor, "quality", "Probe Quality", "probe.quality", nullptr, nullptr, "mdi:diagnostics", nullptr, nullptr, write_probe_quality},
     {HaComponent::Sensor, "sense_mode", "Probe Sense Mode", "probe.sense_mode", nullptr, nullptr, nullptr, nullptr, nullptr, write_probe_sense_mode},
     {HaComponent::Sensor, "raw", "Probe Raw", "probe.raw", nullptr, nullptr, "mdi:water", nullptr, nullptr, write_probe_raw},
-    {HaComponent::Sensor, "raw_valid", "Probe Raw Valid", "probe.raw_valid", nullptr, nullptr, nullptr, nullptr, "raw_valid_bool", write_probe_raw_valid},
+    {HaComponent::BinarySensor, "raw_valid", "Probe Raw Valid", "probe.raw_valid", nullptr, nullptr, nullptr, nullptr, nullptr, write_probe_raw_valid},
 
     // Calibration
     {HaComponent::Sensor, "calibration_state", "Calibration State", "calibration.state", nullptr, nullptr, "mdi:tune", nullptr, nullptr, write_cal_state},
@@ -267,11 +194,11 @@ static const TelemetryFieldDef TELEMETRY_FIELDS[] = {
 
     // Level
     {HaComponent::Sensor, "percent", "Level Percent", "level.percent", "humidity", "%", nullptr, nullptr, nullptr, write_level_percent},
-    {HaComponent::Sensor, "percent_valid", "Percent Valid", "level.percent_valid", nullptr, nullptr, nullptr, nullptr, "percent_valid_bool", write_level_percent_valid},
     {HaComponent::Sensor, "liters", "Level Liters", "level.liters", nullptr, "L", "mdi:water", nullptr, nullptr, write_level_liters},
-    {HaComponent::Sensor, "liters_valid", "Liters Valid", "level.liters_valid", nullptr, nullptr, nullptr, nullptr, "liters_valid_bool", write_level_liters_valid},
     {HaComponent::Sensor, "centimeters", "Level Centimeters", "level.centimeters", nullptr, "cm", "mdi:ruler", nullptr, nullptr, write_level_cm},
-    {HaComponent::Sensor, "centimeters_valid", "Centimeters Valid", "level.centimeters_valid", nullptr, nullptr, nullptr, nullptr, "centimeters_valid_bool", write_level_cm_valid},
+    {HaComponent::BinarySensor, "percent_valid", "Percent Valid", "level.percent_valid", nullptr, nullptr, nullptr, nullptr, nullptr, write_level_percent_valid},
+    {HaComponent::BinarySensor, "liters_valid", "Liters Valid", "level.liters_valid", nullptr, nullptr, nullptr, nullptr, nullptr, write_level_liters_valid},
+    {HaComponent::BinarySensor, "centimeters_valid", "Centimeters Valid", "level.centimeters_valid", nullptr, nullptr, nullptr, nullptr, nullptr, write_level_cm_valid},
 
     // WiFi telemetry exposed as sensor
     {HaComponent::Sensor, "wifi_rssi", "WiFi RSSI", "wifi.rssi", "signal_strength", "dBm", "mdi:wifi", nullptr, nullptr, write_wifi},
