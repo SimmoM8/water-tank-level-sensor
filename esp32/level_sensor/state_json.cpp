@@ -1,5 +1,6 @@
 #include "state_json.h"
 #include <ArduinoJson.h>
+#include "telemetry_fields.h"
 
 const char *toString(SenseMode v)
 {
@@ -75,60 +76,20 @@ const char *toString(CmdStatus v)
 
 bool buildStateJson(const DeviceState &s, char *outBuf, size_t outSize)
 {
-    // StaticJsonDocument lives on the stack; sized to fit all fields comfortably.
+    // Sized to fit all telemetry fields comfortably.
     StaticJsonDocument<2048> doc;
+    JsonObject root = doc.to<JsonObject>();
 
-    doc["schema"] = s.schema;
-    doc["ts"] = s.ts;
+    size_t count = 0;
+    const TelemetryField *fields = telemetry_getAll(count);
+    for (size_t i = 0; i < count; ++i)
+    {
+        if (fields[i].writeFn)
+        {
+            fields[i].writeFn(s, root);
+        }
+    }
 
-    JsonObject device = doc["device"].to<JsonObject>();
-    device["id"] = s.device.id;
-    device["name"] = s.device.name;
-    device["fw"] = s.device.fw;
-
-    JsonObject wifi = doc["wifi"].to<JsonObject>();
-    wifi["rssi"] = s.wifi.rssi;
-    wifi["ip"] = s.wifi.ip;
-
-    JsonObject mqtt = doc["mqtt"].to<JsonObject>();
-    mqtt["connected"] = s.mqtt.connected;
-
-    JsonObject probe = doc["probe"].to<JsonObject>();
-    probe["connected"] = s.probe.connected;
-    probe["quality"] = toString(s.probe.quality);
-    probe["sense_mode"] = toString(s.probe.senseMode);
-    probe["raw"] = s.probe.raw;
-    probe["raw_valid"] = s.probe.rawValid;
-
-    JsonObject cal = doc["calibration"].to<JsonObject>();
-    cal["state"] = toString(s.calibration.state);
-    cal["dry"] = s.calibration.dry;
-    cal["wet"] = s.calibration.wet;
-    cal["inverted"] = s.calibration.inverted;
-    cal["min_diff"] = s.calibration.minDiff;
-
-    JsonObject level = doc["level"].to<JsonObject>();
-    level["percent"] = s.level.percent;
-    level["percent_valid"] = s.level.percentValid;
-    level["liters"] = s.level.liters;
-    level["liters_valid"] = s.level.litersValid;
-    level["centimeters"] = s.level.centimeters;
-    level["centimeters_valid"] = s.level.centimetersValid;
-
-    JsonObject cfg = doc["config"].to<JsonObject>();
-    cfg["tank_volume_l"] = s.config.tankVolumeLiters;
-    cfg["rod_length_cm"] = s.config.rodLengthCm;
-    cfg["simulation_enabled"] = s.config.simulationEnabled;
-    cfg["simulation_mode"] = s.config.simulationMode;
-
-    JsonObject lastCmd = doc["last_cmd"].to<JsonObject>();
-    lastCmd["request_id"] = s.lastCmd.requestId;
-    lastCmd["type"] = s.lastCmd.type;
-    lastCmd["status"] = toString(s.lastCmd.status);
-    lastCmd["message"] = s.lastCmd.message;
-    lastCmd["ts"] = s.lastCmd.ts;
-
-    // Serialize to buffer
     const size_t written = serializeJson(doc, outBuf, outSize);
     return written > 0 && written < outSize;
 }

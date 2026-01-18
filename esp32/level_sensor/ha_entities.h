@@ -13,16 +13,6 @@ struct HaSensorSpec
     const char *uniqIdOverride; // optional stable unique_id suffix
 };
 
-struct HaBinarySensorSpec
-{
-    const char *objectId;
-    const char *name;
-    const char *valueTemplate;
-    const char *deviceClass;    // optional
-    const char *icon;           // optional
-    const char *uniqIdOverride; // optional stable unique_id suffix
-};
-
 struct HaButtonSpec
 {
     const char *objectId;
@@ -66,7 +56,6 @@ struct HaSelectSpec
 
 // Accessors returning pointers to static tables; count is set via out param.
 const HaSensorSpec *ha_getSensors(size_t &count);
-const HaBinarySensorSpec *ha_getBinarySensors(size_t &count);
 const HaButtonSpec *ha_getButtons(size_t &count);
 const HaNumberSpec *ha_getNumbers(size_t &count);
 const HaSwitchSpec *ha_getSwitches(size_t &count);
