@@ -2,8 +2,30 @@
 #include <string.h>
 #include "domain_strings.h"
 
-// Helper: navigate/create nested objects for a dotted path and return a JsonVariant to assign.
-static JsonVariant ensurePath(JsonObject root, const char *path)
+// Split dotted path into parent path and leaf key.
+static void splitPath(const char *full, char *parentOut, size_t parentLen, char *leafOut, size_t leafLen)
+{
+    const char *dot = strrchr(full, '.');
+    if (!dot)
+    {
+        parentOut[0] = '\0';
+        strncpy(leafOut, full, leafLen);
+        leafOut[leafLen - 1] = '\0';
+        return;
+    }
+
+    size_t parentSize = (size_t)(dot - full);
+    if (parentSize >= parentLen)
+        parentSize = parentLen - 1;
+    memcpy(parentOut, full, parentSize);
+    parentOut[parentSize] = '\0';
+
+    strncpy(leafOut, dot + 1, leafLen);
+    leafOut[leafLen - 1] = '\0';
+}
+
+// Ensure a JsonObject exists at the given dotted path; return that object.
+static JsonObject ensureObject(JsonObject root, const char *path)
 {
     JsonObject obj = root;
     const char *p = path;
@@ -18,41 +40,43 @@ static JsonVariant ensurePath(JsonObject root, const char *path)
         memcpy(key, p, len);
         key[len] = '\0';
 
-        if (dot)
+        JsonVariant child = obj[key];
+        if (!child.is<JsonObject>())
         {
-            JsonVariant child = obj[key];
-            if (!child.is<JsonObject>())
-            {
-                child = obj.createNestedObject(key);
-            }
-            obj = child.as<JsonObject>();
-            p = dot + 1;
+            child = obj.createNestedObject(key);
         }
-        else
-        {
-            // last segment: return the slot to be assigned
-            return obj[key];
-        }
+        obj = child.as<JsonObject>();
+
+        if (!dot)
+            break;
+        p = dot + 1;
     }
 
-    return obj; // fallback (should not hit)
+    return obj;
 }
 
 // Writers
 static void write_schema(const DeviceState &, JsonObject &root)
 {
-    ensurePath(root, "schema").set(STATE_SCHEMA_VERSION);
+    char parent[32];
+    char leaf[32];
+    splitPath("schema", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = (parent[0] == '\0') ? root : ensureObject(root, parent);
+    obj[leaf] = STATE_SCHEMA_VERSION;
 }
 
 static void write_ts(const DeviceState &s, JsonObject &root)
 {
-    ensurePath(root, "ts").set(s.ts);
+    char parent[32];
+    char leaf[32];
+    splitPath("ts", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = (parent[0] == '\0') ? root : ensureObject(root, parent);
+    obj[leaf] = s.ts;
 }
 
 static void write_device(const DeviceState &s, JsonObject &root)
 {
-    JsonVariant dev = ensurePath(root, "device");
-    JsonObject o = dev.to<JsonObject>();
+    JsonObject o = ensureObject(root, "device");
     o["id"] = s.device.id;
     o["name"] = s.device.name;
     o["fw"] = s.device.fw;
@@ -60,123 +84,200 @@ static void write_device(const DeviceState &s, JsonObject &root)
 
 static void write_wifi(const DeviceState &s, JsonObject &root)
 {
-    JsonVariant wifi = ensurePath(root, "wifi");
-    JsonObject o = wifi.to<JsonObject>();
+    JsonObject o = ensureObject(root, "wifi");
     o["rssi"] = s.wifi.rssi;
     o["ip"] = s.wifi.ip;
 }
 
 static void write_mqtt(const DeviceState &s, JsonObject &root)
 {
-    JsonVariant mqtt = ensurePath(root, "mqtt");
-    JsonObject o = mqtt.to<JsonObject>();
+    JsonObject o = ensureObject(root, "mqtt");
     o["connected"] = s.mqtt.connected;
 }
 
 static void write_probe_connected(const DeviceState &s, JsonObject &root)
 {
-    ensurePath(root, "probe.connected").set(s.probe.connected);
+    char parent[32];
+    char leaf[32];
+    splitPath("probe.connected", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = ensureObject(root, parent);
+    obj[leaf] = s.probe.connected;
 }
 
 static void write_probe_quality(const DeviceState &s, JsonObject &root)
 {
-    ensurePath(root, "probe.quality").set(toString(s.probe.quality));
+    char parent[32];
+    char leaf[32];
+    splitPath("probe.quality", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = ensureObject(root, parent);
+    obj[leaf] = toString(s.probe.quality);
 }
 
 static void write_probe_sense_mode(const DeviceState &s, JsonObject &root)
 {
-    ensurePath(root, "probe.sense_mode").set(toString(s.probe.senseMode));
+    char parent[32];
+    char leaf[32];
+    splitPath("probe.sense_mode", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = ensureObject(root, parent);
+    obj[leaf] = toString(s.probe.senseMode);
 }
 
 static void write_probe_raw(const DeviceState &s, JsonObject &root)
 {
-    ensurePath(root, "probe.raw").set(s.probe.raw);
+    char parent[32];
+    char leaf[32];
+    splitPath("probe.raw", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = ensureObject(root, parent);
+    obj[leaf] = s.probe.raw;
 }
 
 static void write_probe_raw_valid(const DeviceState &s, JsonObject &root)
 {
-    ensurePath(root, "probe.raw_valid").set(s.probe.rawValid);
+    char parent[32];
+    char leaf[32];
+    splitPath("probe.raw_valid", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = ensureObject(root, parent);
+    obj[leaf] = s.probe.rawValid;
 }
 
 static void write_cal_state(const DeviceState &s, JsonObject &root)
 {
-    ensurePath(root, "calibration.state").set(toString(s.calibration.state));
+    char parent[32];
+    char leaf[32];
+    splitPath("calibration.state", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = ensureObject(root, parent);
+    obj[leaf] = toString(s.calibration.state);
 }
 
 static void write_cal_dry(const DeviceState &s, JsonObject &root)
 {
-    ensurePath(root, "calibration.dry").set(s.calibration.dry);
+    char parent[32];
+    char leaf[32];
+    splitPath("calibration.dry", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = ensureObject(root, parent);
+    obj[leaf] = s.calibration.dry;
 }
 
 static void write_cal_wet(const DeviceState &s, JsonObject &root)
 {
-    ensurePath(root, "calibration.wet").set(s.calibration.wet);
+    char parent[32];
+    char leaf[32];
+    splitPath("calibration.wet", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = ensureObject(root, parent);
+    obj[leaf] = s.calibration.wet;
 }
 
 static void write_cal_inverted(const DeviceState &s, JsonObject &root)
 {
-    ensurePath(root, "calibration.inverted").set(s.calibration.inverted);
+    char parent[32];
+    char leaf[32];
+    splitPath("calibration.inverted", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = ensureObject(root, parent);
+    obj[leaf] = s.calibration.inverted;
 }
 
 static void write_cal_min_diff(const DeviceState &s, JsonObject &root)
 {
-    ensurePath(root, "calibration.min_diff").set(s.calibration.minDiff);
+    char parent[32];
+    char leaf[32];
+    splitPath("calibration.min_diff", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = ensureObject(root, parent);
+    obj[leaf] = s.calibration.minDiff;
 }
 
 static void write_level_percent(const DeviceState &s, JsonObject &root)
 {
-    ensurePath(root, "level.percent").set(s.level.percent);
+    char parent[32];
+    char leaf[32];
+    splitPath("level.percent", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = ensureObject(root, parent);
+    obj[leaf] = s.level.percent;
 }
 
 static void write_level_percent_valid(const DeviceState &s, JsonObject &root)
 {
-    ensurePath(root, "level.percent_valid").set(s.level.percentValid);
+    char parent[32];
+    char leaf[32];
+    splitPath("level.percent_valid", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = ensureObject(root, parent);
+    obj[leaf] = s.level.percentValid;
 }
 
 static void write_level_liters(const DeviceState &s, JsonObject &root)
 {
-    ensurePath(root, "level.liters").set(s.level.liters);
+    char parent[32];
+    char leaf[32];
+    splitPath("level.liters", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = ensureObject(root, parent);
+    obj[leaf] = s.level.liters;
 }
 
 static void write_level_liters_valid(const DeviceState &s, JsonObject &root)
 {
-    ensurePath(root, "level.liters_valid").set(s.level.litersValid);
+    char parent[32];
+    char leaf[32];
+    splitPath("level.liters_valid", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = ensureObject(root, parent);
+    obj[leaf] = s.level.litersValid;
 }
 
 static void write_level_cm(const DeviceState &s, JsonObject &root)
 {
-    ensurePath(root, "level.centimeters").set(s.level.centimeters);
+    char parent[32];
+    char leaf[32];
+    splitPath("level.centimeters", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = ensureObject(root, parent);
+    obj[leaf] = s.level.centimeters;
 }
 
 static void write_level_cm_valid(const DeviceState &s, JsonObject &root)
 {
-    ensurePath(root, "level.centimeters_valid").set(s.level.centimetersValid);
+    char parent[32];
+    char leaf[32];
+    splitPath("level.centimeters_valid", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = ensureObject(root, parent);
+    obj[leaf] = s.level.centimetersValid;
 }
 
 static void write_config_volume(const DeviceState &s, JsonObject &root)
 {
-    ensurePath(root, "config.tank_volume_l").set(s.config.tankVolumeLiters);
+    char parent[32];
+    char leaf[32];
+    splitPath("config.tank_volume_l", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = ensureObject(root, parent);
+    obj[leaf] = s.config.tankVolumeLiters;
 }
 
 static void write_config_rod(const DeviceState &s, JsonObject &root)
 {
-    ensurePath(root, "config.rod_length_cm").set(s.config.rodLengthCm);
+    char parent[32];
+    char leaf[32];
+    splitPath("config.rod_length_cm", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = ensureObject(root, parent);
+    obj[leaf] = s.config.rodLengthCm;
 }
 
 static void write_config_sim_enabled(const DeviceState &s, JsonObject &root)
 {
-    ensurePath(root, "config.simulation_enabled").set(s.config.simulationEnabled);
+    char parent[32];
+    char leaf[32];
+    splitPath("config.simulation_enabled", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = ensureObject(root, parent);
+    obj[leaf] = s.config.simulationEnabled;
 }
 
 static void write_config_sim_mode(const DeviceState &s, JsonObject &root)
 {
-    ensurePath(root, "config.simulation_mode").set(s.config.simulationMode);
+    char parent[32];
+    char leaf[32];
+    splitPath("config.simulation_mode", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = ensureObject(root, parent);
+    obj[leaf] = s.config.simulationMode;
 }
 
 static void write_last_cmd(const DeviceState &s, JsonObject &root)
 {
-    JsonVariant v = ensurePath(root, "last_cmd");
-    JsonObject o = v.to<JsonObject>();
+    JsonObject o = ensureObject(root, "last_cmd");
     o["request_id"] = s.lastCmd.requestId;
     o["type"] = s.lastCmd.type;
     o["status"] = toString(s.lastCmd.status);
