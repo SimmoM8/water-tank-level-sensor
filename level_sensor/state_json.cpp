@@ -75,9 +75,8 @@ const char *toString(CmdStatus v)
 
 bool buildStateJson(const DeviceState &s, char *outBuf, size_t outSize)
 {
-    // StaticJsonDocument lives on the stack; tune size as needed.
-    // Start with 768–1024 and adjust if serializeJson returns 0 / truncated.
-    StaticJsonDocument<1024> doc;
+    // StaticJsonDocument lives on the stack; sized to fit all fields comfortably.
+    StaticJsonDocument<2048> doc;
 
     doc["schema"] = s.schema;
     doc["ts"] = s.ts;

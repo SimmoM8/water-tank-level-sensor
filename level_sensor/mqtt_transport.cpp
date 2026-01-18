@@ -140,7 +140,7 @@ static bool publishState(const DeviceState &state)
     if (!mqtt.connected())
         return false;
 
-    static char buf[1024]; // tuned for current state payload size
+    static char buf[2048]; // sized to fit expanded state payload
     if (!buildStateJson(state, buf, sizeof(buf)))
         return false;
 
@@ -172,7 +172,7 @@ void mqtt_begin(const MqttConfig &cfg, CommandHandlerFn cmdHandler)
     mqtt.setServer(cfg.host, cfg.port);
     mqtt.setKeepAlive(30);
     mqtt.setSocketTimeout(5);
-    mqtt.setBufferSize(1024);
+    mqtt.setBufferSize(2048);
     mqtt.setCallback(mqttCallback);
     s_initialized = true;
 
