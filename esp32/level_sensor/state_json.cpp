@@ -28,6 +28,15 @@ bool buildStateJson(const DeviceState &s, char *outBuf, size_t outSize)
         return false;
     }
 
+    static const char *kEmptyPattern = "{\"probe\":{},\"calibration\":{},\"level\":{},\"config\":{}}";
+    if (strcmp(outBuf, kEmptyPattern) == 0)
+    {
+        size_t regCount = 0;
+        telemetry_registry_fields(regCount);
+        logger_logEvery("state_json_empty_objects", 5000, LogLevel::WARN, LogDomain::MQTT,
+                        "State JSON suspicious empty objects; registry fields=%u", (unsigned)regCount);
+    }
+
     // Debug small payloads only (throttled to avoid spam)
     if (written < 256)
     {
