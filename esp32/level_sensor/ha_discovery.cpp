@@ -1,12 +1,11 @@
 #include "ha_discovery.h"
-
+#include <Arduino.h>
 #include <ArduinoJson.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "logger.h"
-#include "ha_entities.h"
-#include "telemetry_fields.h"
+#include "telemetry_registry.h"
 
 static HaDiscoveryConfig s_cfg{};
 static bool s_initialized = false;
@@ -22,7 +21,7 @@ static const char *buildUniqId(const char *objectId, const char *overrideId)
     return overrideId ? overrideId : objectId;
 }
 
-static bool publishSensor(const TelemetryField &s)
+static bool publishSensor(const TelemetryFieldDef &s)
 {
     char topic[192];
     snprintf(topic, sizeof(topic), "homeassistant/sensor/%s_%s/config", s_cfg.deviceId, s.objectId);
@@ -71,7 +70,7 @@ static bool publishSensor(const TelemetryField &s)
     return ok;
 }
 
-static bool publishBinarySensor(const TelemetryField &s)
+static bool publishBinarySensor(const TelemetryFieldDef &s)
 {
     char topic[192];
     snprintf(topic, sizeof(topic), "homeassistant/binary_sensor/%s_%s/config", s_cfg.deviceId, s.objectId);
@@ -115,7 +114,7 @@ static bool publishBinarySensor(const TelemetryField &s)
     return ok;
 }
 
-static bool publishControlButton(const HaButtonSpec &b)
+static bool publishControlButton(const ControlDef &b)
 {
     char topic[192];
     snprintf(topic, sizeof(topic), "homeassistant/button/%s_%s/config", s_cfg.deviceId, b.objectId);
@@ -151,7 +150,7 @@ static bool publishControlButton(const HaButtonSpec &b)
     return ok;
 }
 
-static bool publishNumber(const HaNumberSpec &nSpec)
+static bool publishNumber(const ControlDef &nSpec)
 {
     char topic[192];
     snprintf(topic, sizeof(topic), "homeassistant/number/%s_%s/config", s_cfg.deviceId, nSpec.objectId);
@@ -161,7 +160,9 @@ static bool publishNumber(const HaNumberSpec &nSpec)
     doc["uniq_id"] = String(s_cfg.deviceId) + "_" + buildUniqId(nSpec.objectId, nSpec.uniqIdOverride);
     doc["cmd_t"] = String(s_cfg.baseTopic) + "/cmd";
     doc["stat_t"] = String(s_cfg.baseTopic) + "/" + STATE_TOPIC_SUFFIX;
-    doc["val_tpl"] = String("{{ value_json.config.") + nSpec.dataKey + " }}";
+    char tpl[96];
+    snprintf(tpl, sizeof(tpl), "{{ value_json.%s }}", nSpec.statePath);
+    doc["val_tpl"] = tpl;
     doc["avty_t"] = String(s_cfg.baseTopic) + "/" + AVAIL_TOPIC_SUFFIX;
     doc["pl_avail"] = PAYLOAD_AVAILABLE;
     doc["pl_not_avail"] = PAYLOAD_NOT_AVAILABLE;
@@ -169,7 +170,9 @@ static bool publishNumber(const HaNumberSpec &nSpec)
     doc["max"] = nSpec.max;
     doc["step"] = nSpec.step;
     doc["mode"] = "box";
-    doc["cmd_tpl"] = String("{\"schema\":1,\"type\":\"") + nSpec.cmdType + "\",\"data\":{\"" + nSpec.dataKey + "\":{{ value }}}}";
+    char cmdTpl[144];
+    snprintf(cmdTpl, sizeof(cmdTpl), "{\"schema\":1,\"type\":\"%s\",\"data\":{\"%s\":{{ value }}}}", nSpec.cmdType, nSpec.dataKey);
+    doc["cmd_tpl"] = cmdTpl;
 
     JsonObject dev = doc.createNestedObject("dev");
     dev["name"] = s_cfg.deviceName;
@@ -193,7 +196,7 @@ static bool publishNumber(const HaNumberSpec &nSpec)
     return ok;
 }
 
-static bool publishSwitch(const HaSwitchSpec &s)
+static bool publishSwitch(const ControlDef &s)
 {
     char topic[192];
     snprintf(topic, sizeof(topic), "homeassistant/switch/%s_%s/config", s_cfg.deviceId, s.objectId);
@@ -203,7 +206,9 @@ static bool publishSwitch(const HaSwitchSpec &s)
     doc["uniq_id"] = String(s_cfg.deviceId) + "_" + buildUniqId(s.objectId, s.uniqIdOverride);
     doc["cmd_t"] = String(s_cfg.baseTopic) + "/cmd";
     doc["stat_t"] = String(s_cfg.baseTopic) + "/" + STATE_TOPIC_SUFFIX;
-    doc["val_tpl"] = s.valueTemplate;
+    char tpl[96];
+    snprintf(tpl, sizeof(tpl), "{{ value_json.%s }}", s.statePath);
+    doc["val_tpl"] = tpl;
     doc["pl_on"] = s.payloadOnJson;
     doc["pl_off"] = s.payloadOffJson;
     doc["avty_t"] = String(s_cfg.baseTopic) + "/" + AVAIL_TOPIC_SUFFIX;
@@ -232,7 +237,7 @@ static bool publishSwitch(const HaSwitchSpec &s)
     return ok;
 }
 
-static bool publishSelect(const HaSelectSpec &s)
+static bool publishSelect(const ControlDef &s)
 {
     char topic[192];
     snprintf(topic, sizeof(topic), "homeassistant/select/%s_%s/config", s_cfg.deviceId, s.objectId);
@@ -242,7 +247,9 @@ static bool publishSelect(const HaSelectSpec &s)
     doc["uniq_id"] = String(s_cfg.deviceId) + "_" + buildUniqId(s.objectId, s.uniqIdOverride);
     doc["cmd_t"] = String(s_cfg.baseTopic) + "/cmd";
     doc["stat_t"] = String(s_cfg.baseTopic) + "/" + STATE_TOPIC_SUFFIX;
-    doc["val_tpl"] = s.valueTemplate;
+    char tpl[96];
+    snprintf(tpl, sizeof(tpl), "{{ value_json.%s }}", s.statePath);
+    doc["val_tpl"] = tpl;
     JsonArray opts = doc.createNestedArray("options");
     for (size_t i = 0; i < s.optionCount; ++i)
     {
@@ -348,45 +355,40 @@ void ha_discovery_publishAll()
     anyOk |= publishOnlineEntity();
 
     size_t tCount = 0;
-    const TelemetryField *fields = telemetry_getAll(tCount);
+    const TelemetryFieldDef *fields = telemetry_registry_fields(tCount);
     for (size_t i = 0; i < tCount; ++i)
     {
-        if (fields[i].component == TelemetryComponent::SENSOR)
+        if (fields[i].component == HaComponent::Sensor)
         {
             anyOk |= publishSensor(fields[i]);
         }
-        else if (fields[i].component == TelemetryComponent::BINARY_SENSOR)
+        else if (fields[i].component == HaComponent::BinarySensor)
         {
             anyOk |= publishBinarySensor(fields[i]);
         }
     }
 
-    size_t btnCount = 0;
-    const HaButtonSpec *buttons = ha_getButtons(btnCount);
-    for (size_t i = 0; i < btnCount; ++i)
+    size_t cCount = 0;
+    const ControlDef *controls = telemetry_registry_controls(cCount);
+    for (size_t i = 0; i < cCount; ++i)
     {
-        anyOk |= publishControlButton(buttons[i]);
-    }
-
-    size_t numCount = 0;
-    const HaNumberSpec *numbers = ha_getNumbers(numCount);
-    for (size_t i = 0; i < numCount; ++i)
-    {
-        anyOk |= publishNumber(numbers[i]);
-    }
-
-    size_t swCount = 0;
-    const HaSwitchSpec *switches = ha_getSwitches(swCount);
-    for (size_t i = 0; i < swCount; ++i)
-    {
-        anyOk |= publishSwitch(switches[i]);
-    }
-
-    size_t selCount = 0;
-    const HaSelectSpec *selects = ha_getSelects(selCount);
-    for (size_t i = 0; i < selCount; ++i)
-    {
-        anyOk |= publishSelect(selects[i]);
+        switch (controls[i].component)
+        {
+        case HaComponent::Button:
+            anyOk |= publishControlButton(controls[i]);
+            break;
+        case HaComponent::Number:
+            anyOk |= publishNumber(controls[i]);
+            break;
+        case HaComponent::Switch:
+            anyOk |= publishSwitch(controls[i]);
+            break;
+        case HaComponent::Select:
+            anyOk |= publishSelect(controls[i]);
+            break;
+        default:
+            break;
+        }
     }
 
     if (anyOk)

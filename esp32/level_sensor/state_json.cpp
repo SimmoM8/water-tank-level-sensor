@@ -1,6 +1,6 @@
 #include "state_json.h"
 #include <ArduinoJson.h>
-#include "telemetry_fields.h"
+#include "telemetry_registry.h"
 
 const char *toString(SenseMode v)
 {
@@ -81,7 +81,7 @@ bool buildStateJson(const DeviceState &s, char *outBuf, size_t outSize)
     JsonObject root = doc.to<JsonObject>();
 
     size_t count = 0;
-    const TelemetryField *fields = telemetry_getAll(count);
+    const TelemetryFieldDef *fields = telemetry_registry_fields(count);
     for (size_t i = 0; i < count; ++i)
     {
         if (fields[i].writeFn)
