@@ -45,3 +45,6 @@ void storage_saveTankHeight(float tankHeightCm);
 bool storage_loadSimulation(bool &enabled, uint8_t &mode);
 void storage_saveSimulationEnabled(bool enabled);
 void storage_saveSimulationMode(uint8_t mode);
+
+/* ---------------- Debug ---------------- */
+void storage_dump();

@@ -1,5 +1,6 @@
 #include <Preferences.h>
 #include "storage_nvs.h"
+#include "logger.h"
 
 static Preferences prefs;
 
@@ -112,4 +113,21 @@ void storage_saveSimulationEnabled(bool enabled)
 void storage_saveSimulationMode(uint8_t mode)
 {
     prefs.putUChar(PREF_KEY_SIM_MODE, mode);
+}
+
+void storage_dump()
+{
+    int32_t dry = prefs.getInt(PREF_KEY_DRY, 0);
+    int32_t wet = prefs.getInt(PREF_KEY_WET, 0);
+    bool inv = prefs.getBool(PREF_KEY_INV, false);
+
+    float vol = prefs.getFloat(PREF_KEY_TANK_VOL, 0.0f);
+    float height = prefs.getFloat(PREF_KEY_TANK_HEIGHT, 0.0f);
+
+    bool simEn = prefs.getBool(PREF_KEY_SIM_ENABLED, false);
+    uint8_t simMode = (uint8_t)prefs.getUChar(PREF_KEY_SIM_MODE, 0);
+
+    LOG_INFO(LogDomain::CONFIG, "NVS: dry=%ld wet=%ld inv=%s", (long)dry, (long)wet, inv ? "true" : "false");
+    LOG_INFO(LogDomain::CONFIG, "NVS: tank_volume_l=%.2f tank_height_cm=%.2f", (double)vol, (double)height);
+    LOG_INFO(LogDomain::CONFIG, "NVS: sim_enabled=%s sim_mode=%u", simEn ? "true" : "false", (unsigned)simMode);
 }
