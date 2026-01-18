@@ -178,7 +178,7 @@ static void printHelpMenu()
   LOG_INFO(LogDomain::SYSTEM, "[CAL] Serial commands:");
   LOG_INFO(LogDomain::SYSTEM, "  dry   -> capture current averaged raw as dry, save to NVS");
   LOG_INFO(LogDomain::SYSTEM, "  wet   -> capture current averaged raw as wet, save to NVS");
-  LOG_INFO(LogDomain::SYSTEM, "  show  -> print current calibration values");
+  LOG_INFO(LogDomain::SYSTEM, "  show  -> print current NVS contents / internal state");
   LOG_INFO(LogDomain::SYSTEM, "  clear -> clear stored calibration");
   LOG_INFO(LogDomain::SYSTEM, "  invert-> toggle inverted flag and save");
   LOG_INFO(LogDomain::SYSTEM, "  wifi  -> start WiFi captive portal (setup mode)");
@@ -693,6 +693,7 @@ static void handleSerialCommands()
   {
     LOG_INFO(LogDomain::CAL, "[CAL] Dry=%ld Wet=%ld Inverted=%s", (long)calDry, (long)calWet, calInverted ? "true" : "false");
     LOG_INFO(LogDomain::CAL, "[CAL] Valid=%s", hasCalibrationValues() ? "yes" : "no");
+    storage_dump();
   }
   else if (cmd == "clear")
   {
