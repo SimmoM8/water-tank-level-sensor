@@ -1,11 +1,12 @@
-#include "mqtt_transport.h"
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <Arduino.h>
 #include <string.h>
-#include "ha_discovery.h"
+#include <cstring>
 
+#include "mqtt_transport.h"
+#include "ha_discovery.h"
 #include "state_json.h"
 #include "commands.h"
 #include "logger.h"
@@ -142,10 +143,28 @@ static bool publishState(const DeviceState &state)
         return false;
 
     static char buf[2048]; // sized to fit expanded state payload
+    static uint32_t lastFailLogMs = 0;
     if (!buildStateJson(state, buf, sizeof(buf)))
+    {
+        const uint32_t now = millis();
+        if (now - lastFailLogMs > 5000)
+        {
+            LOG_WARN(LogDomain::MQTT, "Skipping state publish: buildStateJson failed");
+            lastFailLogMs = now;
+        }
         return false;
+    }
 
-    const bool ok = mqtt.publish(s_topics.state, buf, true);
+    // safe length calc without strnlen
+    size_t payloadLen = 0;
+    while (payloadLen < sizeof(buf) && buf[payloadLen] != '\0')
+    {
+        ++payloadLen;
+    }
+
+    const bool retained = true;
+    const bool ok = mqtt.publish(s_topics.state, buf, retained);
+    LOG_INFO(LogDomain::MQTT, "Publish state topic=%s retained=%s bytes=%u", s_topics.state, retained ? "true" : "false", (unsigned)payloadLen);
     if (ok)
     {
         stateDirty = false;

@@ -5,8 +5,9 @@
 // Helper: navigate/create nested objects for a dotted path and return a JsonVariant to assign.
 static JsonVariant ensurePath(JsonObject root, const char *path)
 {
-    JsonVariant current = root;
+    JsonObject obj = root;
     const char *p = path;
+
     while (p && *p)
     {
         const char *dot = strchr(p, '.');
@@ -16,12 +17,25 @@ static JsonVariant ensurePath(JsonObject root, const char *path)
             len = sizeof(key) - 1;
         memcpy(key, p, len);
         key[len] = '\0';
-        current = current.to<JsonObject>()[key];
-        if (!dot)
-            break;
-        p = dot + 1;
+
+        if (dot)
+        {
+            JsonVariant child = obj[key];
+            if (!child.is<JsonObject>())
+            {
+                child = obj.createNestedObject(key);
+            }
+            obj = child.as<JsonObject>();
+            p = dot + 1;
+        }
+        else
+        {
+            // last segment: return the slot to be assigned
+            return obj[key];
+        }
     }
-    return current;
+
+    return obj; // fallback (should not hit)
 }
 
 // Writers
