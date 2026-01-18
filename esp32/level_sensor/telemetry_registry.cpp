@@ -1,5 +1,6 @@
 #include "telemetry_registry.h"
 #include <string.h>
+#include "domain_strings.h"
 
 // Helper: navigate/create nested objects for a dotted path and return a JsonVariant to assign.
 static JsonVariant ensurePath(JsonObject root, const char *path)

@@ -1,4 +1,4 @@
-#include "device_state.h"
+#include "domain_strings.h"
 
 const char *toString(SenseMode v)
 {
