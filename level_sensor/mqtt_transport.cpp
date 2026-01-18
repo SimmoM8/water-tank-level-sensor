@@ -26,6 +26,7 @@ bool mqtt_publishRaw(const char *topic, const char *payload, bool retained)
     return mqtt.publish(topic, payload, retained);
 }
 static bool s_initialized = false;
+static bool s_statePublishRequested = true;
 
 struct Topics
 {
@@ -36,9 +37,9 @@ struct Topics
 };
 static Topics s_topics{};
 
-static bool stateDirty = true;
-static uint32_t lastStatePublishMs = 0;
-static const uint32_t STATE_PUBLISH_INTERVAL_MS = 30000; // periodic retained snapshot
+static uint32_t s_lastStatePublishMs = 0;
+static const uint32_t STATE_MIN_INTERVAL_MS = 1000; // no more than once per second
+static const uint32_t STATE_HEARTBEAT_MS = 30000;   // periodic retained snapshot
 static uint32_t s_lastAttemptMs = 0;
 static const uint32_t RETRY_INTERVAL_MS = 5000;
 
@@ -118,7 +119,7 @@ static bool mqtt_ensureConnected()
             {
                 mqtt.publish(s_topics.avail, AVAIL_ONLINE, true);
                 mqtt_subscribe();
-                stateDirty = true; // force fresh retained snapshot after reconnect
+                s_statePublishRequested = true; // force fresh retained snapshot after reconnect
                 LOG_INFO(LogDomain::MQTT, "MQTT connected; attempting HA discovery publish");
             }
             else
@@ -164,11 +165,12 @@ static bool publishState(const DeviceState &state)
 
     const bool retained = true;
     const bool ok = mqtt.publish(s_topics.state, buf, retained);
-    LOG_INFO(LogDomain::MQTT, "Publish state topic=%s retained=%s bytes=%u", s_topics.state, retained ? "true" : "false", (unsigned)payloadLen);
+    logger_logEvery("state_publish", 5000, LogLevel::DEBUG, LogDomain::MQTT,
+                    "Publish state topic=%s retained=%s bytes=%u", s_topics.state, retained ? "true" : "false", (unsigned)payloadLen);
     if (ok)
     {
-        stateDirty = false;
-        lastStatePublishMs = millis();
+        s_statePublishRequested = false;
+        s_lastStatePublishMs = millis();
     }
     return ok;
 }
@@ -217,7 +219,11 @@ void mqtt_tick(const DeviceState &state)
     }
 
     const uint32_t now = millis();
-    if (stateDirty || (now - lastStatePublishMs) >= STATE_PUBLISH_INTERVAL_MS)
+    const uint32_t sinceLast = now - s_lastStatePublishMs;
+    const bool heartbeatDue = sinceLast >= STATE_HEARTBEAT_MS;
+    const bool intervalOk = sinceLast >= STATE_MIN_INTERVAL_MS;
+
+    if ((s_statePublishRequested || heartbeatDue) && intervalOk)
     {
         publishState(state);
     }
@@ -225,7 +231,7 @@ void mqtt_tick(const DeviceState &state)
 
 void mqtt_requestStatePublish()
 {
-    stateDirty = true;
+    s_statePublishRequested = true;
 }
 
 bool mqtt_publishAck(const char *reqId, const char *type, CmdStatus status, const char *msg)

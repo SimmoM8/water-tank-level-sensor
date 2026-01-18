@@ -28,13 +28,16 @@ bool buildStateJson(const DeviceState &s, char *outBuf, size_t outSize)
         return false;
     }
 
-    // Debug: preview the serialized JSON (throttled to avoid spam)
-    size_t previewLen = written < 120 ? written : 120;
-    char preview[121];
-    memcpy(preview, outBuf, previewLen);
-    preview[previewLen] = '\0';
-    logger_logEvery("state_json_preview", 5000, LogLevel::DEBUG, LogDomain::MQTT,
-                    "State JSON len=%u preview=%s", (unsigned)written, preview);
+    // Debug small payloads only (throttled to avoid spam)
+    if (written < 256)
+    {
+        size_t previewLen = written < 120 ? written : 120;
+        char preview[121];
+        memcpy(preview, outBuf, previewLen);
+        preview[previewLen] = '\0';
+        logger_logEvery("state_json_preview", 5000, LogLevel::DEBUG, LogDomain::MQTT,
+                        "State JSON len=%u preview=%s", (unsigned)written, preview);
+    }
 
     return true;
 }
