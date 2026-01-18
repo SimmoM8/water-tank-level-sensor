@@ -1,6 +1,7 @@
 #include "state_json.h"
 #include <ArduinoJson.h>
 #include "telemetry_registry.h"
+#include "domain_strings.h"
 
 bool buildStateJson(const DeviceState &s, char *outBuf, size_t outSize)
 {

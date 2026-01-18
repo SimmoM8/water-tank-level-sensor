@@ -9,6 +9,7 @@
 #include "state_json.h"
 #include "commands.h"
 #include "logger.h"
+#include "domain_strings.h"
 
 static WiFiClient wifiClient;
 static PubSubClient mqtt(wifiClient);
