@@ -6,6 +6,7 @@
 
 #include "logger.h"
 #include "ha_entities.h"
+#include "telemetry_fields.h"
 
 static HaDiscoveryConfig s_cfg{};
 static bool s_initialized = false;
@@ -21,7 +22,7 @@ static const char *buildUniqId(const char *objectId, const char *overrideId)
     return overrideId ? overrideId : objectId;
 }
 
-static bool publishSensor(const HaSensorSpec &s)
+static bool publishSensor(const TelemetryField &s)
 {
     char topic[192];
     snprintf(topic, sizeof(topic), "homeassistant/sensor/%s_%s/config", s_cfg.deviceId, s.objectId);
@@ -33,7 +34,9 @@ static bool publishSensor(const HaSensorSpec &s)
     doc["avty_t"] = String(s_cfg.baseTopic) + "/" + AVAIL_TOPIC_SUFFIX;
     doc["pl_avail"] = PAYLOAD_AVAILABLE;
     doc["pl_not_avail"] = PAYLOAD_NOT_AVAILABLE;
-    doc["val_tpl"] = s.valueTemplate;
+    char tpl[96];
+    snprintf(tpl, sizeof(tpl), "{{ value_json.%s }}", s.jsonPath);
+    doc["val_tpl"] = tpl;
     if (s.deviceClass)
         doc["dev_cla"] = s.deviceClass;
     if (s.unit)
@@ -52,7 +55,7 @@ static bool publishSensor(const HaSensorSpec &s)
     dev["mdl"] = s_cfg.deviceModel;
     dev["sw"] = s_cfg.deviceSw;
 
-    char buf[768];
+    char buf[896];
     const size_t n = serializeJson(doc, buf, sizeof(buf));
     if (n == 0 || n >= sizeof(buf))
     {
@@ -68,7 +71,7 @@ static bool publishSensor(const HaSensorSpec &s)
     return ok;
 }
 
-static bool publishBinarySensor(const HaBinarySensorSpec &s)
+static bool publishBinarySensor(const TelemetryField &s)
 {
     char topic[192];
     snprintf(topic, sizeof(topic), "homeassistant/binary_sensor/%s_%s/config", s_cfg.deviceId, s.objectId);
@@ -80,7 +83,9 @@ static bool publishBinarySensor(const HaBinarySensorSpec &s)
     doc["avty_t"] = String(s_cfg.baseTopic) + "/" + AVAIL_TOPIC_SUFFIX;
     doc["pl_avail"] = PAYLOAD_AVAILABLE;
     doc["pl_not_avail"] = PAYLOAD_NOT_AVAILABLE;
-    doc["val_tpl"] = s.valueTemplate;
+    char tpl[96];
+    snprintf(tpl, sizeof(tpl), "{{ value_json.%s }}", s.jsonPath);
+    doc["val_tpl"] = tpl;
     doc["pl_on"] = true;
     doc["pl_off"] = false;
     if (s.deviceClass)
@@ -94,7 +99,7 @@ static bool publishBinarySensor(const HaBinarySensorSpec &s)
     dev["mdl"] = s_cfg.deviceModel;
     dev["sw"] = s_cfg.deviceSw;
 
-    char buf[768];
+    char buf[896];
     const size_t n = serializeJson(doc, buf, sizeof(buf));
     if (n == 0 || n >= sizeof(buf))
     {
@@ -342,18 +347,18 @@ void ha_discovery_publishAll()
 
     anyOk |= publishOnlineEntity();
 
-    size_t sensorCount = 0;
-    const HaSensorSpec *sensors = ha_getSensors(sensorCount);
-    for (size_t i = 0; i < sensorCount; ++i)
+    size_t tCount = 0;
+    const TelemetryField *fields = telemetry_getAll(tCount);
+    for (size_t i = 0; i < tCount; ++i)
     {
-        anyOk |= publishSensor(sensors[i]);
-    }
-
-    size_t binCount = 0;
-    const HaBinarySensorSpec *binSensors = ha_getBinarySensors(binCount);
-    for (size_t i = 0; i < binCount; ++i)
-    {
-        anyOk |= publishBinarySensor(binSensors[i]);
+        if (fields[i].component == TelemetryComponent::SENSOR)
+        {
+            anyOk |= publishSensor(fields[i]);
+        }
+        else if (fields[i].component == TelemetryComponent::BINARY_SENSOR)
+        {
+            anyOk |= publishBinarySensor(fields[i]);
+        }
     }
 
     size_t btnCount = 0;
