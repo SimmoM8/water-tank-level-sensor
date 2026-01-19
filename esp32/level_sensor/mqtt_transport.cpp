@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <string.h>
 #include <cstring>
+#include <ctype.h>
 
 #include "mqtt_transport.h"
 #include "ha_discovery.h"
@@ -46,6 +47,23 @@ static const uint32_t RETRY_INTERVAL_MS = 5000;
 static const char *AVAIL_ONLINE = "online";
 static const char *AVAIL_OFFLINE = "offline";
 
+static void buildPayloadPreview(const uint8_t *payload, size_t len, char *out, size_t outSize)
+{
+    if (!out || outSize == 0)
+        return;
+    const size_t cap = outSize - 1;
+    size_t n = len < cap ? len : cap;
+    for (size_t i = 0; i < n; ++i)
+    {
+        char c = static_cast<char>(payload[i]);
+        if (isprint(static_cast<unsigned char>(c)) && c != '\n' && c != '\r')
+            out[i] = c;
+        else
+            out[i] = '.';
+    }
+    out[n] = '\0';
+}
+
 static void buildTopic(char *out, size_t outSize, const char *suffix)
 {
     if (outSize == 0 || s_cfg.baseTopic == nullptr)
@@ -61,14 +79,83 @@ static void buildTopics()
     buildTopic(s_topics.avail, sizeof(s_topics.avail), "availability");
 }
 
+// MQTT callback for incoming messages
+/**
+ * @brief Handles incoming MQTT messages for the command topic.
+ *
+ * Processes only command topic messages when a command handler is registered.
+ * Rejects unexpected "PRESS" payloads to prevent false triggers, logs a preview
+ * of the received payload (RX = received data), and dispatches valid payloads
+ * to the registered command handler.
+ *
+ * @param topic    The MQTT topic of the incoming message.
+ * @param payload  Pointer to the received payload bytes (RX data).
+ * @param length   Length of the received payload in bytes.
+ */
 static void mqttCallback(char *topic, byte *payload, unsigned int length)
 {
-    if (!s_cmdHandler)
-        return;
-    if (strcmp(topic, s_topics.cmd) != 0)
+    static char topicBuf[128];
+    if (topic)
+    {
+        strncpy(topicBuf, topic, sizeof(topicBuf));
+        topicBuf[sizeof(topicBuf) - 1] = '\0';
+    }
+    else
+    {
+        topicBuf[0] = '\0';
+    }
+
+    // Only handle commands on the cmd topic and if a handler is set
+    if (!s_cmdHandler || strcmp(topicBuf, s_topics.cmd) != 0)
         return;
 
-    s_cmdHandler(payload, length);
+    // Ignore unexpected PRESS message to avoid false triggers
+    constexpr const char *PRESS = "PRESS";
+    if (length == strlen(PRESS) && memcmp(payload, PRESS, length) == 0)
+    {
+        LOG_WARN(LogDomain::COMMAND, "[MQTT] Command rejected: unexpected PRESS payload topic=%s", topicBuf);
+        return;
+    }
+
+    // IMPORTANT: PubSubClient reuses an internal buffer for incoming payloads.
+    // Any mqtt.publish() (including via our logger) can overwrite `payload` while we are still using it.
+    // So we must copy the bytes before any logging or further processing.
+    static uint8_t cmdBuf[768];
+    if (length == 0 || length >= sizeof(cmdBuf))
+    {
+        LOG_WARN(LogDomain::COMMAND, "[MQTT] Command rejected: payload too large len=%u", length);
+        return;
+    }
+
+    memcpy(cmdBuf, payload, length);
+
+    // Dispatch to application command handler FIRST.
+    // Our logger may publish over MQTT; doing that inside the callback can cause
+    // confusing re-entrancy / buffer reuse issues. We already copied the payload.
+    s_cmdHandler(cmdBuf, length);
+
+    // From here on, we only log using the copied buffer.
+
+    // Build printable preview for logging
+    char preview[121];
+    buildPayloadPreview(cmdBuf, length, preview, sizeof(preview));
+
+    bool hasNull = false;
+    for (size_t i = 0; i < length; i++)
+    {
+        if (cmdBuf[i] == 0)
+        {
+            hasNull = true;
+            break;
+        }
+    }
+    LOG_DEBUG(LogDomain::MQTT, "[MQTT] Received topic=%s len=%u first=0x%02X last=0x%02X hasNull=%s payload_preview='%s'",
+              topicBuf, length, cmdBuf[0], cmdBuf[length - 1], hasNull ? "true" : "false", preview);
+
+    LOG_INFO(LogDomain::COMMAND, "[MQTT] Received command on %s (len=%u): %s", topicBuf, length, preview);
+
+    LOG_DEBUG(LogDomain::COMMAND, "[MQTT] cmdBuf bytes: first=0x%02X last=0x%02X hasNull=%s",
+              (unsigned)cmdBuf[0], (unsigned)cmdBuf[length - 1], hasNull ? "true" : "false");
 }
 
 static void mqtt_subscribe()

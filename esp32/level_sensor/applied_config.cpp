@@ -2,12 +2,13 @@
 
 #include <Arduino.h>
 
+#include "device_state.h"
 #include "storage_nvs.h"
 
 static AppliedConfig g_config = {
     NAN, // tankVolumeLiters
     NAN, // rodLengthCm
-    false,
+    SenseMode::TOUCH,
     0,
     0,
     0,
@@ -21,9 +22,14 @@ static void loadFromNvs()
     float rod = NAN;
     storage_loadTank(vol, rod);
 
-    bool simEnabled = false;
+    SenseMode senseMode = SenseMode::TOUCH;
     uint8_t simMode = 0;
-    storage_loadSimulation(simEnabled, simMode);
+    storage_loadSimulation(senseMode, simMode);
+
+    if (senseMode != SenseMode::SIM)
+    {
+        senseMode = SenseMode::TOUCH;
+    }
 
     int32_t dry = 0;
     int32_t wet = 0;
@@ -32,7 +38,7 @@ static void loadFromNvs()
 
     g_config.tankVolumeLiters = vol;
     g_config.rodLengthCm = rod;
-    g_config.simulationEnabled = simEnabled;
+    g_config.senseMode = senseMode;
     g_config.simulationMode = simMode;
     g_config.calDry = dry;
     g_config.calWet = wet;

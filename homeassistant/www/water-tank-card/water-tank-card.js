@@ -4,7 +4,7 @@
  */
 
 const CARD_TAG = "water-tank-card";
-const VERSION = "0.5.1";
+const VERSION = "0.5.4";
 
 // Required logical entity keys for the card to render.
 const REQUIRED_ENTITY_KEYS = [
@@ -26,8 +26,8 @@ const OPTIONAL_ENTITY_KEYS = [
   "calibrate_dry_entity",
   "calibrate_wet_entity",
   "clear_calibration_entity",
-  "simulation_enabled_entity",
   "simulation_mode_entity",
+  "sense_mode_entity",
   "cal_dry_value_entity",
   "cal_wet_value_entity",
   "cal_dry_set_entity",
@@ -50,12 +50,12 @@ const UNIQUE_ID_SUFFIX_MAP = {
   calibrate_dry_entity: ["_calibrate_dry"],
   calibrate_wet_entity: ["_calibrate_wet"],
   clear_calibration_entity: ["_clear_calibration"],
-  simulation_enabled_entity: ["_simulation_enabled"],
   simulation_mode_entity: ["_simulation_mode"],
+  sense_mode_entity: ["_sense_mode"],
   cal_dry_value_entity: ["_cal_dry"],
   cal_wet_value_entity: ["_cal_wet"],
-  cal_dry_set_entity: ["_cal_dry_set", "_cal_dry"],
-  cal_wet_set_entity: ["_cal_wet_set", "_cal_wet"],
+  cal_dry_set_entity: ["_cal_dry_set"],
+  cal_wet_set_entity: ["_cal_wet_set"],
 };
 
 // Matching rules per logical key (domains and entity_id fallbacks).
@@ -74,19 +74,19 @@ const ENTITY_MATCH_RULES = {
   calibrate_dry_entity: { domains: ["button"], entitySuffixes: ["_calibrate_dry"] },
   calibrate_wet_entity: { domains: ["button"], entitySuffixes: ["_calibrate_wet"] },
   clear_calibration_entity: { domains: ["button"], entitySuffixes: ["_clear_calibration"] },
-  simulation_enabled_entity: { domains: ["switch"], entitySuffixes: ["_simulation_enabled"] },
   simulation_mode_entity: { domains: ["select", "input_select"], entitySuffixes: ["_simulation_mode"] },
+  sense_mode_entity: { domains: ["select", "input_select"], entitySuffixes: ["_sense_mode"] },
   cal_dry_value_entity: { domains: ["sensor", "number", "input_number"], entitySuffixes: ["_cal_dry"] },
   cal_wet_value_entity: { domains: ["sensor", "number", "input_number"], entitySuffixes: ["_cal_wet"] },
-  cal_dry_set_entity: { domains: ["number", "input_number"], entitySuffixes: ["_cal_dry_set", "_cal_dry"] },
-  cal_wet_set_entity: { domains: ["number", "input_number"], entitySuffixes: ["_cal_wet_set", "_cal_wet"] },
+  cal_dry_set_entity: { domains: ["number", "input_number"], entitySuffixes: ["_cal_dry_set"] },
+  cal_wet_set_entity: { domains: ["number", "input_number"], entitySuffixes: ["_cal_wet_set"] },
 };
 
 // Cache resolved configs per device_id to avoid repeated websocket queries.
 const DEVICE_RESOLUTION_CACHE = new Map();
 
 const normalizeStr = (v) => (v === null || v === undefined ? "" : String(v)).toLowerCase();
-const matchesSuffix = (value, suffixes = []) => suffixes.some((suf) => value.endsWith(suf) || value.includes(suf));
+const matchesSuffix = (value, suffixes = []) => suffixes.some((suf) => value.endsWith(suf));
 const domainOf = (entityId) => normalizeStr(entityId).split(".")[0];
 
 const pickEntityIdForKey = (entries, key) => {
@@ -147,14 +147,17 @@ class WaterTankCard extends HTMLElement {
     this._hass = null;
     this._modalOpen = false;
     this._modalPage = "main";
-    this._pendingSimMode = null;
-    this._pendingSimUntil = 0;
     this._focusAfterRender = null;
     this._toast = { open: false, text: "", type: "info" };
     this._toastTimer = null;
     this._pendingSet = {};
     this._activeEditKey = null;
     this._modalPointerHandler = null;
+    this._suspendRender = false;
+    this._deferredRender = false;
+    this._deferTimer = null;
+    this._renderDeferMs = 350;
+    this._lastInteractionAt = 0;
     this._draft = {
       tankVolume: "",
       rodLength: "",
@@ -184,8 +187,8 @@ class WaterTankCard extends HTMLElement {
       clear_calibration_entity: null,
 
       // simulation controls (optional)
-      simulation_enabled_entity: null,
       simulation_mode_entity: null,
+      sense_mode_entity: null,
 
       // optional calibration value readouts
       cal_dry_value_entity: null,
@@ -226,6 +229,12 @@ class WaterTankCard extends HTMLElement {
     this._hass = hass;
     this._maybeResolveWithHass();
     this._checkPendingSets();
+    if (this._shouldDeferRender()) {
+      this._deferredRender = true;
+      this._scheduleDeferredRender();
+      return;
+    }
+    this._deferredRender = false;
     this._render();
   }
 
@@ -276,6 +285,32 @@ class WaterTankCard extends HTMLElement {
         merged[key] = resolved[key];
       }
     });
+
+    if (this._hass?.states) {
+      const entries = Object.values(this._hass.states);
+      const pickBy = (domain, uniqSuffix, entitySuffix) => {
+        const matchDomain = (e) => String(e?.entity_id || "").startsWith(domain + ".");
+        const inDomain = entries.filter(matchDomain);
+        const byUnique = inDomain.find((e) => String(e?.attributes?.unique_id || "").endsWith(uniqSuffix));
+        if (byUnique) return byUnique.entity_id;
+        const byEntity = inDomain.find((e) => String(e?.entity_id || "").endsWith(entitySuffix));
+        return byEntity ? byEntity.entity_id : null;
+      };
+
+      if (!merged.sense_mode_entity) {
+        merged.sense_mode_entity = pickBy("select", "_sense_mode", "_sense_mode");
+      }
+      if (!merged.simulation_mode_entity) {
+        merged.simulation_mode_entity = pickBy("select", "_simulation_mode", "_simulation_mode");
+      }
+
+      if (merged.sense_mode_entity || merged.simulation_mode_entity) {
+        console.log("[WT] auto-resolve", {
+          sense_mode_entity: merged.sense_mode_entity || null,
+          simulation_mode_entity: merged.simulation_mode_entity || null,
+        });
+      }
+    }
 
     this._config = merged;
 
@@ -344,6 +379,46 @@ class WaterTankCard extends HTMLElement {
     return this._state(entityId) === "off";
   }
 
+  _senseModeIsSimValue(value) {
+    if (this._isUnknownState(value)) return null;
+    const v = String(value).toLowerCase();
+    if (v === "sim" || v === "simulation" || v === "1" || v === "true" || v === "on") return true;
+    if (v === "touch" || v === "probe" || v === "0" || v === "false" || v === "off") return false;
+    return null;
+  }
+
+  _senseModeIsSim(entityId) {
+    const s = this._state(entityId);
+    return this._senseModeIsSimValue(s);
+  }
+
+  _senseModeUiValue() {
+    const pending = this._pendingSet?.senseMode;
+    if (pending && pending.targetValue !== undefined && pending.targetValue !== null) return pending.targetValue;
+    return this._state(this._config?.sense_mode_entity);
+  }
+
+  _setPendingSenseMode(targetValue) {
+    const entityId = this._config?.sense_mode_entity;
+    if (!entityId) return false;
+    const startedAt = Date.now();
+    this._pendingSet.senseMode = {
+      entityId,
+      verifyEntityId: entityId,
+      targetValue,
+      startedAt,
+    };
+    this._showToast("Saving...", "info");
+    this._render();
+    setTimeout(() => {
+      if (this._pendingSet?.senseMode?.startedAt === startedAt) {
+        this._checkPendingSets();
+        if (this._modalOpen) this._render();
+      }
+    }, 5200);
+    return true;
+  }
+
   _isTruthyState(state) {
     if (state === true) return true;
     if (state === false || state === null || state === undefined) return false;
@@ -377,7 +452,13 @@ class WaterTankCard extends HTMLElement {
     } catch (err) {
       // keep silent but avoid crash
       // eslint-disable-next-line no-console
-      console.warn(`${CARD_TAG}: service call failed`, domain, service, err);
+      console.warn(
+        `${CARD_TAG}: service call failed for ${domain}.${service}`,
+        {
+          entity: data && data.entity_id,
+          error: (err && err.message) || err,
+        }
+      );
     }
   }
 
@@ -400,6 +481,35 @@ class WaterTankCard extends HTMLElement {
       return Math.abs(Number(current) - Number(target)) < 0.001;
     }
     return String(current) === String(target);
+  }
+
+  _hasPendingSets() {
+    return !!(this._pendingSet && Object.keys(this._pendingSet).length);
+  }
+
+  _markInteraction() {
+    this._lastInteractionAt = Date.now();
+  }
+
+  _shouldDeferRender() {
+    if (!this._modalOpen) return false;
+    if (this._suspendRender) return true;
+    const delta = Date.now() - (this._lastInteractionAt || 0);
+    return delta >= 0 && delta < this._renderDeferMs;
+  }
+
+  _scheduleDeferredRender() {
+    if (this._deferTimer) return;
+    this._deferTimer = setTimeout(() => {
+      this._deferTimer = null;
+      if (!this._deferredRender) return;
+      if (this._shouldDeferRender()) {
+        this._scheduleDeferredRender();
+        return;
+      }
+      this._deferredRender = false;
+      this._render();
+    }, this._renderDeferMs);
   }
 
   _checkPendingSets() {
@@ -473,6 +583,11 @@ class WaterTankCard extends HTMLElement {
         }
       }
     });
+
+    if (this._deferredRender && !this._shouldDeferRender()) {
+      this._deferredRender = false;
+      this._render();
+    }
   }
 
   _setNumber(entityId, value) {
@@ -601,8 +716,7 @@ class WaterTankCard extends HTMLElement {
 
   _cancelCalEdit(draftKey) {
     if (!draftKey || this._pendingSet?.[draftKey]) return;
-    const entityId = this._getCalSetEntityId(draftKey);
-    const current = entityId ? this._state(entityId) : null;
+    const current = this._getCalDisplayValue(draftKey);
     if (!this._isUnknownState(current)) this._draft[draftKey] = current;
     this._editing[draftKey] = false;
     if (this._activeEditKey === draftKey) this._activeEditKey = null;
@@ -672,30 +786,57 @@ class WaterTankCard extends HTMLElement {
     return warnings;
   }
 
-  _setDraftFromEntitiesIfEmpty() {
-    const setIfEmpty = (key, entityId) => {
-      if (!entityId) return;
-      if (this._draft[key] !== "") return;
-      const v = this._state(entityId);
-      if (!this._isUnknownState(v)) this._draft[key] = v ?? "";
+  _getCalDisplayValue(draftKey) {
+    const appliedEntityId = draftKey === "dryValue"
+      ? this._config.cal_dry_value_entity
+      : draftKey === "wetValue"
+        ? this._config.cal_wet_value_entity
+        : null;
+    const setEntityId = this._getCalSetEntityId(draftKey);
+    const appliedVal = appliedEntityId ? this._state(appliedEntityId) : null;
+    if (!this._isUnknownState(appliedVal)) return appliedVal;
+    return setEntityId ? this._state(setEntityId) : null;
+  }
+
+  _syncDraftFromEntities(force = false) {
+    const setDraft = (key, value) => {
+      if (this._pendingSet?.[key]) return;
+      if (!force) {
+        if (this._editing?.[key]) return;
+      }
+      if (value === null || value === undefined) return;
+      if (this._isUnknownState(value)) return;
+      this._draft[key] = String(value);
     };
 
-    setIfEmpty("tankVolume", this._config.tank_volume_entity);
-    setIfEmpty("rodLength", this._config.rod_length_entity);
-    setIfEmpty("dryValue", this._config.cal_dry_value_entity || this._getCalSetEntityId("dryValue"));
-    setIfEmpty("wetValue", this._config.cal_wet_value_entity || this._getCalSetEntityId("wetValue"));
+    setDraft("tankVolume", this._state(this._config.tank_volume_entity));
+    setDraft("rodLength", this._state(this._config.rod_length_entity));
+    setDraft("dryValue", this._getCalDisplayValue("dryValue"));
+    setDraft("wetValue", this._getCalDisplayValue("wetValue"));
+    setDraft("simMode", this._state(this._config.simulation_mode_entity));
   }
 
   _openModal(page = "main") {
     this._modalOpen = true;
     this._modalPage = page;
-    this._setDraftFromEntitiesIfEmpty();
+    this._syncDraftFromEntities(true);
     this._render();
   }
 
   _closeModal() {
     this._modalOpen = false;
     this._activeEditKey = null;
+    this._suspendRender = false;
+    this._deferredRender = false;
+    if (this._deferTimer) {
+      clearTimeout(this._deferTimer);
+      this._deferTimer = null;
+    }
+    if (this._editing) {
+      Object.keys(this._editing).forEach((key) => {
+        this._editing[key] = false;
+      });
+    }
     this._render();
   }
 
@@ -737,6 +878,7 @@ class WaterTankCard extends HTMLElement {
   // ---------- modal (in-card) ----------
   _renderModalHtml() {
     if (!this._modalOpen) return "";
+    this._syncDraftFromEntities(false);
 
     const statusState = this._state(this._config.status_entity);
     const online = statusState === "online";
@@ -903,24 +1045,15 @@ class WaterTankCard extends HTMLElement {
       </div>
     `;
 
-    const simEnabledState = this._config.simulation_enabled_entity ? this._isOn(this._config.simulation_enabled_entity) : false;
+    const simEnabledState = this._config.sense_mode_entity
+      ? this._senseModeIsSimValue(this._senseModeUiValue())
+      : false;
     const simModeEntity = this._config.simulation_mode_entity;
     const simModeState = simModeEntity ? this._state(simModeEntity) : "";
-    const simNow = Date.now();
-    if (this._pendingSimMode !== null) {
-      const matches = String(simModeState) === String(this._pendingSimMode);
-      const expired = simNow > this._pendingSimUntil;
-      if (matches || expired) {
-        this._pendingSimMode = null;
-        this._pendingSimUntil = 0;
-        this._editing.simMode = false;
-        this._draft.simMode = simModeState || "";
-      }
-    }
-    const simModeSelected =
-      this._pendingSimMode !== null
-        ? this._pendingSimMode
-        : (this._editing.simMode ? this._draft.simMode : simModeState);
+    const simModePending = this._pendingSet?.simMode;
+    const simModeSelected = simModePending
+      ? simModePending.targetValue
+      : (this._editing.simMode ? this._draft.simMode : simModeState);
     const simOptions = this._getOptions(simModeEntity);
 
     const diagnosticsLines = [
@@ -956,16 +1089,19 @@ class WaterTankCard extends HTMLElement {
       <div class="wt-section">
         <div class="wt-section-title">Advanced</div>
       </div>
-      ${(this._config.simulation_enabled_entity || this._config.simulation_mode_entity) ? `
+      ${(this._config.sense_mode_entity || this._config.simulation_mode_entity) ? `
       <div class="wt-section">
         <div class="wt-section-sub" style="margin-bottom:8px;">Simulation controls</div>
-        ${this._config.simulation_enabled_entity
+        ${this._config.sense_mode_entity
           ? `<div class="wt-setup-row">
             <div class="wt-setup-icon"><ha-icon icon="mdi:toggle-switch"></ha-icon></div>
             <div class="wt-setup-body">
-              <div class="wt-setup-label">Simulation enabled</div>
+              <div class="wt-setup-label">Sense mode</div>
               <div class="wt-setup-input">
-                <button class="wt-btn ${simEnabledState ? "on" : ""}" id="simToggleBtn" data-entity="${this._config.simulation_enabled_entity}" data-state="${simEnabledState ? "on" : "off"}">${simEnabledState ? "On" : "Off"}</button>
+                <button class="wt-toggle ${simEnabledState ? "on" : ""}" id="simToggleBtn" data-entity="${this._config.sense_mode_entity}" data-kind="select" data-state="${simEnabledState ? "on" : "off"}">
+                  <span class="wt-toggle-thumb"></span>
+                  <span class="wt-toggle-label">${simEnabledState ? "On" : "Off"}</span>
+                </button>
               </div>
             </div>
           </div>`
@@ -1054,6 +1190,16 @@ class WaterTankCard extends HTMLElement {
           e.stopPropagation();
           this._closeModal();
         }
+      });
+    }
+
+    const modalCard = sr.querySelector(".wt-modal-card");
+    if (modalCard) {
+      if (!this._modalInteractionHandler) {
+        this._modalInteractionHandler = () => this._markInteraction();
+      }
+      ["pointerdown", "keydown", "input", "change"].forEach((evt) => {
+        modalCard.addEventListener(evt, this._modalInteractionHandler, true);
       });
     }
 
@@ -1322,40 +1468,65 @@ class WaterTankCard extends HTMLElement {
       simToggle.onclick = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        const entityId = simToggle.dataset.entity;
+        // Always only call select.select_option for sense_mode_entity.
+        const entityId = this._config.sense_mode_entity;
         if (!entityId) return;
-        const current = simToggle.dataset.state === "on";
-        const domain = this._domain(entityId);
-        if (!domain) return;
-        this._callService(domain, current ? "turn_off" : "turn_on", { entity_id: entityId });
+        if (this._pendingSet?.senseMode) return;
+        const currentMode = this._senseModeUiValue();
+        const nextMode = String(currentMode).toLowerCase() === "sim" ? "touch" : "sim";
+        this._setPendingSenseMode(nextMode);
+        this._callService("select", "select_option", { entity_id: entityId, option: nextMode });
       };
     }
 
     const simMode = sr.getElementById("simModeSelect");
     if (simMode) {
-      simMode.addEventListener("focus", (e) => {
-        e.stopPropagation();
-        if (!this._editing.simMode) {
-          this._draft.simMode = simMode.value;
+      simMode.onfocus = () => {
+        this._suspendRender = true;
+      };
+      simMode.onblur = () => {
+        this._suspendRender = false;
+        if (this._deferredRender) {
+          this._deferredRender = false;
+          this._render();
         }
-        this._editing.simMode = true;
-      });
+      };
       simMode.onchange = (e) => {
         e.preventDefault();
         e.stopPropagation();
+
+        console.log("Simulation mode picked:", simMode.value);
+
         const entityId = simMode.dataset.entity;
         if (!entityId) return;
+
         const selected = simMode.value;
-        this._editing.simMode = true;
-        this._pendingSimMode = selected;
-        this._pendingSimUntil = Date.now() + 5000;
+
+        const startedAt = Date.now();
+        this._pendingSet.simMode = {
+          entityId,
+          verifyEntityId: entityId,
+          targetValue: selected,
+          startedAt,
+        };
+
         this._draft.simMode = selected;
+        this._editing.simMode = true;
+        this._showToast("Saving...", "info");
+
         const domain = this._domain(entityId);
         if (domain === "select") {
           this._callService("select", "select_option", { entity_id: entityId, option: selected });
         } else if (domain === "input_select") {
           this._callService("input_select", "select_option", { entity_id: entityId, option: selected });
         }
+
+        setTimeout(() => {
+          if (this._pendingSet?.simMode?.startedAt === startedAt) {
+            this._checkPendingSets();
+            if (this._modalOpen) this._render();
+          }
+        }, 5200);
       };
     }
   }
@@ -1557,10 +1728,10 @@ class WaterTankCard extends HTMLElement {
     const statusState = this._state(this._config.status_entity);
     const onlineText = statusState === "online" ? "Online" : "Offline";
 
-    // Simulation mode enabled?
-    const simEnabled =
-      !!this._config.simulation_enabled_entity &&
-      this._isOn(this._config.simulation_enabled_entity);
+    // Simulation mode enabled? Prefer device sense_mode when available so UI mirrors the device truth.
+    const simEnabled = this._config.sense_mode_entity
+      ? this._senseModeIsSimValue(this._senseModeUiValue())
+      : false;
     const probeState = this._state(this._config.probe_entity);
 
     const css = `
@@ -2020,6 +2191,39 @@ class WaterTankCard extends HTMLElement {
       .wt-btn.on {
         background: rgba(0,150,0,0.15);
       }
+      .wt-toggle {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px 6px 6px;
+        border-radius: 16px;
+        min-width: 70px;
+        background: rgba(0,0,0,0.08);
+        transition: background 0.2s ease;
+        cursor: pointer;
+        border: none;
+        font-weight: 700;
+      }
+      .wt-toggle.on {
+        background: rgba(0,150,0,0.18);
+      }
+      .wt-toggle-thumb {
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        background: white;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+        transform: translateX(0);
+        transition: transform 0.2s ease;
+      }
+      .wt-toggle.on .wt-toggle-thumb {
+        transform: translateX(28px);
+      }
+      .wt-toggle-label {
+        font-size: 13px;
+        text-transform: capitalize;
+      }
       .wt-setup {
         display: flex;
         flex-direction: column;
@@ -2194,6 +2398,7 @@ class WaterTankCard extends HTMLElement {
     `;
 
     this.shadowRoot.innerHTML = html;
+    this._bindModalHandlers();
 
     const settingButtons = this.shadowRoot.querySelectorAll("#settingsBtn");
     settingButtons.forEach((btn) => {
@@ -2201,11 +2406,14 @@ class WaterTankCard extends HTMLElement {
     });
 
     const simOff = this.shadowRoot.getElementById("simOffBtn");
-    if (simOff && this._config.simulation_enabled_entity) {
+    if (simOff && this._config.sense_mode_entity) {
       simOff.onclick = (e) => {
         e.stopPropagation();
-        this._hass.callService("switch", "turn_off", {
-          entity_id: this._config.simulation_enabled_entity,
+        if (this._pendingSet?.senseMode) return;
+        this._setPendingSenseMode("touch");
+        this._hass.callService("select", "select_option", {
+          entity_id: this._config.sense_mode_entity,
+          option: "touch",
         });
       };
     }

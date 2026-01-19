@@ -16,8 +16,8 @@ static const char *PREF_KEY_TANK_VOL = "tank_vol";       // NVS key for tank vol
 static const char *PREF_KEY_TANK_HEIGHT = "tank_height"; // NVS key for tank height in cm
 
 // ---------------- Simulation Configuration ----------------
-static const char *PREF_KEY_SIM_ENABLED = "sim_en"; // NVS key for simulation enabled flag
-static const char *PREF_KEY_SIM_MODE = "sim_mode";  // NVS key for simulation mode
+static const char *PREF_KEY_SENSE_MODE = "sense_mode"; // NVS key for probe sense mode
+static const char *PREF_KEY_SIM_MODE = "sim_mode";     // NVS key for simulation mode
 
 /*
 /
@@ -59,12 +59,12 @@ bool storage_loadTank(float &volumeLiters, float &tankHeightCm)
     return true;
 }
 
-bool storage_loadSimulation(bool &enabled, uint8_t &mode)
+bool storage_loadSimulation(SenseMode &senseMode, uint8_t &mode)
 {
-    const bool DEFAULT_ENABLED = false;
+    const uint8_t DEFAULT_SENSE = (uint8_t)SenseMode::TOUCH;
     const uint8_t DEFAULT_MODE = 0;
 
-    enabled = prefs.getBool(PREF_KEY_SIM_ENABLED, DEFAULT_ENABLED);
+    senseMode = (SenseMode)prefs.getUChar(PREF_KEY_SENSE_MODE, DEFAULT_SENSE);
     mode = (uint8_t)prefs.getUChar(PREF_KEY_SIM_MODE, DEFAULT_MODE);
 
     return true;
@@ -105,14 +105,14 @@ void storage_saveTankHeight(float tankHeightCm)
     prefs.putFloat(PREF_KEY_TANK_HEIGHT, tankHeightCm);
 }
 
-void storage_saveSimulationEnabled(bool enabled)
-{
-    prefs.putBool(PREF_KEY_SIM_ENABLED, enabled);
-}
-
 void storage_saveSimulationMode(uint8_t mode)
 {
     prefs.putUChar(PREF_KEY_SIM_MODE, mode);
+}
+
+void storage_saveSenseMode(SenseMode senseMode)
+{
+    prefs.putUChar(PREF_KEY_SENSE_MODE, (uint8_t)senseMode);
 }
 
 void storage_dump()
@@ -124,10 +124,11 @@ void storage_dump()
     float vol = prefs.getFloat(PREF_KEY_TANK_VOL, 0.0f);
     float height = prefs.getFloat(PREF_KEY_TANK_HEIGHT, 0.0f);
 
-    bool simEn = prefs.getBool(PREF_KEY_SIM_ENABLED, false);
+    SenseMode sense = (SenseMode)prefs.getUChar(PREF_KEY_SENSE_MODE, (uint8_t)SenseMode::TOUCH);
     uint8_t simMode = (uint8_t)prefs.getUChar(PREF_KEY_SIM_MODE, 0);
 
     LOG_INFO(LogDomain::CONFIG, "NVS: dry=%ld wet=%ld inv=%s", (long)dry, (long)wet, inv ? "true" : "false");
     LOG_INFO(LogDomain::CONFIG, "NVS: tank_volume_l=%.2f tank_height_cm=%.2f", (double)vol, (double)height);
-    LOG_INFO(LogDomain::CONFIG, "NVS: sim_enabled=%s sim_mode=%u", simEn ? "true" : "false", (unsigned)simMode);
+    LOG_INFO(LogDomain::CONFIG, "NVS: sense_mode=%s sim_mode=%u",
+             sense == SenseMode::SIM ? "SIM" : "TOUCH", (unsigned)simMode);
 }
