@@ -7,7 +7,7 @@ const char *toString(SenseMode v)
     case SenseMode::TOUCH:
         return "touch";
     case SenseMode::SIM:
-        return "simulation";
+        return "sim";
     default:
         return "unknown";
     }

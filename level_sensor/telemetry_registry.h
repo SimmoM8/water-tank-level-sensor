@@ -42,7 +42,7 @@ struct ControlDef
     float min;
     float max;
     float step;
-    const int *options;
+    const char *const *options;
     size_t optionCount;
     const char *payloadOnJson;   // for switch
     const char *payloadOffJson;  // for switch

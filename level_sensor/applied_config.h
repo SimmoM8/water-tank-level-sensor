@@ -2,11 +2,13 @@
 
 #include <stdint.h>
 
+#include "device_state.h"
+
 struct AppliedConfig
 {
     float tankVolumeLiters;
     float rodLengthCm;
-    bool simulationEnabled;
+    SenseMode senseMode;
     uint8_t simulationMode;
 
     int32_t calDry;

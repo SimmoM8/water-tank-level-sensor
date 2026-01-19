@@ -122,11 +122,14 @@ static bool publishControlButton(const ControlDef &b)
     StaticJsonDocument<640> doc;
     doc["name"] = b.name;
     doc["uniq_id"] = String(s_cfg.deviceId) + "_" + buildUniqId(b.objectId, b.uniqIdOverride);
-    doc["cmd_t"] = String(s_cfg.baseTopic) + "/cmd";
-    doc["pl_press"] = b.payloadJson;
-    doc["avty_t"] = String(s_cfg.baseTopic) + "/" + AVAIL_TOPIC_SUFFIX;
-    doc["pl_avail"] = PAYLOAD_AVAILABLE;
-    doc["pl_not_avail"] = PAYLOAD_NOT_AVAILABLE;
+    // Use full discovery keys for MQTT button to ensure HA publishes the JSON payload,
+    // not the default "PRESS".
+    doc["command_topic"] = String(s_cfg.baseTopic) + "/cmd";
+    doc["payload_press"] = b.payloadJson;
+
+    doc["availability_topic"] = String(s_cfg.baseTopic) + "/" + AVAIL_TOPIC_SUFFIX;
+    doc["payload_available"] = PAYLOAD_AVAILABLE;
+    doc["payload_not_available"] = PAYLOAD_NOT_AVAILABLE;
 
     JsonObject dev = doc.createNestedObject("dev");
     dev["name"] = s_cfg.deviceName;
@@ -158,21 +161,31 @@ static bool publishNumber(const ControlDef &nSpec)
     StaticJsonDocument<896> doc;
     doc["name"] = nSpec.name;
     doc["uniq_id"] = String(s_cfg.deviceId) + "_" + buildUniqId(nSpec.objectId, nSpec.uniqIdOverride);
+
     doc["cmd_t"] = String(s_cfg.baseTopic) + "/cmd";
     doc["stat_t"] = String(s_cfg.baseTopic) + "/" + STATE_TOPIC_SUFFIX;
+
     char tpl[96];
     snprintf(tpl, sizeof(tpl), "{{ value_json.%s }}", nSpec.statePath);
     doc["val_tpl"] = tpl;
-    doc["avty_t"] = String(s_cfg.baseTopic) + "/" + AVAIL_TOPIC_SUFFIX;
-    doc["pl_avail"] = PAYLOAD_AVAILABLE;
-    doc["pl_not_avail"] = PAYLOAD_NOT_AVAILABLE;
+
     doc["min"] = nSpec.min;
     doc["max"] = nSpec.max;
     doc["step"] = nSpec.step;
     doc["mode"] = "box";
-    char cmdTpl[144];
+
+    char cmdTpl[160];
     snprintf(cmdTpl, sizeof(cmdTpl), "{\"schema\":1,\"type\":\"%s\",\"data\":{\"%s\":{{ value }}}}", nSpec.cmdType, nSpec.dataKey);
     doc["cmd_tpl"] = cmdTpl;
+
+    doc["avty_t"] = String(s_cfg.baseTopic) + "/" + AVAIL_TOPIC_SUFFIX;
+    doc["pl_avail"] = PAYLOAD_AVAILABLE;
+    doc["pl_not_avail"] = PAYLOAD_NOT_AVAILABLE;
+
+    if (nSpec.unit)
+        doc["unit_of_meas"] = nSpec.unit;
+    if (nSpec.icon)
+        doc["icon"] = nSpec.icon;
 
     JsonObject dev = doc.createNestedObject("dev");
     dev["name"] = s_cfg.deviceName;
@@ -247,15 +260,24 @@ static bool publishSelect(const ControlDef &s)
     doc["uniq_id"] = String(s_cfg.deviceId) + "_" + buildUniqId(s.objectId, s.uniqIdOverride);
     doc["cmd_t"] = String(s_cfg.baseTopic) + "/cmd";
     doc["stat_t"] = String(s_cfg.baseTopic) + "/" + STATE_TOPIC_SUFFIX;
-    char tpl[96];
-    snprintf(tpl, sizeof(tpl), "{{ value_json.%s }}", s.statePath);
+    char tpl[128];
+    snprintf(tpl, sizeof(tpl), "{{ value_json.%s | string }}", s.statePath);
     doc["val_tpl"] = tpl;
     JsonArray opts = doc.createNestedArray("options");
     for (size_t i = 0; i < s.optionCount; ++i)
     {
         opts.add(s.options[i]);
     }
-    doc["cmd_tpl"] = s.cmdTemplateJson;
+    if (s.cmdTemplateJson)
+    {
+        doc["cmd_tpl"] = s.cmdTemplateJson;
+    }
+    else
+    {
+        char cmdTpl[192];
+        snprintf(cmdTpl, sizeof(cmdTpl), "{\"schema\":1,\"type\":\"%s\",\"data\":{\"%s\":\"{{ value }}\"}}", s.cmdType, s.dataKey);
+        doc["cmd_tpl"] = cmdTpl;
+    }
     doc["avty_t"] = String(s_cfg.baseTopic) + "/" + AVAIL_TOPIC_SUFFIX;
     doc["pl_avail"] = PAYLOAD_AVAILABLE;
     doc["pl_not_avail"] = PAYLOAD_NOT_AVAILABLE;

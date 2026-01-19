@@ -148,6 +148,8 @@ static void windowSensor();
 static void windowCompute();
 static void windowStateMeta();
 static void windowMqtt();
+static void setCalibrationDryValue(int32_t value, const char *sourceMsg = nullptr);
+static void setCalibrationWetValue(int32_t value, const char *sourceMsg = nullptr);
 
 struct LoopWindow
 {
@@ -386,7 +388,7 @@ static void refreshProbeState(int32_t raw, bool forcePublish)
   g_state.probe.quality = probeQualityReason;
   g_state.probe.raw = raw;
   g_state.probe.rawValid = probeConnected;
-  g_state.probe.senseMode = cfg.simulationEnabled ? SenseMode::SIM : SenseMode::TOUCH;
+  g_state.probe.senseMode = cfg.senseMode;
 
   refreshCalibrationState();
 
@@ -417,7 +419,7 @@ static void refreshDeviceMeta()
   const AppliedConfig &cfg = config_get();
   g_state.config.tankVolumeLiters = cfg.tankVolumeLiters;
   g_state.config.rodLengthCm = cfg.rodLengthCm;
-  g_state.config.simulationEnabled = cfg.simulationEnabled;
+  g_state.config.senseMode = cfg.senseMode;
   g_state.config.simulationMode = cfg.simulationMode;
 }
 
@@ -517,17 +519,56 @@ static void handleInvertCalibration()
   LOG_INFO(LogDomain::CAL, "Calibration inverted=%s", calInverted ? "true" : "false");
 }
 
-static void setSimulationEnabled(bool enabled, bool /*forcePublish*/ = false, const char * /*sourceMsg*/ = nullptr)
+static void setSenseMode(SenseMode mode, bool /*forcePublish*/ = false, const char * /*sourceMsg*/ = nullptr)
 {
-  storage_saveSimulationEnabled(enabled);
+  storage_saveSenseMode(mode);
+  g_state.config.senseMode = mode;
+  probe_updateMode(mode == SenseMode::SIM ? READ_SIM : READ_PROBE);
   config_markDirty();
+  mqtt_requestStatePublish();
 }
 
 static void setSimulationModeInternal(uint8_t mode, bool /*forcePublish*/ = false, const char * /*sourceMsg*/ = nullptr)
 {
   uint8_t clamped = mode > 5 ? 5 : mode;
   storage_saveSimulationMode(clamped);
+  g_state.config.simulationMode = clamped;
+  setSimulationMode(clamped);
   config_markDirty();
+  mqtt_requestStatePublish();
+}
+
+static void setCalibrationValueInternal(int32_t value, bool isDry, const char *sourceMsg)
+{
+  const int32_t clamped = value < 0 ? 0 : value;
+  if (isDry)
+  {
+    calDry = clamped;
+    g_state.calibration.dry = calDry;
+    storage_saveCalibrationDry(calDry);
+  }
+  else
+  {
+    calWet = clamped;
+    g_state.calibration.wet = calWet;
+    storage_saveCalibrationWet(calWet);
+  }
+
+  config_markDirty();
+  reloadConfigIfDirty(false);
+  refreshCalibrationState();
+  mqtt_requestStatePublish();
+  LOG_INFO(LogDomain::CAL, "Calibration %s set to %ld (%s)", isDry ? "dry" : "wet", (long)clamped, sourceMsg ? sourceMsg : "");
+}
+
+static void setCalibrationDryValue(int32_t value, const char *sourceMsg)
+{
+  setCalibrationValueInternal(value, true, sourceMsg);
+}
+
+static void setCalibrationWetValue(int32_t value, const char *sourceMsg)
+{
+  setCalibrationValueInternal(value, false, sourceMsg);
 }
 
 static void applyConfigFromCache(bool logValues)
@@ -545,11 +586,11 @@ static void applyConfigFromCache(bool logValues)
 
   g_state.config.tankVolumeLiters = cfg.tankVolumeLiters;
   g_state.config.rodLengthCm = cfg.rodLengthCm;
-  g_state.config.simulationEnabled = cfg.simulationEnabled;
+  g_state.config.senseMode = cfg.senseMode;
   g_state.config.simulationMode = cfg.simulationMode;
 
   setSimulationMode(cfg.simulationMode);
-  probe_updateMode(cfg.simulationEnabled ? READ_SIM : READ_PROBE);
+  probe_updateMode(cfg.senseMode == SenseMode::SIM ? READ_SIM : READ_PROBE);
 
   refreshCalibrationState();
 
@@ -570,7 +611,7 @@ static void applyConfigFromCache(bool logValues)
     LOG_INFO(LogDomain::CONFIG, "[CFG] Rod length (cm) value=%.2f", cfg.rodLengthCm);
   }
 
-  LOG_INFO(LogDomain::CONFIG, "[CFG] Simulation enabled: %s", cfg.simulationEnabled ? "true" : "false");
+  LOG_INFO(LogDomain::CONFIG, "[CFG] Sense mode: %s", cfg.senseMode == SenseMode::SIM ? "SIM" : "TOUCH");
   LOG_INFO(LogDomain::CONFIG, "[CFG] Simulation mode: %u", cfg.simulationMode);
 
   LOG_INFO(LogDomain::CAL, "[CAL] Dry=%ld Wet=%ld Inverted=%s", (long)calDry, (long)calWet, calInverted ? "true" : "false");
@@ -642,7 +683,7 @@ static void handleSerialCommands()
 
   if (cmd == "mode touch")
   {
-    setSimulationEnabled(false, true, "serial");
+    setSenseMode(SenseMode::TOUCH, true, "serial");
     probe_updateMode(READ_PROBE);
     return;
   }
@@ -653,7 +694,7 @@ static void handleSerialCommands()
       m = 0;
     if (m > 5)
       m = 5;
-    setSimulationEnabled(true, true, "serial");
+    setSenseMode(SenseMode::SIM, true, "serial");
     setSimulationModeInternal((uint8_t)m, true, "serial");
     setSimulationMode((uint8_t)m);
     probe_updateMode(READ_SIM);
@@ -662,7 +703,7 @@ static void handleSerialCommands()
   }
   if (cmd == "mode sim")
   {
-    setSimulationEnabled(true, true, "serial");
+    setSenseMode(SenseMode::SIM, true, "serial");
     probe_updateMode(READ_SIM);
     return;
   }
@@ -673,7 +714,7 @@ static void handleSerialCommands()
       m = 0;
     if (m > 5)
       m = 5;
-    setSimulationEnabled(true, true, "serial");
+    setSenseMode(SenseMode::SIM, true, "serial");
     setSimulationModeInternal((uint8_t)m, true, "serial");
     setSimulationMode((uint8_t)m);
     probe_updateMode(READ_SIM);
@@ -812,8 +853,10 @@ void appSetup()
       .updateRodLength = updateRodLength,
       .captureCalibrationPoint = captureCalibrationPoint,
       .clearCalibration = clearCalibration,
-      .setSimulationEnabled = setSimulationEnabled,
+      .setSenseMode = setSenseMode,
       .setSimulationModeInternal = setSimulationModeInternal,
+      .setCalibrationDryValue = setCalibrationDryValue,
+      .setCalibrationWetValue = setCalibrationWetValue,
       .reannounce = mqtt_reannounceDiscovery,
       .requestStatePublish = mqtt_requestStatePublish,
       .publishAck = mqtt_publishAck};

@@ -113,15 +113,6 @@ static void write_probe_quality(const DeviceState &s, JsonObject &root)
     obj[leaf] = toString(s.probe.quality);
 }
 
-static void write_probe_sense_mode(const DeviceState &s, JsonObject &root)
-{
-    char parent[32];
-    char leaf[32];
-    splitPath("probe.sense_mode", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = ensureObject(root, parent);
-    obj[leaf] = toString(s.probe.senseMode);
-}
-
 static void write_probe_raw(const DeviceState &s, JsonObject &root)
 {
     char parent[32];
@@ -257,13 +248,13 @@ static void write_config_rod(const DeviceState &s, JsonObject &root)
     obj[leaf] = s.config.rodLengthCm;
 }
 
-static void write_config_sim_enabled(const DeviceState &s, JsonObject &root)
+static void write_config_sense_mode(const DeviceState &s, JsonObject &root)
 {
     char parent[32];
     char leaf[32];
-    splitPath("config.simulation_enabled", parent, sizeof(parent), leaf, sizeof(leaf));
+    splitPath("config.sense_mode", parent, sizeof(parent), leaf, sizeof(leaf));
     JsonObject obj = ensureObject(root, parent);
-    obj[leaf] = s.config.simulationEnabled;
+    obj[leaf] = toString(s.config.senseMode);
 }
 
 static void write_config_sim_mode(const DeviceState &s, JsonObject &root)
@@ -297,7 +288,6 @@ static const TelemetryFieldDef TELEMETRY_FIELDS[] = {
     // Probe
     {HaComponent::BinarySensor, "probe_connected", "Probe Connected", "probe.connected", "connectivity", nullptr, nullptr, nullptr, nullptr, write_probe_connected},
     {HaComponent::Sensor, "quality", "Probe Quality", "probe.quality", nullptr, nullptr, "mdi:diagnostics", nullptr, nullptr, write_probe_quality},
-    {HaComponent::Sensor, "sense_mode", "Probe Sense Mode", "probe.sense_mode", nullptr, nullptr, nullptr, nullptr, nullptr, write_probe_sense_mode},
     {HaComponent::Sensor, "raw", "Probe Raw", "probe.raw", nullptr, nullptr, "mdi:water", nullptr, nullptr, write_probe_raw},
     {HaComponent::BinarySensor, "raw_valid", "Probe Raw Valid", "probe.raw_valid", nullptr, nullptr, nullptr, nullptr, nullptr, write_probe_raw_valid},
 
@@ -323,7 +313,7 @@ static const TelemetryFieldDef TELEMETRY_FIELDS[] = {
     // Config (internal only)
     {HaComponent::Internal, "tank_volume_l", "Tank Volume", "config.tank_volume_l", nullptr, nullptr, nullptr, nullptr, nullptr, write_config_volume},
     {HaComponent::Internal, "rod_length_cm", "Rod Length", "config.rod_length_cm", nullptr, nullptr, nullptr, nullptr, nullptr, write_config_rod},
-    {HaComponent::Internal, "simulation_enabled", "Simulation Enabled", "config.simulation_enabled", nullptr, nullptr, nullptr, nullptr, nullptr, write_config_sim_enabled},
+    {HaComponent::Internal, "sense_mode", "Sense Mode", "config.sense_mode", nullptr, nullptr, "mdi:toggle-switch", nullptr, nullptr, write_config_sense_mode},
     {HaComponent::Internal, "simulation_mode", "Simulation Mode", "config.simulation_mode", nullptr, nullptr, nullptr, nullptr, nullptr, write_config_sim_mode},
 
     // Last command
@@ -331,7 +321,8 @@ static const TelemetryFieldDef TELEMETRY_FIELDS[] = {
 };
 
 // Controls (buttons, numbers, switch, select)
-static const int SIM_OPTIONS[] = {0, 1, 2, 3, 4, 5};
+static const char *const SIM_OPTIONS[] = {"0", "1", "2", "3", "4", "5"};
+static const char *const SENSE_OPTIONS[] = {"touch", "sim"};
 static const ControlDef CONTROL_DEFS[] = {
     // Buttons
     {HaComponent::Button, "calibrate_dry", "Calibrate Dry", nullptr, nullptr, nullptr, nullptr, "calibrate", nullptr, 0, 0, 0, nullptr, 0, nullptr, nullptr, nullptr, "{\"schema\":1,\"type\":\"calibrate\",\"data\":{\"point\":\"dry\"}}", nullptr},
@@ -342,17 +333,16 @@ static const ControlDef CONTROL_DEFS[] = {
     // Numbers
     {HaComponent::Number, "tank_volume_l", "Tank Volume (L)", "config.tank_volume_l", nullptr, nullptr, nullptr, "set_config", "tank_volume_l", 0.0f, 10000.0f, 1.0f, nullptr, 0, nullptr, nullptr, nullptr, nullptr, nullptr},
     {HaComponent::Number, "rod_length_cm", "Rod Length (cm)", "config.rod_length_cm", nullptr, nullptr, nullptr, "set_config", "rod_length_cm", 0.0f, 1000.0f, 1.0f, nullptr, 0, nullptr, nullptr, nullptr, nullptr, nullptr},
-
-    // Switches
-    {HaComponent::Switch, "simulation_enabled", "Simulation Enabled", "config.simulation_enabled", nullptr, nullptr, nullptr, "set_simulation", "enabled", 0, 0, 0, nullptr, 0,
-     "{\"schema\":1,\"type\":\"set_simulation\",\"data\":{\"enabled\":true}}",
-     "{\"schema\":1,\"type\":\"set_simulation\",\"data\":{\"enabled\":false}}",
-     nullptr, nullptr, nullptr},
+    {HaComponent::Number, "cal_dry_set", "Set Calibration Dry", "calibration.dry", nullptr, nullptr, nullptr, "set_calibration", "cal_dry_set", 0.0f, 655350.0f, 1.0f, nullptr, 0, nullptr, nullptr, nullptr, nullptr, nullptr},
+    {HaComponent::Number, "cal_wet_set", "Set Calibration Wet", "calibration.wet", nullptr, nullptr, nullptr, "set_calibration", "cal_wet_set", 0.0f, 655350.0f, 1.0f, nullptr, 0, nullptr, nullptr, nullptr, nullptr, nullptr},
 
     // Selects
+    {HaComponent::Select, "sense_mode", "Sense Mode", "config.sense_mode", nullptr, nullptr, nullptr, "set_simulation", "sense_mode", 0, 0, 0,
+     SENSE_OPTIONS, sizeof(SENSE_OPTIONS) / sizeof(SENSE_OPTIONS[0]), nullptr, nullptr,
+     "{\"schema\":1,\"type\":\"set_simulation\",\"data\":{\"sense_mode\":\"{{ value }}\"}}", nullptr, nullptr},
     {HaComponent::Select, "simulation_mode", "Simulation Mode", "config.simulation_mode", nullptr, nullptr, nullptr, "set_simulation", "mode", 0, 0, 0,
      SIM_OPTIONS, sizeof(SIM_OPTIONS) / sizeof(SIM_OPTIONS[0]), nullptr, nullptr,
-     "{\"schema\":1,\"type\":\"set_simulation\",\"data\":{\"mode\":{{ value }}}}", nullptr, nullptr},
+     "{\"schema\":1,\"type\":\"set_simulation\",\"data\":{\"mode\":{{ value | int }}}}", nullptr, nullptr},
 };
 
 const TelemetryFieldDef *telemetry_registry_fields(size_t &count)

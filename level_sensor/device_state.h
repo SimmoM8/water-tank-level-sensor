@@ -90,7 +90,7 @@ struct ConfigInfo
 {
     float tankVolumeLiters;
     float rodLengthCm;
-    bool simulationEnabled;
+    SenseMode senseMode;
     uint8_t simulationMode;
 };
 

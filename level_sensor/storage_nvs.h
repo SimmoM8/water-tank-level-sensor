@@ -5,12 +5,12 @@ all references to storage found in water_level_sensor.cpp:
  - inv
  - tank volume
  - rod length
- - sime enabled
- - sim mode
+- sense mode
+- sim mode
 - loadConfigValues()
 - saveTankVolume()
 - saveRodLength()
-- setSimulationEnabled()
+- setSenseMode()
 - setSimulationModeInternal()
 - loadCalibration()
 - clearCalibration()
@@ -24,6 +24,7 @@ all references to storage found in water_level_sensor.cpp:
 #pragma once // prevent multiple inclusion of this header file
 
 #include <Arduino.h>
+#include "device_state.h"
 
 /* ---------------- Boot Lifecycle ---------------- */
 bool storage_begin();
@@ -42,9 +43,9 @@ void storage_saveTankVolume(float volumeLiters);
 void storage_saveTankHeight(float tankHeightCm);
 
 /* ---------------- Simulation Configuration ---------------- */
-bool storage_loadSimulation(bool &enabled, uint8_t &mode);
-void storage_saveSimulationEnabled(bool enabled);
+bool storage_loadSimulation(SenseMode &senseMode, uint8_t &mode);
 void storage_saveSimulationMode(uint8_t mode);
+void storage_saveSenseMode(SenseMode senseMode);
 
 /* ---------------- Debug ---------------- */
 void storage_dump();
