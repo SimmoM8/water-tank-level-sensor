@@ -4,7 +4,10 @@
  */
 
 const CARD_TAG = "water-tank-card";
-const VERSION = "0.5.4";
+const VERSION = "0.5.5";
+
+// Toast timing (ms)
+const TOAST_RESULT_MS = 2200;
 
 // Required logical entity keys for the card to render.
 const REQUIRED_ENTITY_KEYS = [
@@ -398,6 +401,45 @@ class WaterTankCard extends HTMLElement {
     return this._state(this._config?.sense_mode_entity);
   }
 
+  _labelForKey(key) {
+    switch (key) {
+      case "senseMode":
+        return "Sense mode";
+      case "simMode":
+        return "Simulation mode";
+      case "tankVolume":
+        return "Tank volume";
+      case "rodLength":
+        return "Rod length";
+      case "dryValue":
+        return "Dry value";
+      case "wetValue":
+        return "Wet value";
+      default:
+        return "Value";
+    }
+  }
+
+  _humanizeSenseMode(value) {
+    const isSim = this._senseModeIsSimValue(value);
+    if (isSim === true) return "Sim";
+    if (isSim === false) return "Touch";
+    return this._safeText(value, "");
+  }
+
+  _successMessageForPending(key, pending) {
+    const label = pending?.label || this._labelForKey(key);
+    if (key === "senseMode") return `Sense mode set to ${this._humanizeSenseMode(pending?.targetValue)}`;
+    if (key === "simMode") return `Simulation mode set to ${this._safeText(pending?.targetValue, "")}`;
+    return `Saved ${label}`;
+  }
+
+  _failureMessageForPending(key, pending, reason = "no update from device") {
+    const label = pending?.label || this._labelForKey(key);
+    const action = key === "senseMode" || key === "simMode" ? "set" : "save";
+    return `Failed to ${action} ${label} (${reason})`;
+  }
+
   _setPendingSenseMode(targetValue) {
     const entityId = this._config?.sense_mode_entity;
     if (!entityId) return false;
@@ -407,8 +449,9 @@ class WaterTankCard extends HTMLElement {
       verifyEntityId: entityId,
       targetValue,
       startedAt,
+      label: this._labelForKey("senseMode"),
     };
-    this._showToast("Saving...", "info");
+    this._showToast(`Setting sense mode to ${this._humanizeSenseMode(targetValue)}…`, "info", 0, { sticky: true });
     this._render();
     setTimeout(() => {
       if (this._pendingSet?.senseMode?.startedAt === startedAt) {
@@ -462,11 +505,11 @@ class WaterTankCard extends HTMLElement {
     }
   }
 
-  _showToast(text, type = "info", ms = 2200) {
+  _showToast(text, type = "info", ms = TOAST_RESULT_MS, opts = {}) {
     if (!text) return;
     this._toast = { open: true, text, type };
     if (this._toastTimer) clearTimeout(this._toastTimer);
-    if (ms > 0) {
+    if (!opts?.sticky && ms > 0) {
       this._toastTimer = setTimeout(() => {
         this._toast.open = false;
         this._render();
@@ -528,7 +571,7 @@ class WaterTankCard extends HTMLElement {
         this._editing[key] = false;
         if (this._activeEditKey === key) this._activeEditKey = null;
         if (!this._isUnknownState(current)) this._draft[key] = current;
-        let toastText = "Saved";
+        let toastText = this._successMessageForPending(key, pending);
         let toastType = "success";
 
         if ((key === "dryValue" || key === "wetValue")) {
@@ -538,13 +581,13 @@ class WaterTankCard extends HTMLElement {
           if (appliedEntity && pending.entityId && appliedEntity !== pending.entityId) {
             const appliedNow = this._state(appliedEntity);
             if (!this._valuesMatch(appliedNow, pending.targetValue)) {
-              toastText = "Saved (awaiting apply)";
+              toastText = `${this._successMessageForPending(key, pending)} (awaiting apply)`;
               toastType = "warn";
             }
           }
         }
 
-        if (this._modalOpen) this._showToast(toastText, toastType);
+        if (this._modalOpen) this._showToast(toastText, toastType, TOAST_RESULT_MS);
       }
       else if (expired) {
         const setNow = this._state(pending.entityId);
@@ -560,7 +603,7 @@ class WaterTankCard extends HTMLElement {
           if (setOk) {
             // We successfully wrote the setpoint, but the applied sensor (if configured)
             // may still be catching up.
-            let toastText = "Saved";
+            let toastText = this._successMessageForPending(key, pending);
             let toastType = "success";
 
             if (key === "dryValue" || key === "wetValue") {
@@ -570,15 +613,15 @@ class WaterTankCard extends HTMLElement {
               if (appliedEntity) {
                 const appliedNow = this._state(appliedEntity);
                 if (!this._valuesMatch(appliedNow, pending.targetValue)) {
-                  toastText = "Saved (awaiting apply)";
+                  toastText = `${this._successMessageForPending(key, pending)} (awaiting apply)`;
                   toastType = "warn";
                 }
               }
             }
 
-            this._showToast(toastText, toastType);
+            this._showToast(toastText, toastType, TOAST_RESULT_MS);
           } else {
-            this._showToast("Save failed (no update)", "error");
+            this._showToast(this._failureMessageForPending(key, pending), "error", TOAST_RESULT_MS);
           }
         }
       }
@@ -590,7 +633,7 @@ class WaterTankCard extends HTMLElement {
     }
   }
 
-  _setNumber(entityId, value) {
+  _setNumber(entityId, value, label = "value") {
     if (!entityId || value === undefined || !this._hass) return false;
     const domain = this._domain(entityId);
     const payload = { entity_id: entityId, value: Number(value) };
@@ -604,7 +647,7 @@ class WaterTankCard extends HTMLElement {
         return true;
       }
     } catch (err) {
-      this._showToast("Service failed", "error");
+      this._showToast(`Failed to save ${label} (service unavailable)`, "error", TOAST_RESULT_MS);
     }
     return false;
   }
@@ -621,6 +664,7 @@ class WaterTankCard extends HTMLElement {
 
   _commitCalEdit(draftKey) {
     if (!draftKey || this._pendingSet?.[draftKey]) return false;
+    const label = this._labelForKey(draftKey);
     const entityId = this._getCalSetEntityId(draftKey);
     if (!entityId) return false;
     const domain = this._domain(entityId);
@@ -628,11 +672,11 @@ class WaterTankCard extends HTMLElement {
     const raw = this._draft[draftKey];
     const trimmed = raw !== null && raw !== undefined ? String(raw).trim() : "";
     if (!trimmed || !this._isNumberLike(trimmed)) {
-      this._showToast("Enter a valid number", "warn");
+      this._showToast(`${label} must be a number`, "warn", TOAST_RESULT_MS);
       return false;
     }
     const numVal = Number(trimmed);
-    if (!this._setNumber(entityId, numVal)) return false;
+    if (!this._setNumber(entityId, numVal, label)) return false;
 
     const startedAt = Date.now();
 
@@ -651,9 +695,10 @@ class WaterTankCard extends HTMLElement {
       verifyEntityId,    // what we consider “saved successfully”
       targetValue: numVal,
       startedAt,
+      label,
     };
 
-    this._showToast("Saving...", "info");
+    this._showToast(`Saving ${label}…`, "info", 0, { sticky: true });
     setTimeout(() => {
       const p = this._pendingSet?.[draftKey];
       if (!p || p.startedAt !== startedAt) return;
@@ -665,7 +710,7 @@ class WaterTankCard extends HTMLElement {
         delete this._pendingSet[draftKey];
         this._editing[draftKey] = false;
         if (this._activeEditKey === draftKey) this._activeEditKey = null;
-        this._showToast("Save failed (no update)", "error");
+        this._showToast(this._failureMessageForPending(draftKey, { label }, "no update from device"), "error", TOAST_RESULT_MS);
       }
 
       if (this._modalOpen) this._render();
@@ -677,17 +722,17 @@ class WaterTankCard extends HTMLElement {
     if (!draftKey || !entityId || !this._hass) return false;
     if (this._pendingSet?.[draftKey]) return false;
 
-    const label = opts.label || "Saved";
+    const label = opts.label || this._labelForKey(draftKey);
 
     const trimmed = rawValue !== null && rawValue !== undefined ? String(rawValue).trim() : "";
     if (!trimmed || !this._isNumberLike(trimmed)) {
-      this._showToast("Enter a valid number", "warn");
+      this._showToast(`${label} must be a number`, "warn", TOAST_RESULT_MS);
       return false;
     }
 
     const numVal = Number(trimmed);
     if (!(numVal > 0)) {
-      this._showToast("Enter a number greater than 0", "warn");
+      this._showToast(`${label} must be greater than 0`, "warn", TOAST_RESULT_MS);
       return false;
     }
 
@@ -695,14 +740,13 @@ class WaterTankCard extends HTMLElement {
     const unchanged = current !== null && Math.abs(current - numVal) < 0.001;
     if (unchanged) return false;
 
-    if (!this._setNumber(entityId, numVal)) {
-      this._showToast("Service failed", "error");
+    if (!this._setNumber(entityId, numVal, label)) {
       return false;
     }
 
     const startedAt = Date.now();
     this._pendingSet[draftKey] = { entityId, targetValue: numVal, startedAt, label };
-    this._showToast("Saving...", "info");
+    this._showToast(`Saving ${label}…`, "info", 0, { sticky: true });
 
     setTimeout(() => {
       if (this._pendingSet?.[draftKey]?.startedAt === startedAt) {
@@ -720,7 +764,7 @@ class WaterTankCard extends HTMLElement {
     if (!this._isUnknownState(current)) this._draft[draftKey] = current;
     this._editing[draftKey] = false;
     if (this._activeEditKey === draftKey) this._activeEditKey = null;
-    this._showToast("Canceled", "info");
+    this._showToast(`Canceled ${this._labelForKey(draftKey)} edit`, "info", TOAST_RESULT_MS);
   }
 
   _getOptions(entityId) {
@@ -895,7 +939,7 @@ class WaterTankCard extends HTMLElement {
     const probeDisconnected = probeState === "off";
     const probeUnknown = this._isUnknownState(probeState);
     const toastHtml = this._toast?.open && this._toast.text
-      ? `<div class="wt-toast wt-toast--${this._toast.type}">${this._safeText(this._toast.text, "")}</div>`
+      ? `<div class="wt-toast-float"><div class="wt-toast wt-toast--${this._toast.type}">${this._safeText(this._toast.text, "")}</div></div>`
       : "";
 
     const renderCalValue = (key, label, appliedEntityId, draftKey) => {
@@ -1036,7 +1080,6 @@ class WaterTankCard extends HTMLElement {
           <button class="wt-modal-close" aria-label="Close">✕</button>
         </div>
       </div>
-      ${toastHtml}
       <div class="wt-warnings">${warningsHtml}</div>
       ${calibrationSection}
       ${setupSection}
@@ -1085,7 +1128,6 @@ class WaterTankCard extends HTMLElement {
           <button class="wt-modal-close" aria-label="Close">✕</button>
         </div>
       </div>
-      ${toastHtml}
       <div class="wt-section">
         <div class="wt-section-title">Advanced</div>
       </div>
@@ -1134,6 +1176,7 @@ class WaterTankCard extends HTMLElement {
         <div class="wt-modal-card">
           ${content}
         </div>
+        ${toastHtml}
       </div>
     `;
   }
@@ -1228,11 +1271,11 @@ class WaterTankCard extends HTMLElement {
     const captureCal = (label, entityId) => {
       const probeState = this._state(this._config.probe_entity);
       if (probeState === "off") {
-        this._showToast("Probe disconnected", "error");
+        this._showToast("Calibration failed (probe disconnected)", "error", TOAST_RESULT_MS);
         return;
       }
       if (!entityId) return;
-      this._showToast(`${label} captured...`, "info");
+      this._showToast(`Capturing ${label.toLowerCase()} reference…`, "info", TOAST_RESULT_MS);
       pressButton(entityId);
     };
 
@@ -1404,7 +1447,7 @@ class WaterTankCard extends HTMLElement {
           input.value = String(v);
         }
         this._editing[draftKey] = false;
-        this._showToast("Canceled", "info");
+        this._showToast(`Canceled ${this._labelForKey(draftKey)} edit`, "info", TOAST_RESULT_MS);
         validate();
       };
 
@@ -1413,7 +1456,7 @@ class WaterTankCard extends HTMLElement {
         if (!valid || unchanged) return;
         this._editing[draftKey] = true;
         this._activeEditKey = draftKey;
-        this._commitNumberEdit(draftKey, entityId, input.value, { label: "Saved" });
+        this._commitNumberEdit(draftKey, entityId, input.value, { label: this._labelForKey(draftKey) });
         validate();
       };
 
@@ -1495,8 +1538,6 @@ class WaterTankCard extends HTMLElement {
         e.preventDefault();
         e.stopPropagation();
 
-        console.log("Simulation mode picked:", simMode.value);
-
         const entityId = simMode.dataset.entity;
         if (!entityId) return;
 
@@ -1508,11 +1549,12 @@ class WaterTankCard extends HTMLElement {
           verifyEntityId: entityId,
           targetValue: selected,
           startedAt,
+          label: this._labelForKey("simMode"),
         };
 
         this._draft.simMode = selected;
         this._editing.simMode = true;
-        this._showToast("Saving...", "info");
+        this._showToast(`Setting simulation mode to ${this._safeText(selected, "")}…`, "info", 0, { sticky: true });
 
         const domain = this._domain(entityId);
         if (domain === "select") {
@@ -2002,9 +2044,16 @@ class WaterTankCard extends HTMLElement {
         border-radius: 999px;
         font-size: 12px;
         font-weight: 700;
-        margin-bottom: 10px;
         background: var(--secondary-background-color, rgba(0,0,0,0.06));
         border: 1px solid var(--divider-color, rgba(127,127,127,0.35));
+      }
+      .wt-toast-float {
+        position: fixed;
+        left: 50%;
+        bottom: 24px;
+        transform: translateX(-50%);
+        z-index: 10000;
+        pointer-events: none;
       }
       .wt-toast--info {
         color: var(--primary-text-color);
