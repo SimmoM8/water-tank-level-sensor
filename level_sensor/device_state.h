@@ -73,7 +73,7 @@ struct CalibrationInfo
     int32_t dry;
     int32_t wet;
     bool inverted;
-    uint16_t minDiff;
+    int32_t minDiff;
 };
 
 struct LevelInfo

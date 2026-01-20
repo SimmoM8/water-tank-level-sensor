@@ -230,7 +230,7 @@ static float computePercent(int32_t raw)
 static bool evaluateProbeConnected(int32_t raw)
 {
   static bool hasLast = false;
-  static uint16_t lastRaw = 0;
+  static int32_t lastRaw = 0;
   static uint8_t spikeCount = 0;
   static uint32_t spikeWindowStart = 0;
   static uint32_t stuckStartMs = 0;
@@ -487,7 +487,7 @@ static void finishCalibrationCapture()
 static void captureCalibrationPoint(bool isDry)
 {
   beginCalibrationCapture();
-  const uint16_t sample = getRaw();
+  const int32_t sample = getRaw();
   lastRawValue = sample;
   refreshProbeState(sample, true);
 

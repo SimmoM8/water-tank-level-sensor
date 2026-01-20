@@ -28,7 +28,7 @@ enum SimMode
 };
 
 static uint8_t currentMode = SIM_DISCONNECTED;
-static uint16_t simValue = CFG_PROBE_DISCONNECTED_BELOW_RAW - 500;
+static int32_t simValue = CFG_PROBE_DISCONNECTED_BELOW_RAW - 500;
 static uint32_t lastUpdateMs = 0;
 static bool initialized = false;
 
@@ -71,7 +71,7 @@ static void ensureInitialized()
   lastUpdateMs = millis();
 }
 
-uint16_t readSimulatedRaw()
+int32_t readSimulatedRaw()
 {
   ensureInitialized();
 
@@ -88,7 +88,7 @@ uint16_t readSimulatedRaw()
     uint32_t next = (uint32_t)simValue + (uint32_t)max<int32_t>(0, delta);
     if (next > 45000u)
       next = 45000u;
-    simValue = (uint16_t)next;
+    simValue = (int32_t)next;
     break;
   }
   case SIM_NORMAL_DRAIN:
@@ -101,7 +101,7 @@ uint16_t readSimulatedRaw()
     }
     else
     {
-      simValue = (uint16_t)max<int32_t>(32000, (int32_t)simValue - delta);
+      simValue = (int32_t)max<int32_t>(32000, (int32_t)simValue - delta);
     }
     break;
   }
@@ -116,7 +116,7 @@ uint16_t readSimulatedRaw()
         next = 32000;
       if (next > 48000)
         next = 48000;
-      simValue = (uint16_t)next;
+      simValue = (int32_t)next;
     }
     else
     {
@@ -124,14 +124,14 @@ uint16_t readSimulatedRaw()
       if (simValue > 36000)
       {
         {
-          const uint16_t d = (uint16_t)(simValue - 36000);
+          const int32_t d = (int32_t)(simValue - 36000);
           simValue -= (d < 200 ? d : 200);
         }
       }
       else if (simValue < 36000)
       {
         {
-          const uint16_t d = (uint16_t)(36000 - simValue);
+          const int32_t d = (int32_t)(36000 - simValue);
           simValue += (d < 200 ? d : 200);
         }
       }
@@ -141,8 +141,8 @@ uint16_t readSimulatedRaw()
   case SIM_RAPID_FLUCTUATION:
   {
     const bool high = ((now / 400) % 2) == 0;
-    const uint16_t base = 36000;
-    const uint16_t delta = CFG_RAPID_FLUCTUATION_DELTA + 1000;
+    const int32_t base = 36000;
+    const int32_t delta = CFG_RAPID_FLUCTUATION_DELTA + 1000;
     simValue = high ? base + delta : base - delta;
     break;
   }
