@@ -21,6 +21,6 @@ struct ProbeConfig
 void probe_begin(const ProbeConfig &cfg);
 
 // get the raw value either from the probe or simulation
-uint32_t probe_getRaw();
+int32_t probe_getRaw();
 
 void probe_updateMode(ReadMode mode);

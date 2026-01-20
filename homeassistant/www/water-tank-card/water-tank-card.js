@@ -4,10 +4,18 @@
  */
 
 const CARD_TAG = "water-tank-card";
-const VERSION = "0.5.5";
+const VERSION = "0.5.7";
 
 // Toast timing (ms)
 const TOAST_RESULT_MS = 2200;
+
+// Diagnostics numeric precision
+const DIAGNOSTICS_DECIMALS = 10;
+
+// Main card numeric precision
+const CARD_PERCENT_DECIMALS = 0;
+const CARD_LITERS_DECIMALS = 1;
+const CARD_HEIGHT_DECIMALS = 1;
 
 // Required logical entity keys for the card to render.
 const REQUIRED_ENTITY_KEYS = [
@@ -63,7 +71,7 @@ const UNIQUE_ID_SUFFIX_MAP = {
 
 // Matching rules per logical key (domains and entity_id fallbacks).
 const ENTITY_MATCH_RULES = {
-  status_entity: { domains: ["binary_sensor", "sensor"], entitySuffixes: ["_status", "_availability", "_online", "_probe_connected"] },
+  status_entity: { domains: ["binary_sensor", "sensor"], entitySuffixes: ["_status", "_availability", "_online"] },
   probe_entity: { domains: ["binary_sensor"], entitySuffixes: ["_probe_connected", "_probe"] },
   percent_entity: { domains: ["sensor"], entitySuffixes: ["_percent"] },
   liters_entity: { domains: ["sensor"], entitySuffixes: ["_liters"] },
@@ -465,12 +473,32 @@ class WaterTankCard extends HTMLElement {
   _isTruthyState(state) {
     if (state === true) return true;
     if (state === false || state === null || state === undefined) return false;
-    const s = String(state).toLowerCase();
+    const s = String(state).trim().toLowerCase();
     return s === "on" || s === "true" || s === "1";
   }
 
+  _isOnlineState(state) {
+    if (this._isUnknownState(state)) return false;
+    if (state === true) return true;
+
+    const s = String(state).trim().toLowerCase();
+
+    // HA binary_sensor values
+    if (s === "on") return true;
+    if (s === "off") return false;
+
+    // Some setups expose strings
+    if (s === "online" || s === "connected" || s === "available") return true;
+    if (s === "offline" || s === "disconnected") return false;
+
+    // Fallback: treat truthy numeric/string as online
+    return this._isTruthyState(s);
+  }
+
   _isUnknownState(s) {
-    return s === null || s === undefined || s === "unknown" || s === "unavailable";
+    if (s === null || s === undefined) return true;
+    const v = String(s).trim().toLowerCase();
+    return v === "unknown" || v === "unavailable" || v === "none";
   }
 
   _safeText(v, fallback = "—") {
@@ -478,6 +506,25 @@ class WaterTankCard extends HTMLElement {
     if (typeof v === "number" && !Number.isFinite(v)) return fallback;
     const s = String(v);
     return s.length ? s : fallback;
+  }
+
+  _formatNumber(value, decimals) {
+    const n = typeof value === "number" ? value : Number(value);
+    if (!Number.isFinite(n)) return "—";
+    return n.toFixed(decimals);
+  }
+
+  _boolLabelFromState(state, trueLabel = "true", falseLabel = "false") {
+    if (this._isUnknownState(state)) return "Unknown";
+    return this._isTruthyState(state) ? trueLabel : falseLabel;
+  }
+
+  _probeStateLabel(state) {
+    if (this._isUnknownState(state)) return "Unknown";
+    const s = String(state).trim().toLowerCase();
+    if (s === "on") return "Connected";
+    if (s === "off") return "Disconnected";
+    return this._safeText(state);
   }
 
   _clamp(n, min, max) {
@@ -810,7 +857,7 @@ class WaterTankCard extends HTMLElement {
     const percentValidState = this._state(this._config.percent_valid_entity);
 
     const warnings = [];
-    if (this._isUnknownState(statusState) || statusState !== "online") warnings.push({ icon: "mdi:lan-disconnect", text: "Device offline or status unknown" });
+    if (!this._isOnlineState(statusState)) warnings.push({ icon: "mdi:lan-disconnect", text: "Device offline or status unknown" });
     if (probeState === "off") warnings.push({ icon: "mdi:power-plug-off-outline", text: "Probe disconnected" });
     else if (this._isUnknownState(probeState)) warnings.push({ icon: "mdi:help-circle-outline", text: "Probe state unknown" });
 
@@ -897,7 +944,7 @@ class WaterTankCard extends HTMLElement {
     const calState = this._state(this._config.calibration_entity);
     const qualityReason = this._config.quality_reason_entity ? this._state(this._config.quality_reason_entity) : null;
 
-    const offline = this._isUnknownState(status) || status === "offline";
+    const offline = !this._isOnlineState(status);
     if (offline) return { display: "nullify", severity: "error", icon: "mdi:lan-disconnect", msg: "Device offline" };
 
     if (probeState === "off") return { display: "nullify", severity: "error", icon: "mdi:power-plug-off-outline", msg: "Probe disconnected" };
@@ -925,7 +972,7 @@ class WaterTankCard extends HTMLElement {
     this._syncDraftFromEntities(false);
 
     const statusState = this._state(this._config.status_entity);
-    const online = statusState === "online";
+    const online = this._isOnlineState(statusState);
     const badge = this._buildOnlineBadgeHtml(online);
     const warnings = this._collectWarnings();
 
@@ -933,7 +980,7 @@ class WaterTankCard extends HTMLElement {
       ? `<ul class="wt-warning-list">${warnings
         .map((w) => `<li><ha-icon icon="${w.icon}"></ha-icon><span>${this._safeText(w.text)}</span></li>`)
         .join("")}</ul>`
-      : `<div class="wt-all-good">✅ All good — no issues detected</div>`;
+      : `<div class="wt-all-good">The device is operating normally.</div>`;
 
     const probeState = this._state(this._config.probe_entity);
     const probeDisconnected = probeState === "off";
@@ -1100,11 +1147,10 @@ class WaterTankCard extends HTMLElement {
     const simOptions = this._getOptions(simModeEntity);
 
     const diagnosticsLines = [
-      { label: "Raw", value: this._safeText(this._state(this._config.raw_entity)) },
-      { label: "Status", value: this._safeText(statusState) },
-      { label: "Probe", value: this._safeText(probeState) },
+      { label: "Status", value: this._isOnlineState(statusState) ? "Online" : "Offline" },
+      { label: "Probe", value: this._probeStateLabel(probeState) },
       { label: "Calibration", value: this._safeText(this._state(this._config.calibration_entity)) },
-      { label: "Percent valid", value: this._safeText(this._state(this._config.percent_valid_entity)) },
+      { label: "Percent valid", value: this._boolLabelFromState(this._state(this._config.percent_valid_entity)) },
     ];
     if (this._config.quality_reason_entity) {
       const qualityReason = this._state(this._config.quality_reason_entity);
@@ -1112,9 +1158,10 @@ class WaterTankCard extends HTMLElement {
       const qualityLabel = qm ? `${qm.label} (${qualityReason})` : qualityReason;
       diagnosticsLines.push({ label: "Quality", value: this._safeText(qualityLabel) });
     }
-    if (this._config.percent_entity) diagnosticsLines.push({ label: "Percent", value: this._safeText(this._state(this._config.percent_entity)) });
-    if (this._config.liters_entity) diagnosticsLines.push({ label: "Liters", value: this._safeText(this._state(this._config.liters_entity)) });
-    if (this._config.cm_entity) diagnosticsLines.push({ label: "Height", value: this._safeText(this._state(this._config.cm_entity)) });
+    if (this._config.percent_entity) diagnosticsLines.push({ label: "Percent", value: this._formatNumber(this._num(this._config.percent_entity), DIAGNOSTICS_DECIMALS) });
+    if (this._config.liters_entity) diagnosticsLines.push({ label: "Liters", value: this._formatNumber(this._num(this._config.liters_entity), DIAGNOSTICS_DECIMALS) });
+    if (this._config.cm_entity) diagnosticsLines.push({ label: "Height", value: this._formatNumber(this._num(this._config.cm_entity), DIAGNOSTICS_DECIMALS) });
+    if (this._config.raw_entity) diagnosticsLines.push({ label: "Raw", value: this._safeText(this._state(this._config.raw_entity)) });
 
     const diagnosticsHtml = diagnosticsLines
       .map((l) => `<div class="wt-diag-row"><span>${l.label}</span><b>${l.value}</b></div>`)
@@ -1768,7 +1815,7 @@ class WaterTankCard extends HTMLElement {
     const raw = this._state(this._config.raw_entity);
 
     const statusState = this._state(this._config.status_entity);
-    const onlineText = statusState === "online" ? "Online" : "Offline";
+    const onlineText = this._isOnlineState(statusState) ? "Online" : "Offline";
 
     // Simulation mode enabled? Prefer device sense_mode when available so UI mirrors the device truth.
     const simEnabled = this._config.sense_mode_entity
@@ -2362,9 +2409,11 @@ class WaterTankCard extends HTMLElement {
     const nullify = ui.display === "nullify";
     const dim = ui.display === "dim";
 
-    const pctText = nullify ? "—%" : (pct !== null ? `${pct.toFixed(1)}%` : "—%");
-    const litersText = nullify ? "—" : this._safeText(liters !== null ? liters.toFixed(2) : null);
-    const cmText = nullify ? "—" : this._safeText(cm !== null ? cm.toFixed(1) : null);
+    const pctText = nullify
+      ? "—%"
+      : (pct !== null ? `${this._formatNumber(pct, CARD_PERCENT_DECIMALS)}%` : "—%");
+    const litersText = nullify ? "—" : this._formatNumber(liters, CARD_LITERS_DECIMALS);
+    const cmText = nullify ? "—" : this._formatNumber(cm, CARD_HEIGHT_DECIMALS);
 
     const view = (this._config.view || "tank").toLowerCase();
     const visualPct = nullify ? 0 : (pct ?? 0);
