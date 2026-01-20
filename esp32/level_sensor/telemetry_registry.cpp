@@ -333,8 +333,8 @@ static const ControlDef CONTROL_DEFS[] = {
     // Numbers
     {HaComponent::Number, "tank_volume_l", "Tank Volume (L)", "config.tank_volume_l", nullptr, nullptr, nullptr, "set_config", "tank_volume_l", 0.0f, 10000.0f, 1.0f, nullptr, 0, nullptr, nullptr, nullptr, nullptr, nullptr},
     {HaComponent::Number, "rod_length_cm", "Rod Length (cm)", "config.rod_length_cm", nullptr, nullptr, nullptr, "set_config", "rod_length_cm", 0.0f, 1000.0f, 1.0f, nullptr, 0, nullptr, nullptr, nullptr, nullptr, nullptr},
-    {HaComponent::Number, "cal_dry_set", "Set Calibration Dry", "calibration.dry", nullptr, nullptr, nullptr, "set_calibration", "cal_dry_set", 0.0f, 655350.0f, 1.0f, nullptr, 0, nullptr, nullptr, nullptr, nullptr, nullptr},
-    {HaComponent::Number, "cal_wet_set", "Set Calibration Wet", "calibration.wet", nullptr, nullptr, nullptr, "set_calibration", "cal_wet_set", 0.0f, 655350.0f, 1.0f, nullptr, 0, nullptr, nullptr, nullptr, nullptr, nullptr},
+    {HaComponent::Number, "cal_dry_set", "Set Calibration Dry", "calibration.dry", nullptr, nullptr, nullptr, "set_calibration", "cal_dry_set", 0.0f, 1000000.0f, 1.0f, nullptr, 0, nullptr, nullptr, nullptr, nullptr, nullptr},
+    {HaComponent::Number, "cal_wet_set", "Set Calibration Wet", "calibration.wet", nullptr, nullptr, nullptr, "set_calibration", "cal_wet_set", 0.0f, 1000000.0f, 1.0f, nullptr, 0, nullptr, nullptr, nullptr, nullptr, nullptr},
 
     // Selects
     {HaComponent::Select, "sense_mode", "Sense Mode", "config.sense_mode", nullptr, nullptr, nullptr, "set_simulation", "sense_mode", 0, 0, 0,

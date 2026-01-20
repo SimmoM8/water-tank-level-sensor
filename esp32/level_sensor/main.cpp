@@ -69,6 +69,15 @@ DeviceState g_state;
 #ifndef CFG_ZERO_WINDOW_MS
 #define CFG_ZERO_WINDOW_MS 5000u
 #endif
+#ifndef CFG_RAW_SAMPLE_MS
+#define CFG_RAW_SAMPLE_MS 1000u
+#endif
+#ifndef CFG_PERCENT_SAMPLE_MS
+#define CFG_PERCENT_SAMPLE_MS 3000u
+#endif
+#ifndef CFG_PERCENT_EMA_ALPHA
+#define CFG_PERCENT_EMA_ALPHA 0.2f
+#endif
 
 // =============================================================================
 // Dad's Smart Home — Water Level Sensor (ESP32 touch) → MQTT → Home Assistant
@@ -114,9 +123,9 @@ static const char *DEVICE_FW = "1.3";
 static const int TOUCH_PIN = 14; // GPIO14 or A7
 static const uint8_t TOUCH_SAMPLES = 16;
 static const uint8_t TOUCH_SAMPLE_DELAY_MS = 5;
-static const uint32_t RAW_SAMPLE_MS = 1000;
-static const uint32_t PERCENT_SAMPLE_MS = 3000;
-static const float PERCENT_EMA_ALPHA = 0.2f;
+static const uint32_t RAW_SAMPLE_MS = CFG_RAW_SAMPLE_MS;
+static const uint32_t PERCENT_SAMPLE_MS = CFG_PERCENT_SAMPLE_MS;
+static const float PERCENT_EMA_ALPHA = CFG_PERCENT_EMA_ALPHA;
 
 // ===== Network timeouts =====
 static const uint32_t WIFI_TIMEOUT_MS = 20000;
