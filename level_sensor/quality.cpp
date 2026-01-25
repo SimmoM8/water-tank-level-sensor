@@ -113,7 +113,8 @@ QualityResult quality_evaluate(uint32_t raw,
     }
 
     // Calibration recommended: raw repeatedly beyond stored cal bounds
-    const bool hasDryWet = cfg.calDry > 0 && cfg.calWet > 0 && (uint32_t)abs(cfg.calWet - cfg.calDry) >= qc.calRecommendMargin;
+    const int32_t diff = (cfg.calDry > cfg.calWet) ? (cfg.calDry - cfg.calWet) : (cfg.calWet - cfg.calDry);
+    const bool hasDryWet = cfg.calDry > 0 && cfg.calWet > 0 && (uint32_t)diff >= qc.calRecommendMargin;
     if (hasDryWet)
     {
         const int32_t dry = cfg.calDry;

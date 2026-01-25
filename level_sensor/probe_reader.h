@@ -13,7 +13,7 @@ enum ReadMode
 struct ProbeConfig
 {
     uint8_t pin;           // Probe input pin
-    uint8_t samples;       // Number of samples to average (higher = smoother/slower | lower = noisier/faster)
+    uint16_t samples;      // Number of samples to average (higher = smoother/slower | lower = noisier/faster)
     uint8_t samplingDelay; // Delay between samples in milliseconds
 };
 
@@ -21,6 +21,7 @@ struct ProbeConfig
 void probe_begin(const ProbeConfig &cfg);
 
 // get the raw value either from the probe or simulation
-int32_t probe_getRaw();
+uint32_t probe_getRaw();
 
+// set read mode based on applied truth in preferences
 void probe_updateMode(ReadMode mode);

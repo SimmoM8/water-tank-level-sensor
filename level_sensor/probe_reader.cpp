@@ -25,19 +25,19 @@ void probe_updateMode(ReadMode mode)
 }
 
 // Read raw probe value using touchRead averaged over N samples
-static int32_t readProbe(uint8_t pin, uint8_t samples)
+static uint32_t readProbe(uint8_t pin, uint16_t samples)
 {
-    int32_t averageRaw = 0;
-    for (uint8_t i = 0; i < samples; i++)
+    uint32_t averageRaw = 0;
+    for (uint16_t i = 0; i < samples; i++)
     {
-        averageRaw += (int32_t)touchRead(pin);
+        averageRaw += (uint32_t)touchRead(pin);
         delay(probe.cfg.samplingDelay); // delay between samples
     }
     return averageRaw / samples;
 }
 
 // get the raw value either from the probe or simulation
-int32_t probe_getRaw()
+uint32_t probe_getRaw()
 {
     if (probe.mode == READ_SIM)
     {
