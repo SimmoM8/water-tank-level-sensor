@@ -4,7 +4,7 @@
  */
 
 const CARD_TAG = "water-tank-card";
-const VERSION = "0.5.7";
+const VERSION = "0.5.9";
 
 // Toast timing (ms)
 const TOAST_RESULT_MS = 2200;
@@ -37,6 +37,7 @@ const OPTIONAL_ENTITY_KEYS = [
   "calibrate_dry_entity",
   "calibrate_wet_entity",
   "clear_calibration_entity",
+  "wipe_wifi_entity",
   "simulation_mode_entity",
   "sense_mode_entity",
   "cal_dry_value_entity",
@@ -61,6 +62,7 @@ const UNIQUE_ID_SUFFIX_MAP = {
   calibrate_dry_entity: ["_calibrate_dry"],
   calibrate_wet_entity: ["_calibrate_wet"],
   clear_calibration_entity: ["_clear_calibration"],
+  wipe_wifi_entity: ["_wipe_wifi"],
   simulation_mode_entity: ["_simulation_mode"],
   sense_mode_entity: ["_sense_mode"],
   cal_dry_value_entity: ["_cal_dry"],
@@ -85,6 +87,7 @@ const ENTITY_MATCH_RULES = {
   calibrate_dry_entity: { domains: ["button"], entitySuffixes: ["_calibrate_dry"] },
   calibrate_wet_entity: { domains: ["button"], entitySuffixes: ["_calibrate_wet"] },
   clear_calibration_entity: { domains: ["button"], entitySuffixes: ["_clear_calibration"] },
+  wipe_wifi_entity: { domains: ["button"], entitySuffixes: ["_wipe_wifi"] },
   simulation_mode_entity: { domains: ["select", "input_select"], entitySuffixes: ["_simulation_mode"] },
   sense_mode_entity: { domains: ["select", "input_select"], entitySuffixes: ["_sense_mode"] },
   cal_dry_value_entity: { domains: ["sensor", "number", "input_number"], entitySuffixes: ["_cal_dry"] },
@@ -196,6 +199,7 @@ class WaterTankCard extends HTMLElement {
       calibrate_dry_entity: null,
       calibrate_wet_entity: null,
       clear_calibration_entity: null,
+      wipe_wifi_entity: null,
 
       // simulation controls (optional)
       simulation_mode_entity: null,
@@ -512,6 +516,24 @@ class WaterTankCard extends HTMLElement {
     const n = typeof value === "number" ? value : Number(value);
     if (!Number.isFinite(n)) return "—";
     return n.toFixed(decimals);
+  }
+
+  _formatVolume(value) {
+    const n = typeof value === "number" ? value : Number(value);
+    if (!Number.isFinite(n)) return { text: "—", unit: "L" };
+    const abs = Math.abs(n);
+    if (abs < 1) return { text: this._formatNumber(n * 1000, 0), unit: "mL" };
+    if (abs > 100) return { text: this._formatNumber(n / 1000, 2), unit: "kL" };
+    return { text: this._formatNumber(n, CARD_LITERS_DECIMALS), unit: "L" };
+  }
+
+  _formatHeight(value) {
+    const n = typeof value === "number" ? value : Number(value);
+    if (!Number.isFinite(n)) return { text: "—", unit: "cm" };
+    const abs = Math.abs(n);
+    if (abs < 5) return { text: this._formatNumber(n * 10, 0), unit: "mm" };
+    if (abs > 1000) return { text: this._formatNumber(n / 100, 2), unit: "m" };
+    return { text: this._formatNumber(n, CARD_HEIGHT_DECIMALS), unit: "cm" };
   }
 
   _boolLabelFromState(state, trueLabel = "true", falseLabel = "false") {
@@ -1159,8 +1181,14 @@ class WaterTankCard extends HTMLElement {
       diagnosticsLines.push({ label: "Quality", value: this._safeText(qualityLabel) });
     }
     if (this._config.percent_entity) diagnosticsLines.push({ label: "Percent", value: this._formatNumber(this._num(this._config.percent_entity), DIAGNOSTICS_DECIMALS) });
-    if (this._config.liters_entity) diagnosticsLines.push({ label: "Liters", value: this._formatNumber(this._num(this._config.liters_entity), DIAGNOSTICS_DECIMALS) });
-    if (this._config.cm_entity) diagnosticsLines.push({ label: "Height", value: this._formatNumber(this._num(this._config.cm_entity), DIAGNOSTICS_DECIMALS) });
+    if (this._config.liters_entity) {
+      const v = this._formatVolume(this._num(this._config.liters_entity));
+      diagnosticsLines.push({ label: "Volume", value: `${v.text} ${v.unit}` });
+    }
+    if (this._config.cm_entity) {
+      const h = this._formatHeight(this._num(this._config.cm_entity));
+      diagnosticsLines.push({ label: "Height", value: `${h.text} ${h.unit}` });
+    }
     if (this._config.raw_entity) diagnosticsLines.push({ label: "Raw", value: this._safeText(this._state(this._config.raw_entity)) });
 
     const diagnosticsHtml = diagnosticsLines
@@ -1214,6 +1242,21 @@ class WaterTankCard extends HTMLElement {
         <div class="wt-section-sub" style="margin-bottom:8px;">Diagnostics</div>
         <div class="wt-diag-list">${diagnosticsHtml}</div>
       </div>
+      ${this._config.wipe_wifi_entity ? `
+      <div class="wt-section">
+        <div class="wt-section-sub" style="margin-bottom:8px;">Maintenance</div>
+        <div class="wt-setup-row">
+          <div class="wt-setup-icon"><ha-icon icon="mdi:wifi-remove"></ha-icon></div>
+          <div class="wt-setup-body">
+            <div class="wt-setup-label">Wipe WiFi credentials</div>
+            <div class="wt-setup-help">Clears stored WiFi and reboots into setup mode.</div>
+            <div class="wt-setup-input">
+              <button class="wt-btn wt-btn-danger" id="btnWipeWifi" data-entity="${this._config.wipe_wifi_entity}">Wipe WiFi</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      ` : ""}
     `;
 
     const content = this._modalPage === "advanced" ? advancedPage : mainPage;
@@ -1349,6 +1392,17 @@ class WaterTankCard extends HTMLElement {
         e.preventDefault();
         e.stopPropagation();
         pressButton(this._config.clear_calibration_entity);
+      };
+    }
+    const wipeWifiBtn = sr.getElementById("btnWipeWifi");
+    if (wipeWifiBtn) {
+      wipeWifiBtn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const ok = window.confirm("Wipe WiFi credentials and reboot into setup mode?");
+        if (!ok) return;
+        this._showToast("Wiping WiFi credentials…", "warning", TOAST_RESULT_MS);
+        pressButton(this._config.wipe_wifi_entity);
       };
     }
 
@@ -2287,6 +2341,10 @@ class WaterTankCard extends HTMLElement {
       .wt-btn.on {
         background: rgba(0,150,0,0.15);
       }
+      .wt-btn-danger {
+        background: rgba(200,0,0,0.16);
+        color: var(--primary-text-color);
+      }
       .wt-toggle {
         position: relative;
         display: inline-flex;
@@ -2412,8 +2470,8 @@ class WaterTankCard extends HTMLElement {
     const pctText = nullify
       ? "—%"
       : (pct !== null ? `${this._formatNumber(pct, CARD_PERCENT_DECIMALS)}%` : "—%");
-    const litersText = nullify ? "—" : this._formatNumber(liters, CARD_LITERS_DECIMALS);
-    const cmText = nullify ? "—" : this._formatNumber(cm, CARD_HEIGHT_DECIMALS);
+    const volumeDisplay = nullify ? { text: "—", unit: "L" } : this._formatVolume(liters);
+    const heightDisplay = nullify ? { text: "—", unit: "cm" } : this._formatHeight(cm);
 
     const view = (this._config.view || "tank").toLowerCase();
     const visualPct = nullify ? 0 : (pct ?? 0);
@@ -2449,12 +2507,12 @@ class WaterTankCard extends HTMLElement {
 
             <div class="metricRow">
               <ha-icon icon="mdi:water-outline"></ha-icon>
-              <div><b>${litersText}</b> L</div>
+              <div><b>${volumeDisplay.text}</b> ${volumeDisplay.unit}</div>
             </div>
 
             <div class="metricRow">
               <ha-icon icon="mdi:ruler"></ha-icon>
-              <div><b>${cmText}</b> cm</div>
+              <div><b>${heightDisplay.text}</b> ${heightDisplay.unit}</div>
             </div>
           </div>
         </div>

@@ -328,13 +328,14 @@ static const ControlDef CONTROL_DEFS[] = {
     {HaComponent::Button, "calibrate_dry", "Calibrate Dry", nullptr, nullptr, nullptr, nullptr, "calibrate", nullptr, 0, 0, 0, nullptr, 0, nullptr, nullptr, nullptr, "{\"schema\":1,\"type\":\"calibrate\",\"data\":{\"point\":\"dry\"}}", nullptr},
     {HaComponent::Button, "calibrate_wet", "Calibrate Wet", nullptr, nullptr, nullptr, nullptr, "calibrate", nullptr, 0, 0, 0, nullptr, 0, nullptr, nullptr, nullptr, "{\"schema\":1,\"type\":\"calibrate\",\"data\":{\"point\":\"wet\"}}", nullptr},
     {HaComponent::Button, "clear_calibration", "Clear Calibration", nullptr, nullptr, nullptr, nullptr, "clear_calibration", nullptr, 0, 0, 0, nullptr, 0, nullptr, nullptr, nullptr, "{\"schema\":1,\"type\":\"clear_calibration\"}", nullptr},
+    {HaComponent::Button, "wipe_wifi", "Wipe WiFi Credentials", nullptr, nullptr, nullptr, "mdi:wifi-remove", "wipe_wifi", nullptr, 0, 0, 0, nullptr, 0, nullptr, nullptr, nullptr, "{\"schema\":1,\"type\":\"wipe_wifi\",\"request_id\":\"{{ timestamp }}\"}", nullptr},
     {HaComponent::Button, "reannounce", "Re-announce Device", nullptr, nullptr, nullptr, nullptr, "reannounce", nullptr, 0, 0, 0, nullptr, 0, nullptr, nullptr, nullptr, "{\"schema\":1,\"type\":\"reannounce\",\"request_id\":\"{{ timestamp }}\"}", nullptr},
 
     // Numbers
-    {HaComponent::Number, "tank_volume_l", "Tank Volume (L)", "config.tank_volume_l", nullptr, nullptr, nullptr, "set_config", "tank_volume_l", 0.0f, 10000.0f, 1.0f, nullptr, 0, nullptr, nullptr, nullptr, nullptr, nullptr},
-    {HaComponent::Number, "rod_length_cm", "Rod Length (cm)", "config.rod_length_cm", nullptr, nullptr, nullptr, "set_config", "rod_length_cm", 0.0f, 1000.0f, 1.0f, nullptr, 0, nullptr, nullptr, nullptr, nullptr, nullptr},
-    {HaComponent::Number, "cal_dry_set", "Set Calibration Dry", "calibration.dry", nullptr, nullptr, nullptr, "set_calibration", "cal_dry_set", 0.0f, 1000000.0f, 1.0f, nullptr, 0, nullptr, nullptr, nullptr, nullptr, nullptr},
-    {HaComponent::Number, "cal_wet_set", "Set Calibration Wet", "calibration.wet", nullptr, nullptr, nullptr, "set_calibration", "cal_wet_set", 0.0f, 1000000.0f, 1.0f, nullptr, 0, nullptr, nullptr, nullptr, nullptr, nullptr},
+    {HaComponent::Number, "tank_volume_l", "Tank Volume (L)", "config.tank_volume_l", nullptr, nullptr, nullptr, "set_config", "tank_volume_l", 0.0f, 10000000.0f, 1.0f, nullptr, 0, nullptr, nullptr, nullptr, nullptr, nullptr},
+    {HaComponent::Number, "rod_length_cm", "Rod Length (cm)", "config.rod_length_cm", nullptr, nullptr, nullptr, "set_config", "rod_length_cm", 0.0f, 10000000.0f, 1.0f, nullptr, 0, nullptr, nullptr, nullptr, nullptr, nullptr},
+    {HaComponent::Number, "cal_dry_set", "Set Calibration Dry", "calibration.dry", nullptr, nullptr, nullptr, "set_calibration", "cal_dry_set", 0.0f, 10000000.0f, 1.0f, nullptr, 0, nullptr, nullptr, nullptr, nullptr, nullptr},
+    {HaComponent::Number, "cal_wet_set", "Set Calibration Wet", "calibration.wet", nullptr, nullptr, nullptr, "set_calibration", "cal_wet_set", 0.0f, 10000000.0f, 1.0f, nullptr, 0, nullptr, nullptr, nullptr, nullptr, nullptr},
 
     // Selects
     {HaComponent::Select, "sense_mode", "Sense Mode", "config.sense_mode", nullptr, nullptr, nullptr, "set_simulation", "sense_mode", 0, 0, 0,

@@ -4,7 +4,7 @@
 void setup()
 {
     /*
-level_sensor_app.cpp → appSetup()
+main.cpp → appSetup()
     1.	Serial + basic boot info
     •	start Serial
     •	print version/device id
