@@ -11,8 +11,8 @@ struct AppliedConfig
     SenseMode senseMode;
     uint8_t simulationMode;
 
-    int32_t calDry;
-    int32_t calWet;
+    uint32_t calDry;
+    uint32_t calWet;
     bool calInverted;
 };
 

@@ -106,7 +106,7 @@ DeviceState g_state;
 // -------------------------------------------
 
 // ===== MQTT config =====
-static const char *MQTT_HOST = "192.168.86.173";
+static const char *MQTT_HOST = "192.168.86.180";
 static const int MQTT_PORT = 1883;
 
 // Use a stable client id (unique per device). If you add more ESP32 devices later,
@@ -204,7 +204,8 @@ static void printHelpMenu()
 static bool hasCalibrationValues()
 {
   const AppliedConfig &cfg = config_get();
-  return cfg.calDry > 0 && cfg.calWet > 0 && (uint32_t)abs(cfg.calWet - cfg.calDry) >= CFG_CAL_MIN_DIFF;
+  const int32_t diff = (cfg.calDry > cfg.calWet) ? (cfg.calDry - cfg.calWet) : (cfg.calWet - cfg.calDry);
+  return cfg.calDry > 0 && cfg.calWet > 0 && (uint32_t)diff >= CFG_CAL_MIN_DIFF;
 }
 
 static float clampNonNegative(float value)
@@ -539,6 +540,10 @@ static void setSenseMode(SenseMode mode, bool /*forcePublish*/ = false, const ch
   storage_saveSenseMode(mode);
   g_state.config.senseMode = mode;
   probe_updateMode(mode == SenseMode::SIM ? READ_SIM : READ_PROBE);
+  if (mode == SenseMode::SIM)
+  {
+    sim_start(g_state.probe.raw);
+  }
   config_markDirty();
   mqtt_requestStatePublish();
 }
