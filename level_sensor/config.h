@@ -2,7 +2,7 @@
 // Copy any of the defines below to change probe reliability thresholds.
 // This file contains no secrets and is safe to commit (or add to .gitignore if preferred).
 
-#define CFG_PROBE_DISCONNECTED_BELOW_RAW 10000u
+#define CFG_PROBE_DISCONNECTED_BELOW_RAW 60000u
 #define CFG_CAL_MIN_DIFF 20u
 #define CFG_SPIKE_DELTA 1000000u
 #define CFG_RAPID_FLUCTUATION_DELTA 500000u
@@ -30,5 +30,5 @@
 
 // — Sampling / smoothing —
 #define CFG_RAW_SAMPLE_MS 1000u
-#define CFG_PERCENT_SAMPLE_MS 1000u
-#define CFG_PERCENT_EMA_ALPHA 1.0f
+#define CFG_PERCENT_SAMPLE_MS 5000u // the interval in milliseconds to update the smoothed percent level
+#define CFG_PERCENT_EMA_ALPHA 0.2f

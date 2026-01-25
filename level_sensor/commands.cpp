@@ -152,6 +152,21 @@ static void handleClearCalibration(const char *requestId)
     }
 }
 
+static void handleWipeWifi(const char *requestId)
+{
+    if (s_ctx.wipeWifiCredentials)
+    {
+        finish(requestId, "wipe_wifi", CmdStatus::APPLIED, "rebooting");
+        LOG_WARN(LogDomain::COMMAND, "Applied cmd type=wipe_wifi request_id=%s changes=wipe_wifi", requestId ? requestId : "");
+        s_ctx.wipeWifiCredentials();
+    }
+    else
+    {
+        finish(requestId, "wipe_wifi", CmdStatus::ERROR, "missing_callback");
+        LOG_WARN(LogDomain::COMMAND, "Command rejected: reason=missing_callback type=wipe_wifi");
+    }
+}
+
 static void handleSetCalibration(JsonObject data, const char *requestId)
 {
     bool okAny = false;
@@ -379,6 +394,10 @@ void commands_handle(const uint8_t *payload, size_t len)
     else if (strcmp(type, "clear_calibration") == 0)
     {
         handleClearCalibration(requestId);
+    }
+    else if (strcmp(type, "wipe_wifi") == 0)
+    {
+        handleWipeWifi(requestId);
     }
     else if (strcmp(type, "set_simulation") == 0)
     {

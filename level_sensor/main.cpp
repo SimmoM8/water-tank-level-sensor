@@ -106,7 +106,7 @@ DeviceState g_state;
 // -------------------------------------------
 
 // ===== MQTT config =====
-static const char *MQTT_HOST = "192.168.0.37";
+static const char *MQTT_HOST = "192.168.86.173";
 static const int MQTT_PORT = 1883;
 
 // Use a stable client id (unique per device). If you add more ESP32 devices later,
@@ -468,6 +468,12 @@ static void clearCalibration()
   refreshCalibrationState();
   mqtt_requestStatePublish();
   LOG_INFO(LogDomain::CAL, "Calibration cleared");
+}
+
+static void wipeWifiCredentials()
+{
+  LOG_WARN(LogDomain::WIFI, "Wipe WiFi credentials requested via command");
+  wifi_wipeCredentialsAndReboot();
 }
 
 static void beginCalibrationCapture()
@@ -867,6 +873,7 @@ void appSetup()
       .setCalibrationDryValue = setCalibrationDryValue,
       .setCalibrationWetValue = setCalibrationWetValue,
       .reannounce = mqtt_reannounceDiscovery,
+      .wipeWifiCredentials = wipeWifiCredentials,
       .requestStatePublish = mqtt_requestStatePublish,
       .publishAck = mqtt_publishAck};
   commands_begin(cmdCtx);

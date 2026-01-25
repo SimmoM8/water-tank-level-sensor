@@ -18,6 +18,7 @@ struct CommandsContext
     void (*setCalibrationDryValue)(int32_t value, const char *sourceMsg);
     void (*setCalibrationWetValue)(int32_t value, const char *sourceMsg);
     void (*reannounce)();
+    void (*wipeWifiCredentials)();
 
     void (*requestStatePublish)();
     bool (*publishAck)(const char *requestId, const char *type, CmdStatus status, const char *msg);
