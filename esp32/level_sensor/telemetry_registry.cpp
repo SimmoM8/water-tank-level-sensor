@@ -288,7 +288,7 @@ static const TelemetryFieldDef TELEMETRY_FIELDS[] = {
     // Probe
     {HaComponent::BinarySensor, "probe_connected", "Probe Connected", "probe.connected", "connectivity", nullptr, nullptr, nullptr, nullptr, write_probe_connected},
     {HaComponent::Sensor, "quality", "Probe Quality", "probe.quality", nullptr, nullptr, "mdi:diagnostics", nullptr, nullptr, write_probe_quality},
-    {HaComponent::Sensor, "raw", "Probe Raw", "probe.raw", nullptr, nullptr, "mdi:water", nullptr, nullptr, write_probe_raw},
+    {HaComponent::Sensor, "raw", "Probe Raw", "probe.raw", nullptr, "ticks", "mdi:water", nullptr, nullptr, write_probe_raw},
     {HaComponent::BinarySensor, "raw_valid", "Probe Raw Valid", "probe.raw_valid", nullptr, nullptr, nullptr, nullptr, nullptr, write_probe_raw_valid},
 
     // Calibration
