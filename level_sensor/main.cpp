@@ -106,7 +106,7 @@ DeviceState g_state;
 // -------------------------------------------
 
 // ===== MQTT config =====
-static const char *MQTT_HOST = "192.168.86.180";
+static const char *MQTT_HOST = "192.168.0.198";
 static const int MQTT_PORT = 1883;
 
 // Use a stable client id (unique per device). If you add more ESP32 devices later,
