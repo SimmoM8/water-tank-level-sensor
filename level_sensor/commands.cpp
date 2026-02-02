@@ -6,6 +6,7 @@
 #include "logger.h"
 
 #include "device_state.h"
+#include "ota_service.h"
 
 static CommandsContext s_ctx{};
 
@@ -200,6 +201,27 @@ static void handleSetCalibration(JsonObject data, const char *requestId)
     {
         LOG_WARN(LogDomain::COMMAND, "Command rejected: reason=no_fields type=set_calibration");
     }
+}
+
+static void handleOtaPull(JsonObject data, const char *requestId)
+{
+    char err[48] = {0};
+
+    const char *version = data["version"] | "";
+    const char *url = data["url"] | "";
+    const char *sha256 = data["sha256"] | "";
+
+    bool reboot = data["reboot"] | true;
+    bool force = data["force"] | false;
+
+    bool ok = ota_pullStart(s_ctx.state, requestId, version, url, sha256, force, reboot, err, sizeof(err));
+    if (!ok)
+    {
+        finish(requestId, "ota_pull", CmdStatus::REJECTED, err[0] ? err : "start_failed");
+        return;
+    }
+
+    finish(requestId, "ota_pull", CmdStatus::APPLIED, "started");
 }
 
 static SenseMode parseSenseMode(JsonVariant value)
@@ -406,6 +428,10 @@ void commands_handle(const uint8_t *payload, size_t len)
     else if (strcmp(type, "reannounce") == 0)
     {
         handleReannounce(requestId);
+    }
+    else if (strcmp(type, "ota_pull") == 0)
+    {
+        handleOtaPull(data, requestId);
     }
     else
     {
