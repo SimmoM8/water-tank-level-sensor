@@ -6,6 +6,7 @@
 #include "logger.h"
 
 #include "device_state.h"
+#include "domain_strings.h"
 #include "ota_service.h"
 
 #ifndef CMD_SCHEMA_VERSION
@@ -88,8 +89,8 @@ static void finish(const char *reqId, const char *type, CmdStatus st, const char
     setLastCmd(reqId, type, st, msg);
     if (s_ctx.publishAck)
     {
-        // publishAck must accept CmdStatus or serialize it internally via toString(status)
-        s_ctx.publishAck(reqId ? reqId : "", type ? type : "", st, msg ? msg : "");
+        const char *stStr = toString(st);
+        s_ctx.publishAck(reqId ? reqId : "", type ? type : "", stStr ? stStr : "", msg ? msg : "");
     }
     if (s_ctx.requestStatePublish)
     {
@@ -235,12 +236,6 @@ static void handleOtaPull(JsonObject data, const char *requestId)
 
     bool reboot = data["reboot"].is<bool>() ? data["reboot"].as<bool>() : true;
     bool force = data["force"].is<bool>() ? data["force"].as<bool>() : false;
-
-    if (ota_isBusy())
-    {
-        finish(requestId, "ota_pull", CmdStatus::REJECTED, "busy");
-        return;
-    }
 
     if (!url || url[0] == '\0')
     {
@@ -388,7 +383,7 @@ void commands_handle(const uint8_t *payload, size_t len)
 {
     // Trim trailing nulls + whitespace (HA sometimes appends \n, and buffers can contain \0)
 
-    static char json[2048];
+    static char json[4096];
 
     if (len == 0 || len >= sizeof(json))
     {
@@ -400,7 +395,7 @@ void commands_handle(const uint8_t *payload, size_t len)
     json[len] = '\0';
 
     // Try to parse incoming JSON payload
-    StaticJsonDocument<2048> doc;
+    StaticJsonDocument<4096> doc;
     DeserializationError err = deserializeJson(doc, json);
 
     bool hasNull = false;
@@ -440,8 +435,12 @@ void commands_handle(const uint8_t *payload, size_t len)
     setLastCmd(requestId, type, CmdStatus::RECEIVED, "received");
 
     // Extract optional data object
-    JsonObject data = doc["data"].as<JsonObject>();
     const bool hasDataObj = doc["data"].is<JsonObject>();
+    JsonObject data;
+    if (hasDataObj)
+    {
+        data = doc["data"].as<JsonObject>();
+    }
 
     LOG_INFO(LogDomain::COMMAND, "Command received type=%s request_id=%s", type ? type : "", requestId ? requestId : "");
 
