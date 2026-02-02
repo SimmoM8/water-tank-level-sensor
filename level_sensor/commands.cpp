@@ -237,12 +237,6 @@ static void handleOtaPull(JsonObject data, const char *requestId)
     bool reboot = data["reboot"].is<bool>() ? data["reboot"].as<bool>() : true;
     bool force = data["force"].is<bool>() ? data["force"].as<bool>() : false;
 
-    if ((!version || version[0] == '\0') && !force)
-    {
-        finish(requestId, "ota_pull", CmdStatus::REJECTED, "missing_version");
-        return;
-    }
-
     if (!url || url[0] == '\0')
     {
         finish(requestId, "ota_pull", CmdStatus::REJECTED, "missing_url");
@@ -266,7 +260,7 @@ static void handleOtaPull(JsonObject data, const char *requestId)
         return;
     }
 
-    finish(requestId, "ota_pull", CmdStatus::APPLIED, "started");
+    finish(requestId, "ota_pull", CmdStatus::APPLIED, "queued");
 }
 
 static SenseMode parseSenseMode(JsonVariant value)
