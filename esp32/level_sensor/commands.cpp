@@ -8,6 +8,10 @@
 #include "device_state.h"
 #include "ota_service.h"
 
+#ifndef CMD_SCHEMA_VERSION
+#define CMD_SCHEMA_VERSION 1
+#endif
+
 static CommandsContext s_ctx{};
 
 // storage for last_cmd strings so pointers remain valid
@@ -36,6 +40,23 @@ static void setLastCmd(const char *reqId, const char *type, CmdStatus st, const 
     s_ctx.state->lastCmd.status = st;
     s_ctx.state->lastCmd.message = s_msg;
     s_ctx.state->lastCmd.ts = s_ctx.state->ts; // align to latest state snapshot time
+}
+
+static bool isHex64(const char *s)
+{
+    if (!s)
+        return false;
+    for (int i = 0; i < 64; i++)
+    {
+        char c = s[i];
+        if (c == '\0')
+            return false;
+        if (!((c >= '0' && c <= '9') ||
+              (c >= 'a' && c <= 'f') ||
+              (c >= 'A' && c <= 'F')))
+            return false;
+    }
+    return s[64] == '\0';
 }
 
 static void appendChange(char *buf, size_t bufSize, const char *fmt, ...)
@@ -211,8 +232,24 @@ static void handleOtaPull(JsonObject data, const char *requestId)
     const char *url = data["url"] | "";
     const char *sha256 = data["sha256"] | "";
 
-    bool reboot = data["reboot"] | true;
-    bool force = data["force"] | false;
+    bool reboot = data["reboot"].is<bool>() ? data["reboot"].as<bool>() : true;
+    bool force = data["force"].is<bool>() ? data["force"].as<bool>() : false;
+
+    if (!url || url[0] == '\0')
+    {
+        finish(requestId, "ota_pull", CmdStatus::REJECTED, "missing_url");
+        return;
+    }
+    if (!sha256 || sha256[0] == '\0')
+    {
+        finish(requestId, "ota_pull", CmdStatus::REJECTED, "missing_sha256");
+        return;
+    }
+    if (!isHex64(sha256))
+    {
+        finish(requestId, "ota_pull", CmdStatus::REJECTED, "bad_sha256_format");
+        return;
+    }
 
     bool ok = ota_pullStart(s_ctx.state, requestId, version, url, sha256, force, reboot, err, sizeof(err));
     if (!ok)
@@ -221,7 +258,7 @@ static void handleOtaPull(JsonObject data, const char *requestId)
         return;
     }
 
-    finish(requestId, "ota_pull", CmdStatus::APPLIED, "started");
+    finish(requestId, "ota_pull", CmdStatus::ACCEPTED, "started");
 }
 
 static SenseMode parseSenseMode(JsonVariant value)
@@ -344,7 +381,7 @@ void commands_handle(const uint8_t *payload, size_t len)
 {
     // Trim trailing nulls + whitespace (HA sometimes appends \n, and buffers can contain \0)
 
-    static char json[768];
+    static char json[2048];
 
     if (len == 0 || len >= sizeof(json))
     {
@@ -356,7 +393,7 @@ void commands_handle(const uint8_t *payload, size_t len)
     json[len] = '\0';
 
     // Try to parse incoming JSON payload
-    StaticJsonDocument<768> doc;
+    StaticJsonDocument<2048> doc;
     DeserializationError err = deserializeJson(doc, json);
 
     bool hasNull = false;
@@ -385,7 +422,7 @@ void commands_handle(const uint8_t *payload, size_t len)
     const char *type = doc["type"] | "";
 
     // Validate schema version and command type
-    if (schema != STATE_SCHEMA_VERSION || strlen(type) == 0)
+    if (schema != CMD_SCHEMA_VERSION || strlen(type) == 0)
     {
         LOG_WARN(LogDomain::COMMAND, "Command rejected: reason=invalid_schema_or_type type=%s", (type && strlen(type) ? type : "(none)"));
         finish(requestId, type, CmdStatus::REJECTED, "invalid_schema_or_type");

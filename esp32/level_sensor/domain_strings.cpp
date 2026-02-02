@@ -61,6 +61,8 @@ const char *toString(CmdStatus v)
     {
     case CmdStatus::RECEIVED:
         return "received";
+    case CmdStatus::ACCEPTED:
+        return "accepted";
     case CmdStatus::APPLIED:
         return "applied";
     case CmdStatus::REJECTED:

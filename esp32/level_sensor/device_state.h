@@ -34,9 +34,10 @@ enum class ProbeQualityReason : uint8_t
 enum class CmdStatus : uint8_t
 {
     RECEIVED = 0,
-    APPLIED = 1,
-    REJECTED = 2,
-    ERROR = 3
+    ACCEPTED = 1,
+    APPLIED = 2,
+    REJECTED = 3,
+    ERROR = 4
 };
 
 // --- Nested structs (composition) ---
