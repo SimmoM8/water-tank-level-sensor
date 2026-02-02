@@ -230,12 +230,6 @@ static void handleOtaPull(JsonObject data, const char *requestId)
 {
     char err[48] = {0};
 
-    if (ota_isBusy())
-    {
-        finish(requestId, "ota_pull", CmdStatus::REJECTED, "busy");
-        return;
-    }
-
     const char *version = data["version"] | "";
     const char *url = data["url"] | "";
     const char *sha256 = data["sha256"] | "";
@@ -272,7 +266,7 @@ static void handleOtaPull(JsonObject data, const char *requestId)
         return;
     }
 
-    finish(requestId, "ota_pull", CmdStatus::ACCEPTED, "started");
+    finish(requestId, "ota_pull", CmdStatus::APPLIED, "started");
 }
 
 static SenseMode parseSenseMode(JsonVariant value)
