@@ -7,7 +7,7 @@
 bool buildStateJson(const DeviceState &s, char *outBuf, size_t outSize)
 {
     // Sized to fit all telemetry fields comfortably.
-    StaticJsonDocument<2048> doc;
+    StaticJsonDocument<4096> doc;
     JsonObject root = doc.to<JsonObject>();
 
     size_t count = 0;

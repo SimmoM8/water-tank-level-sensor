@@ -96,13 +96,13 @@ struct ConfigInfo
 
 enum class OtaStatus : uint8_t
 {
-    IDLE,
-    DOWNLOADING,
-    VERIFYING,
-    APPLYING,
-    REBOOTING,
-    SUCCESS,
-    ERROR
+    IDLE = 0,
+    DOWNLOADING = 1,
+    VERIFYING = 2,
+    APPLYING = 3,
+    REBOOTING = 4,
+    SUCCESS = 5,
+    ERROR = 6
 };
 
 struct OtaState
@@ -111,17 +111,18 @@ struct OtaState
     uint8_t progress = 0;
 
     // active request
-    char request_id[48] = {};
-    char version[16] = {};
-    char url[160] = {};
-    char sha256[65] = {};
+    char request_id[48] = {0};
+    char version[16] = {0};
+    char url[256] = {0};
+    char sha256[65] = {0};
     uint32_t started_ts = 0;
 
     // last result
-    char last_result[16] = {};
-    char last_message[64] = {};
+    char last_status[16] = {0};
+    char last_message[64] = {0};
     uint32_t completed_ts = 0;
 };
+
 struct LastCmdInfo
 {
     const char *requestId; // points to a buffer owned by commands.cpp
