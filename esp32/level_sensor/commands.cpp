@@ -39,7 +39,7 @@ static void setLastCmd(const char *reqId, const char *type, CmdStatus st, const 
     s_ctx.state->lastCmd.type = s_type;
     s_ctx.state->lastCmd.status = st;
     s_ctx.state->lastCmd.message = s_msg;
-    s_ctx.state->lastCmd.ts = s_ctx.state->ts; // align to latest state snapshot time
+    s_ctx.state->lastCmd.ts = (uint32_t)(millis() / 1000);
 }
 
 static bool isHex64(const char *s)
@@ -88,6 +88,7 @@ static void finish(const char *reqId, const char *type, CmdStatus st, const char
     setLastCmd(reqId, type, st, msg);
     if (s_ctx.publishAck)
     {
+        // publishAck must accept CmdStatus or serialize it internally via toString(status)
         s_ctx.publishAck(reqId ? reqId : "", type ? type : "", st, msg ? msg : "");
     }
     if (s_ctx.requestStatePublish)
@@ -234,6 +235,12 @@ static void handleOtaPull(JsonObject data, const char *requestId)
 
     bool reboot = data["reboot"].is<bool>() ? data["reboot"].as<bool>() : true;
     bool force = data["force"].is<bool>() ? data["force"].as<bool>() : false;
+
+    if (ota_isBusy())
+    {
+        finish(requestId, "ota_pull", CmdStatus::REJECTED, "busy");
+        return;
+    }
 
     if (!url || url[0] == '\0')
     {
@@ -434,20 +441,36 @@ void commands_handle(const uint8_t *payload, size_t len)
 
     // Extract optional data object
     JsonObject data = doc["data"].as<JsonObject>();
+    const bool hasDataObj = doc["data"].is<JsonObject>();
 
     LOG_INFO(LogDomain::COMMAND, "Command received type=%s request_id=%s", type ? type : "", requestId ? requestId : "");
 
     // Dispatch to the appropriate handler
     if (strcmp(type, "set_config") == 0)
     {
+        if (!hasDataObj)
+        {
+            finish(requestId, type, CmdStatus::REJECTED, "missing_data");
+            return;
+        }
         handleSetConfig(data, requestId);
     }
     else if (strcmp(type, "set_calibration") == 0)
     {
+        if (!hasDataObj)
+        {
+            finish(requestId, type, CmdStatus::REJECTED, "missing_data");
+            return;
+        }
         handleSetCalibration(data, requestId);
     }
     else if (strcmp(type, "calibrate") == 0)
     {
+        if (!hasDataObj)
+        {
+            finish(requestId, type, CmdStatus::REJECTED, "missing_data");
+            return;
+        }
         handleCalibrate(data, requestId);
     }
     else if (strcmp(type, "clear_calibration") == 0)
@@ -460,6 +483,11 @@ void commands_handle(const uint8_t *payload, size_t len)
     }
     else if (strcmp(type, "set_simulation") == 0)
     {
+        if (!hasDataObj)
+        {
+            finish(requestId, type, CmdStatus::REJECTED, "missing_data");
+            return;
+        }
         handleSetSimulation(data, requestId);
     }
     else if (strcmp(type, "reannounce") == 0)
@@ -468,6 +496,11 @@ void commands_handle(const uint8_t *payload, size_t len)
     }
     else if (strcmp(type, "ota_pull") == 0)
     {
+        if (!hasDataObj)
+        {
+            finish(requestId, type, CmdStatus::REJECTED, "missing_data");
+            return;
+        }
         handleOtaPull(data, requestId);
     }
     else
