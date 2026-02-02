@@ -138,6 +138,7 @@ struct DeviceState
     uint32_t ts; // epoch seconds if you have it; otherwise millis()/1000 is ok
 
     DeviceInfo device;
+    char fw_version[16] = {0};
     WifiInfo wifi;
     MqttInfo mqtt;
 
@@ -147,6 +148,11 @@ struct DeviceState
     ConfigInfo config;
 
     OtaState ota;
+    char ota_state[16] = {0};
+    uint8_t ota_progress = 0;
+    char ota_error[64] = {0};
+    char ota_target_version[16] = {0};
+    uint32_t ota_last_ts = 0;
 
     LastCmdInfo lastCmd;
 };

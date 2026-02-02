@@ -266,6 +266,96 @@ static void write_config_sim_mode(const DeviceState &s, JsonObject &root)
     obj[leaf] = s.config.simulationMode;
 }
 
+static const char *ota_state_label(OtaStatus st)
+{
+    switch (st)
+    {
+    case OtaStatus::IDLE:
+        return "idle";
+    case OtaStatus::DOWNLOADING:
+        return "downloading";
+    case OtaStatus::VERIFYING:
+        return "verifying";
+    case OtaStatus::APPLYING:
+        return "applying";
+    case OtaStatus::REBOOTING:
+        return "applying";
+    case OtaStatus::SUCCESS:
+        return "success";
+    case OtaStatus::ERROR:
+        return "failed";
+    default:
+        return "idle";
+    }
+}
+
+static void write_fw_version(const DeviceState &s, JsonObject &root)
+{
+    char parent[32];
+    char leaf[32];
+    splitPath("fw_version", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = (parent[0] == '\0') ? root : ensureObject(root, parent);
+    const char *fw = s.fw_version[0] ? s.fw_version : s.device.fw;
+    obj[leaf] = fw ? fw : "";
+}
+
+static void write_ota_state_flat(const DeviceState &s, JsonObject &root)
+{
+    char parent[32];
+    char leaf[32];
+    splitPath("ota_state", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = (parent[0] == '\0') ? root : ensureObject(root, parent);
+    const char *state = s.ota_state[0] ? s.ota_state : ota_state_label(s.ota.status);
+    obj[leaf] = state;
+}
+
+static void write_ota_progress_flat(const DeviceState &s, JsonObject &root)
+{
+    char parent[32];
+    char leaf[32];
+    splitPath("ota_progress", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = (parent[0] == '\0') ? root : ensureObject(root, parent);
+    obj[leaf] = s.ota.progress;
+}
+
+static void write_ota_error_flat(const DeviceState &s, JsonObject &root)
+{
+    char parent[32];
+    char leaf[32];
+    splitPath("ota_error", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = (parent[0] == '\0') ? root : ensureObject(root, parent);
+    if (s.ota_error[0])
+    {
+        obj[leaf] = s.ota_error;
+        return;
+    }
+    obj[leaf] = (s.ota.status == OtaStatus::ERROR) ? s.ota.last_message : "";
+}
+
+static void write_ota_target_version_flat(const DeviceState &s, JsonObject &root)
+{
+    char parent[32];
+    char leaf[32];
+    splitPath("ota_target_version", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = (parent[0] == '\0') ? root : ensureObject(root, parent);
+    const char *v = s.ota_target_version[0] ? s.ota_target_version : s.ota.version;
+    obj[leaf] = v ? v : "";
+}
+
+static void write_ota_last_ts_flat(const DeviceState &s, JsonObject &root)
+{
+    char parent[32];
+    char leaf[32];
+    splitPath("ota_last_ts", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = (parent[0] == '\0') ? root : ensureObject(root, parent);
+    uint32_t ts = s.ota_last_ts;
+    if (ts == 0)
+    {
+        ts = s.ota.completed_ts ? s.ota.completed_ts : s.ota.started_ts;
+    }
+    obj[leaf] = ts;
+}
+
 static void write_ota_status(const DeviceState &s, JsonObject &root)
 {
     JsonObject ota = ensureObject(root, "ota");
@@ -314,6 +404,7 @@ static const TelemetryFieldDef TELEMETRY_FIELDS[] = {
     {HaComponent::Internal, "schema", "State Schema", "schema", nullptr, nullptr, nullptr, nullptr, nullptr, write_schema},
     {HaComponent::Internal, "ts", "Timestamp", "ts", nullptr, nullptr, nullptr, nullptr, nullptr, write_ts},
     {HaComponent::Internal, "device", "Device", "device", nullptr, nullptr, nullptr, nullptr, nullptr, write_device},
+    {HaComponent::Sensor, "fw_version", "Firmware Version", "fw_version", nullptr, nullptr, "mdi:chip", nullptr, nullptr, write_fw_version},
     {HaComponent::Internal, "wifi", "WiFi", "wifi", nullptr, nullptr, nullptr, nullptr, nullptr, write_wifi},
     {HaComponent::Internal, "mqtt", "MQTT", "mqtt", nullptr, nullptr, nullptr, nullptr, nullptr, write_mqtt},
 
@@ -347,6 +438,13 @@ static const TelemetryFieldDef TELEMETRY_FIELDS[] = {
     {HaComponent::Internal, "rod_length_cm", "Rod Length", "config.rod_length_cm", nullptr, nullptr, nullptr, nullptr, nullptr, write_config_rod},
     {HaComponent::Internal, "sense_mode", "Sense Mode", "config.sense_mode", nullptr, nullptr, "mdi:toggle-switch", nullptr, nullptr, write_config_sense_mode},
     {HaComponent::Internal, "simulation_mode", "Simulation Mode", "config.simulation_mode", nullptr, nullptr, nullptr, nullptr, nullptr, write_config_sim_mode},
+
+    // OTA (flat telemetry for HA)
+    {HaComponent::Sensor, "ota_state", "OTA State", "ota_state", nullptr, nullptr, "mdi:update", nullptr, nullptr, write_ota_state_flat},
+    {HaComponent::Sensor, "ota_progress", "OTA Progress", "ota_progress", nullptr, "%", "mdi:progress-download", nullptr, nullptr, write_ota_progress_flat},
+    {HaComponent::Sensor, "ota_error", "OTA Error", "ota_error", nullptr, nullptr, "mdi:alert-circle-outline", nullptr, nullptr, write_ota_error_flat},
+    {HaComponent::Sensor, "ota_target_version", "OTA Target Version", "ota_target_version", nullptr, nullptr, "mdi:tag-outline", nullptr, nullptr, write_ota_target_version_flat},
+    {HaComponent::Sensor, "ota_last_ts", "OTA Last Timestamp", "ota_last_ts", "timestamp", nullptr, "mdi:clock-outline", nullptr, nullptr, write_ota_last_ts_flat},
 
     // OTA (internal state)
     {HaComponent::Internal, "ota_status", "OTA Status", "ota.status", nullptr, nullptr, nullptr, nullptr, nullptr, write_ota_status},
