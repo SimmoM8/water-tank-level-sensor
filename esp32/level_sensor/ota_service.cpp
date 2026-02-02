@@ -27,8 +27,11 @@ struct PullOtaJob
     char sha256[65] = {0};
 
     uint32_t lastProgressMs = 0;
+    uint32_t lastReportMs = 0;
     uint32_t bytesTotal = 0;
     uint32_t bytesWritten = 0;
+    uint32_t noDataSinceMs = 0;
+    uint8_t zeroReadStreak = 0;
 
     // Streaming objects
     HTTPClient http;
@@ -101,6 +104,30 @@ static void setErr(char *buf, size_t len, const char *msg)
     buf[len - 1] = '\0';
 }
 
+static bool isHex64(const char *s)
+{
+    if (!s)
+        return false;
+    for (int i = 0; i < 64; i++)
+    {
+        char c = s[i];
+        if (c == '\0')
+            return false;
+        if (!((c >= '0' && c <= '9') ||
+              (c >= 'a' && c <= 'f') ||
+              (c >= 'A' && c <= 'F')))
+            return false;
+    }
+    return s[64] == '\0';
+}
+
+static inline char lowerHexChar(char c)
+{
+    if (c >= 'A' && c <= 'Z')
+        return (char)(c - 'A' + 'a');
+    return c;
+}
+
 static void ota_setResult(DeviceState *state, const char *status, const char *message)
 {
     if (!state)
@@ -160,15 +187,15 @@ bool ota_pullStart(DeviceState *state,
     }
 
     // Reset job state safely (do not memset C++ objects)
-    if (g_job.httpBegun)
-    {
-        g_job.http.end();
-        g_job.httpBegun = false;
-    }
     if (g_job.updateBegun)
     {
         Update.abort();
         g_job.updateBegun = false;
+    }
+    if (g_job.httpBegun)
+    {
+        g_job.http.end();
+        g_job.httpBegun = false;
     }
     if (g_job.shaInit)
     {
@@ -181,8 +208,11 @@ bool ota_pullStart(DeviceState *state,
     g_job.reboot = true;
     g_job.force = false;
     g_job.lastProgressMs = 0;
+    g_job.lastReportMs = 0;
     g_job.bytesTotal = 0;
     g_job.bytesWritten = 0;
+    g_job.noDataSinceMs = 0;
+    g_job.zeroReadStreak = 0;
     g_job.request_id[0] = '\0';
     g_job.version[0] = '\0';
     g_job.url[0] = '\0';
@@ -232,16 +262,16 @@ static void ota_abort(DeviceState *state, const char *reason)
         ota_setResult(state, "error", reason ? reason : "error");
     }
 
-    if (g_job.httpBegun)
-    {
-        g_job.http.end();
-        g_job.httpBegun = false;
-    }
-
     if (g_job.updateBegun)
     {
         Update.abort();
         g_job.updateBegun = false;
+    }
+
+    if (g_job.httpBegun)
+    {
+        g_job.http.end();
+        g_job.httpBegun = false;
     }
 
     if (g_job.shaInit)
@@ -314,6 +344,12 @@ void ota_tick(DeviceState *state)
         }
         g_job.httpBegun = true;
 
+        static const char *kHeaders[] = {"Content-Type", "Content-Length", "Location"};
+        g_job.http.collectHeaders(kHeaders, 3);
+
+        g_job.http.setUserAgent("DadsSmartHomeWaterTank/1.0");
+        g_job.http.addHeader("Accept", "application/octet-stream");
+
         int code = g_job.http.GET();
         if (code != HTTP_CODE_OK)
         {
@@ -323,7 +359,25 @@ void ota_tick(DeviceState *state)
             return;
         }
 
+        String ctype = g_job.http.header("Content-Type");
+        if (ctype.length() > 0)
+        {
+            String lower = ctype;
+            lower.toLowerCase();
+            if (lower.indexOf("text/html") >= 0 || lower.indexOf("application/json") >= 0)
+            {
+                ota_abort(state, "bad_content_type");
+                return;
+            }
+        }
+
         int len = g_job.http.getSize();
+        LOG_INFO(LogDomain::OTA, "HTTP %d len=%d ctype=%s", code, len, ctype.c_str());
+        if (len > 0 && len < 1024)
+        {
+            ota_abort(state, "content_too_small");
+            return;
+        }
         if (len <= 0)
         {
             // Some servers do chunked transfer; Update can still work.
@@ -334,7 +388,7 @@ void ota_tick(DeviceState *state)
         g_job.bytesWritten = 0;
 
         // Begin update
-        if (!Update.begin(len > 0 ? (size_t)len : UPDATE_SIZE_UNKNOWN))
+        if (!Update.begin(len > 0 ? (size_t)len : UPDATE_SIZE_UNKNOWN, U_FLASH))
         {
             ota_abort(state, "update_begin_failed");
             return;
@@ -351,6 +405,9 @@ void ota_tick(DeviceState *state)
         }
 
         g_job.lastProgressMs = millis();
+        g_job.lastReportMs = g_job.lastProgressMs;
+        g_job.zeroReadStreak = 0;
+        g_job.noDataSinceMs = 0;
         return; // next tick will stream
     }
 
@@ -372,6 +429,9 @@ void ota_tick(DeviceState *state)
         if (avail <= 0)
         {
             // No data right now. If finished, finalize.
+            if (g_job.zeroReadStreak == 0)
+                g_job.noDataSinceMs = millis();
+            g_job.zeroReadStreak++;
             break;
         }
 
@@ -381,7 +441,12 @@ void ota_tick(DeviceState *state)
 
         int n = stream->readBytes(buf, toRead);
         if (n <= 0)
+        {
+            if (g_job.zeroReadStreak == 0)
+                g_job.noDataSinceMs = millis();
+            g_job.zeroReadStreak++;
             break;
+        }
 
         if (g_job.shaInit)
         {
@@ -395,15 +460,18 @@ void ota_tick(DeviceState *state)
             return;
         }
 
+        g_job.zeroReadStreak = 0;
+        g_job.noDataSinceMs = 0;
         g_job.bytesWritten += (uint32_t)written;
         processed += written;
+        g_job.lastProgressMs = millis();
     }
 
     // Update progress every ~500ms
     uint32_t now = millis();
-    if (state && (now - g_job.lastProgressMs) >= 500)
+    if (state && (now - g_job.lastReportMs) >= 500)
     {
-        g_job.lastProgressMs = now;
+        g_job.lastReportMs = now;
 
         if (g_job.bytesTotal > 0)
         {
@@ -429,16 +497,33 @@ void ota_tick(DeviceState *state)
     else
     {
         // If server closes connection, available() stays 0 and connected() becomes false
-        finished = !stream->connected() && stream->available() == 0;
+        finished = !stream->connected() &&
+                   stream->available() == 0 &&
+                   g_job.zeroReadStreak > 0 &&
+                   (now - g_job.noDataSinceMs) > 200;
     }
 
     if (!finished)
+    {
+        if (g_job.updateBegun && g_job.lastProgressMs > 0 &&
+            (now - g_job.lastProgressMs) > 60000)
+        {
+            ota_abort(state, "download_timeout");
+            return;
+        }
         return;
+    }
 
     // Step C: finalize update
     if (state)
     {
         state->ota.status = OtaStatus::APPLYING;
+    }
+
+    if (g_job.bytesWritten < 1024)
+    {
+        ota_abort(state, "download_too_small");
+        return;
     }
 
     // finalize sha
@@ -460,25 +545,23 @@ void ota_tick(DeviceState *state)
         }
 
         // compare (expected must be exactly 64 hex chars)
-        const size_t expectedLen = strnlen(g_job.sha256, sizeof(g_job.sha256));
-        if (expectedLen != 64)
+        if (g_job.sha256[0] == '\0')
         {
-            ota_abort(state, expectedLen == 0 ? "missing_sha256" : "bad_sha256_length");
+            ota_abort(state, "missing_sha256");
+            return;
+        }
+        if (!isHex64(g_job.sha256))
+        {
+            ota_abort(state, "bad_sha256_format");
             return;
         }
 
-        // case-insensitive compare
-        auto toLower = [](char c) -> char
-        {
-            if (c >= 'A' && c <= 'Z')
-                return (char)(c - 'A' + 'a');
-            return c;
-        };
-
         for (int i = 0; i < 64; i++)
         {
-            if (toLower(g_job.sha256[i]) != hex[i])
+            if (lowerHexChar(g_job.sha256[i]) != hex[i])
             {
+                LOG_WARN(LogDomain::OTA, "Pull OTA SHA256 mismatch exp_prefix=%.12s got_prefix=%.12s",
+                         g_job.sha256, hex);
                 ota_abort(state, "sha256_mismatch");
                 return;
             }
@@ -490,7 +573,9 @@ void ota_tick(DeviceState *state)
     bool okEnd = Update.end(true);
     if (!okEnd)
     {
-        ota_abort(state, "update_end_failed");
+        char msg[40];
+        snprintf(msg, sizeof(msg), "update_end_failed_%u", (unsigned int)Update.getError());
+        ota_abort(state, msg);
         return;
     }
 
