@@ -6,3 +6,4 @@ const char *toString(SenseMode v);
 const char *toString(CalibrationState v);
 const char *toString(ProbeQualityReason v);
 const char *toString(CmdStatus v);
+const char *toString(OtaStatus s);

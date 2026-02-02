@@ -94,6 +94,34 @@ struct ConfigInfo
     uint8_t simulationMode;
 };
 
+enum class OtaStatus : uint8_t
+{
+    IDLE,
+    DOWNLOADING,
+    VERIFYING,
+    APPLYING,
+    REBOOTING,
+    SUCCESS,
+    ERROR
+};
+
+struct OtaState
+{
+    OtaStatus status = OtaStatus::IDLE;
+    uint8_t progress = 0;
+
+    // active request
+    char request_id[48] = {};
+    char version[16] = {};
+    char url[160] = {};
+    char sha256[65] = {};
+    uint32_t started_ts = 0;
+
+    // last result
+    char last_result[16] = {};
+    char last_message[64] = {};
+    uint32_t completed_ts = 0;
+};
 struct LastCmdInfo
 {
     const char *requestId; // points to a buffer owned by commands.cpp
@@ -115,6 +143,8 @@ struct DeviceState
     CalibrationInfo calibration;
     LevelInfo level;
     ConfigInfo config;
+
+    OtaState ota;
 
     LastCmdInfo lastCmd;
 };
