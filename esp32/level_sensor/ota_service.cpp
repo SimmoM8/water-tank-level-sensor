@@ -1,9 +1,13 @@
 #include "ota_service.h"
+#include <WiFiClientSecure.h>
+#include <ESP32CertBundle.h> // provides tt_x509_crt_bundle
+#include "mbedtls/sha256.h"
 #include <ArduinoOTA.h>
 #include <WiFi.h>
 #include "logger.h"
 #include <HTTPClient.h>
 #include <Update.h>
+#include <string.h>
 #include "domain_strings.h"
 
 static const char *s_hostName = nullptr;
@@ -28,7 +32,10 @@ struct PullOtaJob
 
     // Streaming objects
     HTTPClient http;
-    WiFiClient client;
+    WiFiClientSecure client;
+
+    mbedtls_sha256_context shaCtx;
+    bool shaInit = false;
 
     bool httpBegun = false;
     bool updateBegun = false;
@@ -135,6 +142,13 @@ bool ota_pullStart(DeviceState *state,
         return false;
     }
 
+    // Enforce HTTPS for pull-OTA URLs
+    if (strncasecmp(url, "https://", 8) != 0)
+    {
+        setErr(errBuf, errBufLen, "url_not_https");
+        return false;
+    }
+
     // Idempotency: if not forcing and version matches current, no-op success.
     if (!force && version && version[0] != '\0' && state->device.fw && strcmp(version, state->device.fw) == 0)
     {
@@ -145,8 +159,35 @@ bool ota_pullStart(DeviceState *state,
         return true;
     }
 
-    // Initialize job
-    memset(&g_job, 0, sizeof(g_job));
+    // Reset job state safely (do not memset C++ objects)
+    if (g_job.httpBegun)
+    {
+        g_job.http.end();
+        g_job.httpBegun = false;
+    }
+    if (g_job.updateBegun)
+    {
+        Update.abort();
+        g_job.updateBegun = false;
+    }
+    if (g_job.shaInit)
+    {
+        mbedtls_sha256_free(&g_job.shaCtx);
+        g_job.shaInit = false;
+    }
+
+    // Clear primitive fields / buffers
+    g_job.active = false;
+    g_job.reboot = true;
+    g_job.force = false;
+    g_job.lastProgressMs = 0;
+    g_job.bytesTotal = 0;
+    g_job.bytesWritten = 0;
+    g_job.request_id[0] = '\0';
+    g_job.version[0] = '\0';
+    g_job.url[0] = '\0';
+    g_job.sha256[0] = '\0';
+
     g_job.active = true;
     g_job.reboot = reboot;
     g_job.force = force;
@@ -196,10 +237,17 @@ static void ota_abort(DeviceState *state, const char *reason)
         g_job.http.end();
         g_job.httpBegun = false;
     }
+
     if (g_job.updateBegun)
     {
         Update.abort();
         g_job.updateBegun = false;
+    }
+
+    if (g_job.shaInit)
+    {
+        mbedtls_sha256_free(&g_job.shaCtx);
+        g_job.shaInit = false;
     }
 
     g_job.active = false;
@@ -249,7 +297,15 @@ void ota_tick(DeviceState *state)
     // Step A: begin HTTP if not begun
     if (!g_job.httpBegun)
     {
-        // NOTE: HTTP only (v1). HTTPS requires WiFiClientSecure handling.
+        // Setup secure client with CA bundle
+        g_job.client.setCACertBundle(tt_x509_crt_bundle);
+        g_job.client.setTimeout(12000); // 12s timeout for handshake and read
+
+        // Follow GitHub redirects (releases/download -> objects.githubusercontent.com)
+        g_job.http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+        g_job.http.setRedirectLimit(5);
+
+        // HTTPS: WiFiClientSecure + CA bundle + redirect-following (GitHub releases).
         bool ok = g_job.http.begin(g_job.client, g_job.url);
         if (!ok)
         {
@@ -283,6 +339,9 @@ void ota_tick(DeviceState *state)
             ota_abort(state, "update_begin_failed");
             return;
         }
+        mbedtls_sha256_init(&g_job.shaCtx);
+        mbedtls_sha256_starts(&g_job.shaCtx, 0); // SHA-256
+        g_job.shaInit = true;
         g_job.updateBegun = true;
 
         if (state)
@@ -323,6 +382,11 @@ void ota_tick(DeviceState *state)
         int n = stream->readBytes(buf, toRead);
         if (n <= 0)
             break;
+
+        if (g_job.shaInit)
+        {
+            mbedtls_sha256_update(&g_job.shaCtx, buf, (size_t)n);
+        }
 
         size_t written = Update.write(buf, (size_t)n);
         if (written != (size_t)n)
@@ -375,6 +439,52 @@ void ota_tick(DeviceState *state)
     if (state)
     {
         state->ota.status = OtaStatus::APPLYING;
+    }
+
+    // finalize sha
+    uint8_t digest[32];
+    char hex[65];
+    hex[64] = '\0';
+
+    if (g_job.shaInit)
+    {
+        mbedtls_sha256_finish(&g_job.shaCtx, digest);
+        mbedtls_sha256_free(&g_job.shaCtx);
+        g_job.shaInit = false;
+
+        static const char *kHex = "0123456789abcdef";
+        for (int i = 0; i < 32; i++)
+        {
+            hex[i * 2] = kHex[(digest[i] >> 4) & 0xF];
+            hex[i * 2 + 1] = kHex[digest[i] & 0xF];
+        }
+
+        // compare (expected must be exactly 64 hex chars)
+        const size_t expectedLen = strnlen(g_job.sha256, sizeof(g_job.sha256));
+        if (expectedLen != 64)
+        {
+            ota_abort(state, expectedLen == 0 ? "missing_sha256" : "bad_sha256_length");
+            return;
+        }
+
+        // case-insensitive compare
+        auto toLower = [](char c) -> char
+        {
+            if (c >= 'A' && c <= 'Z')
+                return (char)(c - 'A' + 'a');
+            return c;
+        };
+
+        for (int i = 0; i < 64; i++)
+        {
+            if (toLower(g_job.sha256[i]) != hex[i])
+            {
+                ota_abort(state, "sha256_mismatch");
+                return;
+            }
+        }
+        LOG_INFO(LogDomain::OTA, "Pull OTA SHA256 ok (prefix)=%c%c%c%c%c%c%c%c%c%c%c%c",
+                 hex[0], hex[1], hex[2], hex[3], hex[4], hex[5], hex[6], hex[7], hex[8], hex[9], hex[10], hex[11]);
     }
 
     bool okEnd = Update.end(true);
