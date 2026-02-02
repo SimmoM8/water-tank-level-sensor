@@ -10,6 +10,10 @@
 #include <string.h>
 #include "domain_strings.h"
 
+#ifndef OTA_MIN_BYTES
+#define OTA_MIN_BYTES 1024
+#endif
+
 static const char *s_hostName = nullptr;
 static const char *s_password = nullptr;
 static bool s_started = false;
@@ -349,6 +353,7 @@ void ota_tick(DeviceState *state)
 
         g_job.http.setUserAgent("DadsSmartHomeWaterTank/1.0");
         g_job.http.addHeader("Accept", "application/octet-stream");
+        g_job.http.useHTTP10(false);
 
         int code = g_job.http.GET();
         if (code != HTTP_CODE_OK)
@@ -373,7 +378,7 @@ void ota_tick(DeviceState *state)
 
         int len = g_job.http.getSize();
         LOG_INFO(LogDomain::OTA, "HTTP %d len=%d ctype=%s", code, len, ctype.c_str());
-        if (len > 0 && len < 1024)
+        if (len > 0 && len < OTA_MIN_BYTES)
         {
             ota_abort(state, "content_too_small");
             return;
@@ -388,6 +393,7 @@ void ota_tick(DeviceState *state)
         g_job.bytesWritten = 0;
 
         // Begin update
+        Update.setMD5(nullptr);
         if (!Update.begin(len > 0 ? (size_t)len : UPDATE_SIZE_UNKNOWN, U_FLASH))
         {
             ota_abort(state, "update_begin_failed");
@@ -520,7 +526,7 @@ void ota_tick(DeviceState *state)
         state->ota.status = OtaStatus::APPLYING;
     }
 
-    if (g_job.bytesWritten < 1024)
+    if (g_job.bytesWritten < OTA_MIN_BYTES)
     {
         ota_abort(state, "download_too_small");
         return;
