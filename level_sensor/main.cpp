@@ -655,6 +655,7 @@ static bool reloadConfigIfDirty(bool logValues)
 static void windowFast()
 {
   ota_handle();
+  ota_tick(&g_state); // NEW pull-OTA
   wifi_ensureConnected(WIFI_TIMEOUT_MS);
 
   if (reloadConfigIfDirty(true))
