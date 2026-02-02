@@ -71,3 +71,26 @@ const char *toString(CmdStatus v)
         return "unknown";
     }
 }
+
+const char *toString(OtaStatus s)
+{
+    switch (s)
+    {
+    case OtaStatus::IDLE:
+        return "idle";
+    case OtaStatus::DOWNLOADING:
+        return "downloading";
+    case OtaStatus::VERIFYING:
+        return "verifying";
+    case OtaStatus::APPLYING:
+        return "applying";
+    case OtaStatus::REBOOTING:
+        return "rebooting";
+    case OtaStatus::SUCCESS:
+        return "success";
+    case OtaStatus::ERROR:
+        return "error";
+    default:
+        return "unknown";
+    }
+}
