@@ -266,6 +266,38 @@ static void write_config_sim_mode(const DeviceState &s, JsonObject &root)
     obj[leaf] = s.config.simulationMode;
 }
 
+static void write_ota_status(const DeviceState &s, JsonObject &root)
+{
+    JsonObject ota = ensureObject(root, "ota");
+    ota["status"] = toString(s.ota.status);
+}
+
+static void write_ota_progress(const DeviceState &s, JsonObject &root)
+{
+    JsonObject ota = ensureObject(root, "ota");
+    ota["progress"] = s.ota.progress;
+}
+
+static void write_ota_active(const DeviceState &s, JsonObject &root)
+{
+    JsonObject active = ensureObject(root, "ota.active");
+
+    active["request_id"] = s.ota.request_id;
+    active["version"] = s.ota.version;
+    active["url"] = s.ota.url;
+    active["sha256"] = s.ota.sha256;
+    active["started_ts"] = s.ota.started_ts;
+}
+
+static void write_ota_result(const DeviceState &s, JsonObject &root)
+{
+    JsonObject result = ensureObject(root, "ota.result");
+
+    result["status"] = s.ota.last_status;
+    result["message"] = s.ota.last_message;
+    result["completed_ts"] = s.ota.completed_ts;
+}
+
 static void write_last_cmd(const DeviceState &s, JsonObject &root)
 {
     JsonObject o = ensureObject(root, "last_cmd");
@@ -315,6 +347,12 @@ static const TelemetryFieldDef TELEMETRY_FIELDS[] = {
     {HaComponent::Internal, "rod_length_cm", "Rod Length", "config.rod_length_cm", nullptr, nullptr, nullptr, nullptr, nullptr, write_config_rod},
     {HaComponent::Internal, "sense_mode", "Sense Mode", "config.sense_mode", nullptr, nullptr, "mdi:toggle-switch", nullptr, nullptr, write_config_sense_mode},
     {HaComponent::Internal, "simulation_mode", "Simulation Mode", "config.simulation_mode", nullptr, nullptr, nullptr, nullptr, nullptr, write_config_sim_mode},
+
+    // OTA (internal state)
+    {HaComponent::Internal, "ota_status", "OTA Status", "ota.status", nullptr, nullptr, nullptr, nullptr, nullptr, write_ota_status},
+    {HaComponent::Internal, "ota_progress", "OTA Progress", "ota.progress", nullptr, nullptr, nullptr, nullptr, nullptr, write_ota_progress},
+    {HaComponent::Internal, "ota_active", "OTA Active", "ota.active", nullptr, nullptr, nullptr, nullptr, nullptr, write_ota_active},
+    {HaComponent::Internal, "ota_result", "OTA Result", "ota.result", nullptr, nullptr, nullptr, nullptr, nullptr, write_ota_result},
 
     // Last command
     {HaComponent::Sensor, "last_cmd", "Last Command", "last_cmd.type", nullptr, nullptr, "mdi:playlist-check", "{{ value_json.last_cmd | tojson }}", "last_cmd", write_last_cmd},
