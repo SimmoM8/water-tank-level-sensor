@@ -230,6 +230,12 @@ static void handleOtaPull(JsonObject data, const char *requestId)
 {
     char err[48] = {0};
 
+    if (ota_isBusy())
+    {
+        finish(requestId, "ota_pull", CmdStatus::REJECTED, "busy");
+        return;
+    }
+
     const char *version = data["version"] | "";
     const char *url = data["url"] | "";
     const char *sha256 = data["sha256"] | "";
@@ -245,11 +251,6 @@ static void handleOtaPull(JsonObject data, const char *requestId)
     if (!sha256 || sha256[0] == '\0')
     {
         finish(requestId, "ota_pull", CmdStatus::REJECTED, "missing_sha256");
-        return;
-    }
-    if (!isHex64(sha256))
-    {
-        finish(requestId, "ota_pull", CmdStatus::REJECTED, "bad_sha256_format");
         return;
     }
 
@@ -428,6 +429,12 @@ void commands_handle(const uint8_t *payload, size_t len)
     {
         LOG_WARN(LogDomain::COMMAND, "Command rejected: reason=invalid_schema_or_type type=%s", (type && strlen(type) ? type : "(none)"));
         finish(requestId, type, CmdStatus::REJECTED, "invalid_schema_or_type");
+        return;
+    }
+
+    if (!requestId || requestId[0] == '\0')
+    {
+        finish("", type, CmdStatus::REJECTED, "missing_request_id");
         return;
     }
 
