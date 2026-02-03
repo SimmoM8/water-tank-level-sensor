@@ -2,6 +2,7 @@
 #include <math.h>
 #include <Arduino.h>
 #include <stdlib.h>
+#include <string.h>
 #include "main.h"
 #include "probe_reader.h"
 #include "wifi_provisioning.h"
@@ -420,6 +421,8 @@ static void refreshDeviceMeta()
   g_state.device.id = DEVICE_ID;
   g_state.device.name = DEVICE_NAME;
   g_state.device.fw = DEVICE_FW;
+  strncpy(g_state.fw_version, DEVICE_FW ? DEVICE_FW : "", sizeof(g_state.fw_version));
+  g_state.fw_version[sizeof(g_state.fw_version) - 1] = '\0';
 
   g_state.wifi.rssi = WiFi.RSSI();
   g_state.wifi.ip = ipBuf;
@@ -860,6 +863,16 @@ void appSetup()
   g_state.lastCmd.message = s_emptyStr;
   g_state.lastCmd.status = CmdStatus::RECEIVED;
   g_state.lastCmd.ts = g_state.ts;
+
+  if (g_state.ota_state[0] == '\0')
+  {
+    strncpy(g_state.ota_state, "idle", sizeof(g_state.ota_state));
+    g_state.ota_state[sizeof(g_state.ota_state) - 1] = '\0';
+  }
+  g_state.ota_progress = 0;
+  g_state.ota_error[0] = '\0';
+  g_state.ota_target_version[0] = '\0';
+  g_state.ota_last_ts = 0;
 
   g_state.level.percent = NAN;
   g_state.level.liters = NAN;

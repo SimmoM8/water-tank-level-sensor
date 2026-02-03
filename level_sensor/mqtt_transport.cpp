@@ -321,7 +321,7 @@ void mqtt_requestStatePublish()
     s_statePublishRequested = true;
 }
 
-bool mqtt_publishAck(const char *reqId, const char *type, CmdStatus status, const char *msg)
+bool mqtt_publishAck(const char *reqId, const char *type, const char *status, const char *msg)
 {
     if (!mqtt.connected())
         return false;
@@ -329,7 +329,7 @@ bool mqtt_publishAck(const char *reqId, const char *type, CmdStatus status, cons
     StaticJsonDocument<256> doc;
     doc["request_id"] = reqId ? reqId : "";
     doc["type"] = type ? type : "";
-    doc["status"] = toString(status);
+    doc["status"] = status ? status : "";
     doc["message"] = msg ? msg : "";
 
     char buf[256];
