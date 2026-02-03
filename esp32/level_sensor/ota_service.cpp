@@ -7,11 +7,21 @@
 #include "logger.h"
 #include <HTTPClient.h>
 #include <Update.h>
+#include <ArduinoJson.h>
 #include <string.h>
 #include "domain_strings.h"
 
+#ifdef __has_include
+#if __has_include("config.h")
+#include "config.h"
+#endif
+#endif
+
 #ifndef OTA_MIN_BYTES
 #define OTA_MIN_BYTES 1024
+#endif
+#ifndef CFG_OTA_MANIFEST_URL
+#define CFG_OTA_MANIFEST_URL ""
 #endif
 
 static const char *s_hostName = nullptr;
@@ -145,6 +155,47 @@ static void ota_setResult(DeviceState *state, const char *status, const char *me
     state->ota.completed_ts = (uint32_t)(millis() / 1000);
 }
 
+static void ota_setFlat(DeviceState *state,
+                         const char *stateStr,
+                         uint8_t progress,
+                         const char *error,
+                         const char *targetVersion,
+                         bool stamp)
+{
+    if (!state)
+        return;
+    if (stateStr)
+    {
+        strncpy(state->ota_state, stateStr, sizeof(state->ota_state));
+        state->ota_state[sizeof(state->ota_state) - 1] = '\0';
+    }
+    state->ota_progress = progress;
+    if (error)
+    {
+        strncpy(state->ota_error, error, sizeof(state->ota_error));
+        state->ota_error[sizeof(state->ota_error) - 1] = '\0';
+    }
+    if (targetVersion)
+    {
+        strncpy(state->ota_target_version, targetVersion, sizeof(state->ota_target_version));
+        state->ota_target_version[sizeof(state->ota_target_version) - 1] = '\0';
+    }
+    if (stamp)
+    {
+        state->ota_last_ts = (uint32_t)(millis() / 1000);
+    }
+}
+
+static void ota_markFailed(DeviceState *state, const char *reason)
+{
+    if (!state)
+        return;
+    state->ota.status = OtaStatus::ERROR;
+    state->ota.progress = 0;
+    ota_setResult(state, "error", reason ? reason : "error");
+    ota_setFlat(state, "failed", state->ota.progress, reason ? reason : "error", state->ota.version, true);
+}
+
 bool ota_pullStart(DeviceState *state,
                    const char *request_id,
                    const char *version,
@@ -186,6 +237,7 @@ bool ota_pullStart(DeviceState *state,
         state->ota.status = OtaStatus::SUCCESS;
         state->ota.progress = 100;
         ota_setResult(state, "success", "noop_already_on_version");
+        ota_setFlat(state, "success", 100, "", version ? version : "", true);
         setErr(errBuf, errBufLen, "noop");
         return true;
     }
@@ -252,10 +304,144 @@ bool ota_pullStart(DeviceState *state,
     state->ota.last_status[0] = '\0';
     state->ota.last_message[0] = '\0';
     state->ota.completed_ts = 0;
+    ota_setFlat(state, "downloading", 0, "", g_job.version, true);
 
     setErr(errBuf, errBufLen, "");
     LOG_INFO(LogDomain::OTA, "Pull OTA queued url=%s version=%s", g_job.url, g_job.version);
     return true;
+}
+
+bool ota_pullStartFromManifest(DeviceState *state,
+                               const char *request_id,
+                               bool force,
+                               bool reboot,
+                               char *errBuf,
+                               size_t errBufLen)
+{
+    if (!state)
+    {
+        setErr(errBuf, errBufLen, "missing_state");
+        return false;
+    }
+
+    if (g_job.active)
+    {
+        setErr(errBuf, errBufLen, "busy");
+        return false;
+    }
+
+    if (!WiFi.isConnected())
+    {
+        setErr(errBuf, errBufLen, "wifi_disconnected");
+        ota_markFailed(state, "wifi_disconnected");
+        return false;
+    }
+
+    const char *manifestUrl = CFG_OTA_MANIFEST_URL;
+    if (!manifestUrl || manifestUrl[0] == '\0')
+    {
+        setErr(errBuf, errBufLen, "missing_manifest_url");
+        ota_markFailed(state, "missing_manifest_url");
+        return false;
+    }
+    if (strncasecmp(manifestUrl, "https://", 8) != 0)
+    {
+        setErr(errBuf, errBufLen, "manifest_url_not_https");
+        ota_markFailed(state, "manifest_url_not_https");
+        return false;
+    }
+
+    WiFiClientSecure client;
+    client.setCACertBundle(tt_x509_crt_bundle);
+    client.setTimeout(12000);
+
+    HTTPClient http;
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    http.setRedirectLimit(5);
+
+    if (!http.begin(client, manifestUrl))
+    {
+        setErr(errBuf, errBufLen, "manifest_http_begin_failed");
+        ota_markFailed(state, "manifest_http_begin_failed");
+        return false;
+    }
+
+    static const char *kHeaders[] = {"Content-Type", "Content-Length", "Location"};
+    http.collectHeaders(kHeaders, 3);
+    http.setUserAgent("DadsSmartHomeWaterTank/1.0");
+    http.addHeader("Accept", "application/json");
+    http.useHTTP10(false);
+
+    const int code = http.GET();
+    if (code != HTTP_CODE_OK)
+    {
+        char msg[32];
+        snprintf(msg, sizeof(msg), "manifest_http_%d", code);
+        http.end();
+        setErr(errBuf, errBufLen, msg);
+        ota_markFailed(state, msg);
+        return false;
+    }
+
+    String ctype = http.header("Content-Type");
+    if (ctype.length() > 0)
+    {
+        String lower = ctype;
+        lower.toLowerCase();
+        if (lower.indexOf("text/html") >= 0)
+        {
+            http.end();
+            setErr(errBuf, errBufLen, "manifest_bad_content_type");
+            ota_markFailed(state, "manifest_bad_content_type");
+            return false;
+        }
+    }
+
+    StaticJsonDocument<768> doc;
+    const DeserializationError derr = deserializeJson(doc, http.getStream());
+    http.end();
+    if (derr)
+    {
+        setErr(errBuf, errBufLen, "manifest_parse_failed");
+        ota_markFailed(state, "manifest_parse_failed");
+        return false;
+    }
+
+    const char *version = doc["version"] | "";
+    const char *url = doc["url"] | "";
+    const char *sha256 = doc["sha256"] | "";
+
+    if (!version || version[0] == '\0')
+    {
+        setErr(errBuf, errBufLen, "manifest_missing_version");
+        ota_markFailed(state, "manifest_missing_version");
+        return false;
+    }
+    if (!url || url[0] == '\0')
+    {
+        setErr(errBuf, errBufLen, "manifest_missing_url");
+        ota_markFailed(state, "manifest_missing_url");
+        return false;
+    }
+    if (!sha256 || sha256[0] == '\0')
+    {
+        setErr(errBuf, errBufLen, "manifest_missing_sha256");
+        ota_markFailed(state, "manifest_missing_sha256");
+        return false;
+    }
+    if (!isHex64(sha256))
+    {
+        setErr(errBuf, errBufLen, "bad_sha256_format");
+        ota_markFailed(state, "bad_sha256_format");
+        return false;
+    }
+
+    const bool ok = ota_pullStart(state, request_id, version, url, sha256, force, reboot, errBuf, errBufLen);
+    if (!ok && errBuf && errBuf[0] && strcmp(errBuf, "busy") != 0)
+    {
+        ota_markFailed(state, errBuf);
+    }
+    return ok;
 }
 
 static void ota_abort(DeviceState *state, const char *reason)
@@ -264,6 +450,7 @@ static void ota_abort(DeviceState *state, const char *reason)
     {
         state->ota.status = OtaStatus::ERROR;
         ota_setResult(state, "error", reason ? reason : "error");
+        ota_setFlat(state, "failed", state->ota.progress, reason ? reason : "error", state->ota.version, true);
     }
 
     if (g_job.updateBegun)
@@ -295,6 +482,7 @@ static void ota_finishSuccess(DeviceState *state)
         state->ota.status = OtaStatus::SUCCESS;
         state->ota.progress = 100;
         ota_setResult(state, "success", "applied");
+        ota_setFlat(state, "success", 100, "", state->ota.version, true);
     }
 
     if (g_job.httpBegun)
@@ -408,6 +596,8 @@ void ota_tick(DeviceState *state)
         {
             state->ota.status = OtaStatus::DOWNLOADING;
             state->ota.progress = 0;
+            state->ota_progress = 0;
+            ota_setFlat(state, "downloading", 0, "", nullptr, false);
         }
 
         g_job.lastProgressMs = millis();
@@ -485,11 +675,13 @@ void ota_tick(DeviceState *state)
             if (pct > 100u)
                 pct = 100u;
             state->ota.progress = (uint8_t)pct;
+            state->ota_progress = state->ota.progress;
         }
         else
         {
             // unknown total size
             state->ota.progress = 0;
+            state->ota_progress = state->ota.progress;
         }
     }
 
@@ -523,7 +715,8 @@ void ota_tick(DeviceState *state)
     // Step C: finalize update
     if (state)
     {
-        state->ota.status = OtaStatus::APPLYING;
+        state->ota.status = OtaStatus::VERIFYING;
+        ota_setFlat(state, "verifying", state->ota.progress, nullptr, nullptr, false);
     }
 
     if (g_job.bytesWritten < OTA_MIN_BYTES)
@@ -574,6 +767,12 @@ void ota_tick(DeviceState *state)
         }
         LOG_INFO(LogDomain::OTA, "Pull OTA SHA256 ok (prefix)=%c%c%c%c%c%c%c%c%c%c%c%c",
                  hex[0], hex[1], hex[2], hex[3], hex[4], hex[5], hex[6], hex[7], hex[8], hex[9], hex[10], hex[11]);
+    }
+
+    if (state)
+    {
+        state->ota.status = OtaStatus::APPLYING;
+        ota_setFlat(state, "applying", state->ota.progress, nullptr, nullptr, false);
     }
 
     bool okEnd = Update.end(true);

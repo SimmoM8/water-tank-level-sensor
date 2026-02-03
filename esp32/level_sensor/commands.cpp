@@ -237,23 +237,35 @@ static void handleOtaPull(JsonObject data, const char *requestId)
     bool reboot = data["reboot"].is<bool>() ? data["reboot"].as<bool>() : true;
     bool force = data["force"].is<bool>() ? data["force"].as<bool>() : false;
 
-    if (!url || url[0] == '\0')
-    {
-        finish(requestId, "ota_pull", CmdStatus::REJECTED, "missing_url");
-        return;
-    }
-    if (!sha256 || sha256[0] == '\0')
-    {
-        finish(requestId, "ota_pull", CmdStatus::REJECTED, "missing_sha256");
-        return;
-    }
-    if (!isHex64(sha256))
-    {
-        finish(requestId, "ota_pull", CmdStatus::REJECTED, "bad_sha256_format");
-        return;
-    }
+    const bool hasUrl = url && url[0] != '\0';
+    const bool hasSha = sha256 && sha256[0] != '\0';
+    const bool hasVersion = version && version[0] != '\0';
+    const bool useManifest = (!hasUrl || !hasSha) && (force || (!hasUrl && !hasSha && !hasVersion));
 
-    bool ok = ota_pullStart(s_ctx.state, requestId, version, url, sha256, force, reboot, err, sizeof(err));
+    bool ok = false;
+    if (useManifest)
+    {
+        ok = ota_pullStartFromManifest(s_ctx.state, requestId, force, reboot, err, sizeof(err));
+    }
+    else
+    {
+        if (!hasUrl)
+        {
+            finish(requestId, "ota_pull", CmdStatus::REJECTED, "missing_url");
+            return;
+        }
+        if (!hasSha)
+        {
+            finish(requestId, "ota_pull", CmdStatus::REJECTED, "missing_sha256");
+            return;
+        }
+        if (!isHex64(sha256))
+        {
+            finish(requestId, "ota_pull", CmdStatus::REJECTED, "bad_sha256_format");
+            return;
+        }
+        ok = ota_pullStart(s_ctx.state, requestId, version, url, sha256, force, reboot, err, sizeof(err));
+    }
     if (!ok)
     {
         finish(requestId, "ota_pull", CmdStatus::REJECTED, err[0] ? err : "start_failed");

@@ -18,6 +18,14 @@ bool ota_pullStart(DeviceState *state,
                    char *errBuf,
                    size_t errBufLen);
 
+// Pull-OTA via manifest URL (device fetches URL/SHA from manifest)
+bool ota_pullStartFromManifest(DeviceState *state,
+                               const char *request_id,
+                               bool force,
+                               bool reboot,
+                               char *errBuf,
+                               size_t errBufLen);
+
 void ota_tick(DeviceState *state);
 
 bool ota_isBusy();
