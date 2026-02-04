@@ -26,6 +26,9 @@ bool ota_pullStartFromManifest(DeviceState *state,
                                char *errBuf,
                                size_t errBufLen);
 
+// Periodic manifest check for update availability.
+bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen);
+
 void ota_tick(DeviceState *state);
 
 bool ota_isBusy();

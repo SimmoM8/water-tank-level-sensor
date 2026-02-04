@@ -122,11 +122,16 @@ static const char *DEVICE_FW = "1.3";
 
 // ===== Sensor / Sampling =====
 static const int TOUCH_PIN = 14; // GPIO14 or A7
-static const uint8_t TOUCH_SAMPLES = 16;
+static const uint8_t TOUCH_SAMPLES = 8;
 static const uint8_t TOUCH_SAMPLE_DELAY_MS = 5;
 static const uint32_t RAW_SAMPLE_MS = CFG_RAW_SAMPLE_MS;
 static const uint32_t PERCENT_SAMPLE_MS = CFG_PERCENT_SAMPLE_MS;
 static const float PERCENT_EMA_ALPHA = CFG_PERCENT_EMA_ALPHA;
+
+static const uint32_t OTA_MANIFEST_CHECK_MS = 21600000u; // 6h
+static const uint32_t OTA_MANIFEST_RETRY_MS = 60000u;    // 60s on failure
+static uint32_t s_lastManifestCheckMs = 0;
+static uint32_t s_lastManifestAttemptMs = 0;
 
 // ===== Network timeouts =====
 static const uint32_t WIFI_TIMEOUT_MS = 20000;
@@ -686,9 +691,30 @@ static void windowCompute()
   updatePercentFromRaw();
 }
 
+static void maybeCheckManifest()
+{
+  if (!WiFi.isConnected() || ota_isBusy())
+    return;
+
+  const uint32_t now = millis();
+  const bool due = (s_lastManifestCheckMs == 0) || (now - s_lastManifestCheckMs >= OTA_MANIFEST_CHECK_MS);
+  const bool retryOk = (s_lastManifestAttemptMs == 0) || (now - s_lastManifestAttemptMs >= OTA_MANIFEST_RETRY_MS);
+  if (!due || !retryOk)
+    return;
+
+  s_lastManifestAttemptMs = now;
+  char err[32] = {0};
+  if (ota_checkManifest(&g_state, err, sizeof(err)))
+  {
+    s_lastManifestCheckMs = now;
+    mqtt_requestStatePublish();
+  }
+}
+
 static void windowStateMeta()
 {
   refreshStateSnapshot();
+  maybeCheckManifest();
 }
 
 static void windowMqtt()
@@ -873,6 +899,7 @@ void appSetup()
   g_state.ota_error[0] = '\0';
   g_state.ota_target_version[0] = '\0';
   g_state.ota_last_ts = 0;
+  g_state.update_available = false;
 
   g_state.level.percent = NAN;
   g_state.level.liters = NAN;

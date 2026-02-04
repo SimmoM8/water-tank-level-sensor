@@ -5,8 +5,8 @@
 
 static struct
 {
-    ProbeConfig cfg = {0, 256, 5}; // default pin 0, 256 samples, 5ms delay
-    ReadMode mode = READ_PROBE;    // default mode
+    ProbeConfig cfg = {0, 1, 5}; // default pin 0, 1 sample, 5ms delay
+    ReadMode mode = READ_PROBE;  // default mode
 } probe;
 
 void probe_begin(const ProbeConfig &config)

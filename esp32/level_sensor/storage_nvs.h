@@ -1,26 +1,3 @@
-/*
-all references to storage found in water_level_sensor.cpp:
- - namespace
- - dry and wet
- - inv
- - tank volume
- - rod length
-- sense mode
-- sim mode
-- loadConfigValues()
-- saveTankVolume()
-- saveRodLength()
-- setSenseMode()
-- setSimulationModeInternal()
-- loadCalibration()
-- clearCalibration()
-- captureCalibrationPoint()
-- handleInvertCalibration()
-- handleSerialCommands()
-- connectWiFi()
-- appSetup()
-*/
-
 #pragma once // prevent multiple inclusion of this header file
 
 #include <Arduino.h>
