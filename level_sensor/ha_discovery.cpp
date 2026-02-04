@@ -342,6 +342,46 @@ static bool publishOnlineEntity()
     return ok;
 }
 
+static bool publishUpdateEntity()
+{
+    char topic[192];
+    snprintf(topic, sizeof(topic), "homeassistant/update/%s_firmware/config", s_cfg.deviceId);
+
+    StaticJsonDocument<768> doc;
+    doc["name"] = "Firmware";
+    doc["uniq_id"] = String(s_cfg.deviceId) + "_firmware";
+    doc["state_topic"] = String(s_cfg.baseTopic) + "/" + STATE_TOPIC_SUFFIX;
+    doc["command_topic"] = String(s_cfg.baseTopic) + "/cmd";
+    doc["payload_install"] = "{\"schema\":1,\"type\":\"ota_pull\",\"request_id\":\"{{ timestamp }}\",\"data\":{}}";
+
+    doc["availability_topic"] = String(s_cfg.baseTopic) + "/" + AVAIL_TOPIC_SUFFIX;
+    doc["payload_available"] = PAYLOAD_AVAILABLE;
+    doc["payload_not_available"] = PAYLOAD_NOT_AVAILABLE;
+
+    doc["device_class"] = "firmware";
+
+    JsonObject dev = doc.createNestedObject("device");
+    dev["name"] = s_cfg.deviceName;
+    dev["identifiers"] = s_cfg.deviceId;
+    dev["model"] = s_cfg.deviceModel;
+    dev["sw_version"] = s_cfg.deviceSw;
+
+    char buf[896];
+    const size_t n = serializeJson(doc, buf, sizeof(buf));
+    if (n == 0 || n >= sizeof(buf))
+    {
+        LOG_WARN(LogDomain::MQTT, "HA discovery update too large");
+        return false;
+    }
+
+    const bool ok = s_cfg.publish(topic, buf, true);
+    if (!ok)
+    {
+        LOG_WARN(LogDomain::MQTT, "Failed HA discovery update %s", topic);
+    }
+    return ok;
+}
+
 void ha_discovery_begin(const HaDiscoveryConfig &cfg)
 {
     s_cfg = cfg;
@@ -375,6 +415,7 @@ void ha_discovery_publishAll()
     bool anyOk = false;
 
     anyOk |= publishOnlineEntity();
+    anyOk |= publishUpdateEntity();
 
     size_t tCount = 0;
     const TelemetryFieldDef *fields = telemetry_registry_fields(tCount);

@@ -238,6 +238,7 @@ bool ota_pullStart(DeviceState *state,
         state->ota.progress = 100;
         ota_setResult(state, "success", "noop_already_on_version");
         ota_setFlat(state, "success", 100, "", version ? version : "", true);
+        state->update_available = false;
         setErr(errBuf, errBufLen, "noop");
         return true;
     }
@@ -305,6 +306,7 @@ bool ota_pullStart(DeviceState *state,
     state->ota.last_message[0] = '\0';
     state->ota.completed_ts = 0;
     ota_setFlat(state, "downloading", 0, "", g_job.version, true);
+    state->update_available = (g_job.version[0] != '\0' && state->device.fw && strcmp(g_job.version, state->device.fw) != 0);
 
     setErr(errBuf, errBufLen, "");
     LOG_INFO(LogDomain::OTA, "Pull OTA queued url=%s version=%s", g_job.url, g_job.version);
@@ -444,6 +446,109 @@ bool ota_pullStartFromManifest(DeviceState *state,
     return ok;
 }
 
+bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
+{
+    if (!state)
+    {
+        setErr(errBuf, errBufLen, "missing_state");
+        return false;
+    }
+    if (g_job.active)
+    {
+        setErr(errBuf, errBufLen, "busy");
+        return false;
+    }
+    if (!WiFi.isConnected())
+    {
+        setErr(errBuf, errBufLen, "wifi_disconnected");
+        return false;
+    }
+
+    const char *manifestUrl = CFG_OTA_MANIFEST_URL;
+    if (!manifestUrl || manifestUrl[0] == '\0')
+    {
+        setErr(errBuf, errBufLen, "missing_manifest_url");
+        return false;
+    }
+    if (strncasecmp(manifestUrl, "https://", 8) != 0)
+    {
+        setErr(errBuf, errBufLen, "manifest_url_not_https");
+        return false;
+    }
+
+    WiFiClientSecure client;
+    client.setCACertBundle(tt_x509_crt_bundle);
+    client.setTimeout(12000);
+
+    HTTPClient http;
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    http.setRedirectLimit(5);
+
+    if (!http.begin(client, manifestUrl))
+    {
+        setErr(errBuf, errBufLen, "manifest_http_begin_failed");
+        return false;
+    }
+
+    static const char *kHeaders[] = {"Content-Type", "Content-Length", "Location"};
+    http.collectHeaders(kHeaders, 3);
+    http.setUserAgent("DadsSmartHomeWaterTank/1.0");
+    http.addHeader("Accept", "application/json");
+    http.useHTTP10(false);
+
+    const int code = http.GET();
+    if (code != HTTP_CODE_OK)
+    {
+        char msg[32];
+        snprintf(msg, sizeof(msg), "manifest_http_%d", code);
+        http.end();
+        setErr(errBuf, errBufLen, msg);
+        return false;
+    }
+
+    StaticJsonDocument<768> doc;
+    const DeserializationError derr = deserializeJson(doc, http.getStream());
+    http.end();
+    if (derr)
+    {
+        setErr(errBuf, errBufLen, "manifest_parse_failed");
+        return false;
+    }
+
+    const char *version = doc["version"] | "";
+    const char *url = doc["url"] | "";
+    const char *sha256 = doc["sha256"] | "";
+    if (!version || version[0] == '\0')
+    {
+        setErr(errBuf, errBufLen, "manifest_missing_version");
+        return false;
+    }
+    if (!url || url[0] == '\0')
+    {
+        setErr(errBuf, errBufLen, "manifest_missing_url");
+        return false;
+    }
+    if (!sha256 || sha256[0] == '\0')
+    {
+        setErr(errBuf, errBufLen, "manifest_missing_sha256");
+        return false;
+    }
+    if (!isHex64(sha256))
+    {
+        setErr(errBuf, errBufLen, "bad_sha256_format");
+        return false;
+    }
+
+    strncpy(state->ota_target_version, version, sizeof(state->ota_target_version));
+    state->ota_target_version[sizeof(state->ota_target_version) - 1] = '\0';
+    state->ota_last_ts = (uint32_t)(millis() / 1000);
+    state->update_available = (state->device.fw && strcmp(version, state->device.fw) != 0);
+    state->ota_error[0] = '\0';
+
+    setErr(errBuf, errBufLen, "");
+    return true;
+}
+
 static void ota_abort(DeviceState *state, const char *reason)
 {
     if (state)
@@ -483,6 +588,7 @@ static void ota_finishSuccess(DeviceState *state)
         state->ota.progress = 100;
         ota_setResult(state, "success", "applied");
         ota_setFlat(state, "success", 100, "", state->ota.version, true);
+        state->update_available = false;
     }
 
     if (g_job.httpBegun)

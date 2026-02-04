@@ -153,6 +153,7 @@ struct DeviceState
     char ota_error[64] = {0};
     char ota_target_version[16] = {0};
     uint32_t ota_last_ts = 0;
+    bool update_available = false;
 
     LastCmdInfo lastCmd;
 };

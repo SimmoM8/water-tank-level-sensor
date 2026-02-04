@@ -299,6 +299,34 @@ static void write_fw_version(const DeviceState &s, JsonObject &root)
     obj[leaf] = fw ? fw : "";
 }
 
+static void write_installed_version(const DeviceState &s, JsonObject &root)
+{
+    char parent[32];
+    char leaf[32];
+    splitPath("installed_version", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = (parent[0] == '\0') ? root : ensureObject(root, parent);
+    const char *fw = s.fw_version[0] ? s.fw_version : s.device.fw;
+    obj[leaf] = fw ? fw : "";
+}
+
+static void write_latest_version(const DeviceState &s, JsonObject &root)
+{
+    char parent[32];
+    char leaf[32];
+    splitPath("latest_version", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = (parent[0] == '\0') ? root : ensureObject(root, parent);
+    obj[leaf] = s.ota_target_version;
+}
+
+static void write_update_available(const DeviceState &s, JsonObject &root)
+{
+    char parent[32];
+    char leaf[32];
+    splitPath("update_available", parent, sizeof(parent), leaf, sizeof(leaf));
+    JsonObject obj = (parent[0] == '\0') ? root : ensureObject(root, parent);
+    obj[leaf] = s.update_available;
+}
+
 static void write_ota_state_flat(const DeviceState &s, JsonObject &root)
 {
     char parent[32];
@@ -405,6 +433,9 @@ static const TelemetryFieldDef TELEMETRY_FIELDS[] = {
     {HaComponent::Internal, "ts", "Timestamp", "ts", nullptr, nullptr, nullptr, nullptr, nullptr, write_ts},
     {HaComponent::Internal, "device", "Device", "device", nullptr, nullptr, nullptr, nullptr, nullptr, write_device},
     {HaComponent::Sensor, "fw_version", "Firmware Version", "fw_version", nullptr, nullptr, "mdi:chip", nullptr, nullptr, write_fw_version},
+    {HaComponent::Internal, "installed_version", "Installed Version", "installed_version", nullptr, nullptr, nullptr, nullptr, nullptr, write_installed_version},
+    {HaComponent::Internal, "latest_version", "Latest Version", "latest_version", nullptr, nullptr, nullptr, nullptr, nullptr, write_latest_version},
+    {HaComponent::Internal, "update_available", "Update Available", "update_available", nullptr, nullptr, nullptr, nullptr, nullptr, write_update_available},
     {HaComponent::Internal, "wifi", "WiFi", "wifi", nullptr, nullptr, nullptr, nullptr, nullptr, write_wifi},
     {HaComponent::Internal, "mqtt", "MQTT", "mqtt", nullptr, nullptr, nullptr, nullptr, nullptr, write_mqtt},
 

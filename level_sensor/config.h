@@ -30,8 +30,8 @@
 
 // — Sampling / smoothing —
 #define CFG_RAW_SAMPLE_MS 1000u
-#define CFG_PERCENT_SAMPLE_MS 5000u // the interval in milliseconds to update the smoothed percent level
-#define CFG_PERCENT_EMA_ALPHA 0.2f
+#define CFG_PERCENT_SAMPLE_MS 1000u // the interval in milliseconds to update the smoothed percent level
+#define CFG_PERCENT_EMA_ALPHA 1.0f
 
 // — OTA —
 // #define CFG_OTA_MANIFEST_URL "https://example.com/firmware/manifest.json"
