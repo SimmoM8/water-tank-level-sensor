@@ -27,13 +27,13 @@ struct QualityRuntime
     bool hasLast;
     uint32_t lastRaw;
     uint8_t spikeCount;
-    uint32_t spikeWindowStart;
-    uint32_t stuckStartMs;
+    uint32_t spikeWindowStart; // UINT32_MAX means inactive
+    uint32_t stuckStartMs;     // UINT32_MAX means inactive
     uint8_t calBelowCount;
     uint8_t calAboveCount;
-    uint32_t calWindowStart;
+    uint32_t calWindowStart;   // UINT32_MAX means inactive
     uint8_t zeroCount;
-    uint32_t zeroWindowStart;
+    uint32_t zeroWindowStart;  // UINT32_MAX means inactive
 };
 
 struct QualityResult
@@ -42,7 +42,7 @@ struct QualityResult
     ProbeQualityReason reason;
 };
 
-// Initialize runtime counters.
+// Initialize runtime counters and window state.
 void quality_init(QualityRuntime &rt);
 
 // Evaluate quality given a raw sample, calibration, and config thresholds.
