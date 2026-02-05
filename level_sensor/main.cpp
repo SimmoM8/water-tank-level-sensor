@@ -942,6 +942,13 @@ void appSetup()
   g_state.ota_target_version[0] = '\0';
   g_state.ota_last_ts = 0;
   g_state.update_available = false;
+  {
+    bool otaForce = false;
+    bool otaReboot = true;
+    storage_loadOtaOptions(otaForce, otaReboot);
+    g_state.ota_force = otaForce;
+    g_state.ota_reboot = otaReboot;
+  }
 
   g_state.level.percent = NAN;
   g_state.level.liters = NAN;

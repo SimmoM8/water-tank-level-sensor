@@ -24,5 +24,10 @@ bool storage_loadSimulation(SenseMode &senseMode, uint8_t &mode);
 void storage_saveSimulationMode(uint8_t mode);
 void storage_saveSenseMode(SenseMode senseMode);
 
+/* ---------------- OTA Options ---------------- */
+bool storage_loadOtaOptions(bool &force, bool &reboot);
+void storage_saveOtaForce(bool force);
+void storage_saveOtaReboot(bool reboot);
+
 /* ---------------- Debug ---------------- */
 void storage_dump();

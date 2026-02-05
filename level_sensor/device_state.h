@@ -174,6 +174,8 @@ struct DeviceState
     char ota_target_version[OTA_TARGET_VERSION_MAX] = {0}; // mirror of ota.version or manifest
     uint32_t ota_last_ts = 0;                         // mirror of ota.started_ts/completed_ts
     bool update_available = false;
+    bool ota_force = false;                           // default force behavior for ota_pull
+    bool ota_reboot = true;                           // default reboot behavior for ota_pull
 
     LastCmdInfo lastCmd;
 };
