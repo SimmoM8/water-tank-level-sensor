@@ -439,6 +439,15 @@ static bool write_ota_last_ts_flat(const DeviceState &s, JsonObject &root)
     return writeAtPath(root, "ota_last_ts", ts);
 }
 
+static bool write_ota_last_success_ts(const DeviceState &s, JsonObject &root)
+{
+    if (s.ota_last_success_ts == 0)
+    {
+        return false;
+    }
+    return writeAtPath(root, "ota_last_success_ts", s.ota_last_success_ts);
+}
+
 static bool write_ota_status(const DeviceState &s, JsonObject &root)
 {
     return writeAtPath(root, "ota.status", c_str(to_string(s.ota.status)), true);
@@ -530,6 +539,7 @@ static const TelemetryFieldDef TELEMETRY_FIELDS[] = {
     {HaComponent::Sensor, "ota_error", "OTA Error", "ota_error", nullptr, nullptr, ICON_ALERT, nullptr, nullptr, write_ota_error_flat},
     {HaComponent::Sensor, "ota_target_version", "OTA Target Version", "ota_target_version", nullptr, nullptr, ICON_TAG, nullptr, nullptr, write_ota_target_version_flat},
     {HaComponent::Sensor, "ota_last_ts", "OTA Last Timestamp", "ota_last_ts", "timestamp", nullptr, ICON_CLOCK, nullptr, nullptr, write_ota_last_ts_flat},
+    {HaComponent::Sensor, "ota_last_success_ts", "OTA Last Success", "ota_last_success_ts", "timestamp", nullptr, ICON_CLOCK, nullptr, nullptr, write_ota_last_success_ts},
 
     // OTA (internal state)
     {HaComponent::Internal, "ota_force", "OTA Force", "ota.force", nullptr, nullptr, nullptr, nullptr, nullptr, write_ota_force},

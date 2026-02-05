@@ -31,6 +31,7 @@ static constexpr const char kKeySimMode[] = "sim_mode";
 // ---------------- OTA Options ----------------
 static constexpr const char kKeyOtaForce[] = "ota_force";
 static constexpr const char kKeyOtaReboot[] = "ota_reboot";
+static constexpr const char kKeyOtaLastSuccess[] = "ota_last_ok";
 
 static constexpr uint32_t kWarnThrottleMs = 5000;
 } // namespace nvs
@@ -186,6 +187,13 @@ bool storage_loadOtaOptions(bool &force, bool &reboot)
     return hasForce || hasReboot;
 }
 
+bool storage_loadOtaLastSuccess(uint32_t &ts)
+{
+    const bool hasTs = prefs.isKey(storage::nvs::kKeyOtaLastSuccess);
+    ts = prefs.getUInt(storage::nvs::kKeyOtaLastSuccess, 0);
+    return hasTs;
+}
+
 void storage_saveCalibrationDry(int32_t dry)
 {
     prefs.putInt(storage::nvs::kKeyDry, dry);
@@ -238,6 +246,11 @@ void storage_saveOtaReboot(bool reboot)
     prefs.putBool(storage::nvs::kKeyOtaReboot, reboot);
 }
 
+void storage_saveOtaLastSuccess(uint32_t ts)
+{
+    prefs.putUInt(storage::nvs::kKeyOtaLastSuccess, ts);
+}
+
 void storage_dump()
 {
     int32_t dry = prefs.getInt(storage::nvs::kKeyDry, 0);
@@ -251,6 +264,7 @@ void storage_dump()
     uint8_t simMode = (uint8_t)prefs.getUChar(storage::nvs::kKeySimMode, 0);
     bool otaForce = prefs.getBool(storage::nvs::kKeyOtaForce, false);
     bool otaReboot = prefs.getBool(storage::nvs::kKeyOtaReboot, true);
+    uint32_t otaLastOk = prefs.getUInt(storage::nvs::kKeyOtaLastSuccess, 0);
 
     LOG_INFO(LogDomain::CONFIG, "NVS: dry=%ld wet=%ld inv=%s", (long)dry, (long)wet, inv ? "true" : "false");
     LOG_INFO(LogDomain::CONFIG, "NVS: tank_volume_l=%.2f tank_height_cm=%.2f", (double)vol, (double)height);
@@ -258,4 +272,5 @@ void storage_dump()
              domain_strings::c_str(domain_strings::to_string(sense)), (unsigned)simMode);
     LOG_INFO(LogDomain::CONFIG, "NVS: ota_force=%s ota_reboot=%s",
              otaForce ? "true" : "false", otaReboot ? "true" : "false");
+    LOG_INFO(LogDomain::CONFIG, "NVS: ota_last_success_ts=%lu", (unsigned long)otaLastOk);
 }
