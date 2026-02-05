@@ -41,6 +41,7 @@ const OPTIONAL_ENTITY_KEYS = [
   "ota_pull_entity",
   "ota_state_entity",
   "ota_progress_entity",
+  "ota_error_entity",
   "ota_last_status_entity",
   "ota_last_message_entity",
   "update_available_entity",
@@ -74,6 +75,7 @@ const UNIQUE_ID_SUFFIX_MAP = {
   ota_pull_entity: ["_ota_pull"],
   ota_state_entity: ["_ota_state"],
   ota_progress_entity: ["_ota_progress"],
+  ota_error_entity: ["_ota_error", "_ota_last_error"],
   ota_last_status_entity: ["_ota_last_status"],
   ota_last_message_entity: ["_ota_last_message"],
   update_available_entity: ["_update_available"],
@@ -107,6 +109,7 @@ const ENTITY_MATCH_RULES = {
   ota_pull_entity: { domains: ["button"], entitySuffixes: ["_ota_pull"] },
   ota_state_entity: { domains: ["sensor"], entitySuffixes: ["_ota_state"] },
   ota_progress_entity: { domains: ["sensor"], entitySuffixes: ["_ota_progress"] },
+  ota_error_entity: { domains: ["sensor"], entitySuffixes: ["_ota_error", "_ota_last_error"] },
   ota_last_status_entity: { domains: ["sensor"], entitySuffixes: ["_ota_last_status"] },
   ota_last_message_entity: { domains: ["sensor"], entitySuffixes: ["_ota_last_message"] },
   update_available_entity: { domains: ["binary_sensor"], entitySuffixes: ["_update_available"] },
@@ -228,6 +231,7 @@ class WaterTankCard extends HTMLElement {
       ota_pull_entity: null,
       ota_state_entity: null,
       ota_progress_entity: null,
+      ota_error_entity: null,
       ota_last_status_entity: null,
       ota_last_message_entity: null,
       update_available_entity: null,
@@ -1965,8 +1969,34 @@ class WaterTankCard extends HTMLElement {
     const updateAvailableState = this._config.update_available_entity ? this._state(this._config.update_available_entity) : null;
     const updateAvailable = this._isTruthyState(updateAvailableState);
     const otaState = this._config.ota_state_entity ? this._state(this._config.ota_state_entity) : null;
-    const otaStateLower = otaState ? String(otaState).trim().toLowerCase() : "";
+    const otaStateKnown = this._config.ota_state_entity && !this._isUnknownState(otaState);
+    const otaStateLower = otaStateKnown ? String(otaState).trim().toLowerCase() : "";
     const otaInProgress = otaStateLower === "downloading" || otaStateLower === "verifying" || otaStateLower === "applying";
+    const otaActive = otaStateLower === "downloading" || otaStateLower === "verifying" || otaStateLower === "applying" || otaStateLower === "rebooting";
+    const otaProgressVal = this._config.ota_progress_entity ? this._num(this._config.ota_progress_entity) : null;
+    const otaProgressPct = (otaProgressVal !== null && otaProgressVal >= 1 && otaProgressVal <= 100)
+      ? Math.round(otaProgressVal)
+      : null;
+    const otaProgressText = otaProgressPct !== null ? `${otaProgressPct}%` : "—";
+    const otaStatusText = (() => {
+      switch (otaStateLower) {
+        case "downloading": return "Downloading";
+        case "verifying": return "Verifying";
+        case "applying": return "Applying";
+        case "rebooting": return "Rebooting";
+        default: return this._safeText(otaState);
+      }
+    })();
+    const otaInline = otaActive ? `
+      <div class="otaRow">
+        <ha-icon icon="mdi:update"></ha-icon>
+        <div class="otaText">Updating… ${this._safeText(otaStatusText)}</div>
+        <div class="otaPct">${otaProgressText}</div>
+      </div>
+      <div class="otaBar">
+        <div class="otaBarFill ${otaProgressPct !== null ? "" : "otaBarFill--ind"}" style="${otaProgressPct !== null ? `width:${otaProgressPct}%;` : ""}"></div>
+      </div>
+    ` : "";
     const currentFw = this._config.fw_version_entity ? this._state(this._config.fw_version_entity) : null;
     const targetFw = this._config.ota_target_version_entity ? this._state(this._config.ota_target_version_entity) : null;
     const showUpdateBanner = updateAvailable && !otaInProgress;
@@ -2182,6 +2212,49 @@ class WaterTankCard extends HTMLElement {
       .notice .msg {
         font-weight: 800;
         font-size: 16px;
+      }
+      .otaRow {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px;
+        border-radius: 12px;
+        background: rgba(0,0,0,0.06);
+        margin-top: 10px;
+      }
+      .otaRow ha-icon {
+        --mdc-icon-size: 18px;
+      }
+      .otaText {
+        flex: 1;
+        font-size: 13px;
+        font-weight: 700;
+      }
+      .otaPct {
+        font-size: 12px;
+        font-weight: 800;
+        opacity: 0.8;
+      }
+      .otaBar {
+        height: 4px;
+        border-radius: 999px;
+        background: rgba(0,0,0,0.08);
+        overflow: hidden;
+        margin-top: 6px;
+      }
+      .otaBarFill {
+        height: 100%;
+        background: var(--primary-color);
+        width: 0;
+        transition: width 0.2s ease;
+      }
+      .otaBarFill--ind {
+        width: 40%;
+        animation: otaIndeterminate 1.2s infinite;
+      }
+      @keyframes otaIndeterminate {
+        0% { transform: translateX(-60%); }
+        100% { transform: translateX(160%); }
       }
       .rawLine {
         font-size: 13px;
@@ -2625,6 +2698,8 @@ class WaterTankCard extends HTMLElement {
         ${updateBanner}
 
         <div class="rawLine">Raw: ${this._safeText(raw)}</div>
+
+        ${otaInline}
 
         <div class="footer">
           <div class="warn">
