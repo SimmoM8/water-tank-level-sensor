@@ -1,9 +1,6 @@
 {
   "version": "1.0.0",
-  "firmware_url": "https://github.com/SimmoM8/water-tank-level-sensor/releases/download/v1.0.0/firmware.bin",
+  "url": "https://github.com/SimmoM8/water-tank-level-sensor/releases/download/v1.0.0/firmware.bin",
   "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-  "size": 0,
-  "release_notes": "Placeholder for initial stable release. Update this manifest when publishing your first firmware version.",
-  "min_supported_version": "0.9.0",
-  "release_date": "2026-01-01T00:00:00Z"
+  "notes": "Placeholder for initial stable release. Update this manifest when publishing your first firmware version."
 }
