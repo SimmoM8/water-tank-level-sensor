@@ -9,7 +9,75 @@
 // Returns true only if the JSON is fully serialized and non-empty.
 bool buildStateJson(const DeviceState &s, char *outBuf, size_t outSize)
 {
-    static constexpr size_t kStateJsonCapacity = 4096;
+    // Capacity rationale (ArduinoJson v6):
+    // - Objects created by dotted paths: root + device + wifi + mqtt + probe + calibration + level + config + ota + ota.active + ota.result + last_cmd = 12
+    // - Leaf keys (worst case): 51 (schema/ts/device/.../last_cmd.*)
+    // - String pool: conservative sum of max field sizes + enum labels + key bytes headroom.
+    static constexpr size_t kRootMembers = 20;
+    static constexpr size_t kDeviceMembers = 3;
+    static constexpr size_t kWifiMembers = 2;
+    static constexpr size_t kMqttMembers = 1;
+    static constexpr size_t kProbeMembers = 4;
+    static constexpr size_t kCalibrationMembers = 5;
+    static constexpr size_t kLevelMembers = 6;
+    static constexpr size_t kConfigMembers = 4;
+    static constexpr size_t kOtaMembers = 4;
+    static constexpr size_t kOtaActiveMembers = 5;
+    static constexpr size_t kOtaResultMembers = 3;
+    static constexpr size_t kLastCmdMembers = 5;
+
+    static constexpr size_t kJsonObjectCapacity =
+        JSON_OBJECT_SIZE(kRootMembers) +
+        JSON_OBJECT_SIZE(kDeviceMembers) +
+        JSON_OBJECT_SIZE(kWifiMembers) +
+        JSON_OBJECT_SIZE(kMqttMembers) +
+        JSON_OBJECT_SIZE(kProbeMembers) +
+        JSON_OBJECT_SIZE(kCalibrationMembers) +
+        JSON_OBJECT_SIZE(kLevelMembers) +
+        JSON_OBJECT_SIZE(kConfigMembers) +
+        JSON_OBJECT_SIZE(kOtaMembers) +
+        JSON_OBJECT_SIZE(kOtaActiveMembers) +
+        JSON_OBJECT_SIZE(kOtaResultMembers) +
+        JSON_OBJECT_SIZE(kLastCmdMembers);
+
+    // Conservative maxima for string fields (buffers include NUL in DeviceState; over-allocating is ok).
+    static constexpr size_t kMaxDeviceId = 32;
+    static constexpr size_t kMaxDeviceName = 32;
+    static constexpr size_t kMaxDeviceFw = DEVICE_FW_VERSION_MAX;
+    static constexpr size_t kMaxWifiIp = 16;
+    static constexpr size_t kMaxEnumStr = 32; // longest enum label e.g. "unreliable_rapid_fluctuation"
+    static constexpr size_t kMaxLastCmdId = 40;
+    static constexpr size_t kMaxLastCmdType = 24;
+    static constexpr size_t kMaxLastCmdMsg = 64;
+
+    static constexpr size_t kJsonStringCapacity =
+        JSON_STRING_SIZE(kMaxDeviceId) +
+        JSON_STRING_SIZE(kMaxDeviceName) +
+        JSON_STRING_SIZE(kMaxDeviceFw) +
+        JSON_STRING_SIZE(DEVICE_FW_VERSION_MAX) +   // fw_version
+        JSON_STRING_SIZE(DEVICE_FW_VERSION_MAX) +   // installed_version
+        JSON_STRING_SIZE(OTA_TARGET_VERSION_MAX) +  // latest_version / ota_target_version
+        JSON_STRING_SIZE(kMaxWifiIp) +
+        JSON_STRING_SIZE(kMaxEnumStr) +             // probe.quality
+        JSON_STRING_SIZE(kMaxEnumStr) +             // calibration.state
+        JSON_STRING_SIZE(kMaxEnumStr) +             // config.sense_mode
+        JSON_STRING_SIZE(OTA_STATE_MAX) +
+        JSON_STRING_SIZE(OTA_ERROR_MAX) +
+        JSON_STRING_SIZE(OTA_TARGET_VERSION_MAX) +
+        JSON_STRING_SIZE(kMaxEnumStr) +             // ota.status
+        JSON_STRING_SIZE(OTA_REQUEST_ID_MAX) +
+        JSON_STRING_SIZE(OTA_VERSION_MAX) +
+        JSON_STRING_SIZE(OTA_URL_MAX) +
+        JSON_STRING_SIZE(OTA_SHA256_MAX) +
+        JSON_STRING_SIZE(OTA_STATUS_MAX) +
+        JSON_STRING_SIZE(OTA_MESSAGE_MAX) +
+        JSON_STRING_SIZE(kMaxLastCmdId) +
+        JSON_STRING_SIZE(kMaxLastCmdType) +
+        JSON_STRING_SIZE(kMaxEnumStr) +             // last_cmd.status
+        JSON_STRING_SIZE(kMaxLastCmdMsg);
+
+    static constexpr size_t kJsonKeyBytes = 512; // ~51 keys * avg 10 bytes + headroom
+    static constexpr size_t kStateJsonCapacity = kJsonObjectCapacity + kJsonStringCapacity + kJsonKeyBytes;
     static constexpr size_t kMinJsonSize = 4; // "{}" + NUL
     static constexpr uint32_t kWarnThrottleMs = 5000;
     static constexpr uint32_t kPreviewThrottleMs = 5000;
@@ -38,19 +106,23 @@ bool buildStateJson(const DeviceState &s, char *outBuf, size_t outSize)
         }
     }
 
-    const size_t written = serializeJson(doc, outBuf, outSize);
+    const size_t required = measureJson(doc);
+    const bool fits = (required + 1) <= outSize;
+    const size_t written = fits ? serializeJson(doc, outBuf, outSize) : 0;
     const bool emptyRoot = root.isNull() || root.size() == 0;
     const bool overflowed = doc.overflowed();
-    const bool ok = (meaningfulWrites > 0) && (written > 2) && (written < outSize) && !overflowed;
+    const bool ok = (meaningfulWrites > 0) && (required > 2) && fits && (written == required) && !overflowed;
     if (!ok)
     {
         outBuf[0] = '\0';
         logger_logEvery("state_json_build_failed", kWarnThrottleMs, LogLevel::WARN, LogDomain::MQTT,
-                        "State JSON build failed bytes=%u outSize=%u fields=%u writes=%u empty_root=%s overflowed=%s",
+                        "State JSON build failed bytes=%u required=%u outSize=%u fields=%u writes=%u jsonCapacity=%u empty_root=%s overflowed=%s",
                         (unsigned)written,
+                        (unsigned)required,
                         (unsigned)outSize,
                         (unsigned)fieldsCount,
                         (unsigned)meaningfulWrites,
+                        (unsigned)kStateJsonCapacity,
                         emptyRoot ? "true" : "false",
                         overflowed ? "true" : "false");
         return false;
