@@ -38,6 +38,12 @@ const OPTIONAL_ENTITY_KEYS = [
   "calibrate_wet_entity",
   "clear_calibration_entity",
   "wipe_wifi_entity",
+  "ota_pull_entity",
+  "ota_state_entity",
+  "ota_progress_entity",
+  "ota_last_status_entity",
+  "ota_last_message_entity",
+  "update_available_entity",
   "simulation_mode_entity",
   "sense_mode_entity",
   "cal_dry_value_entity",
@@ -63,6 +69,12 @@ const UNIQUE_ID_SUFFIX_MAP = {
   calibrate_wet_entity: ["_calibrate_wet"],
   clear_calibration_entity: ["_clear_calibration"],
   wipe_wifi_entity: ["_wipe_wifi"],
+  ota_pull_entity: ["_ota_pull"],
+  ota_state_entity: ["_ota_state"],
+  ota_progress_entity: ["_ota_progress"],
+  ota_last_status_entity: ["_ota_last_status"],
+  ota_last_message_entity: ["_ota_last_message"],
+  update_available_entity: ["_update_available"],
   simulation_mode_entity: ["_simulation_mode"],
   sense_mode_entity: ["_sense_mode"],
   cal_dry_value_entity: ["_cal_dry"],
@@ -88,6 +100,12 @@ const ENTITY_MATCH_RULES = {
   calibrate_wet_entity: { domains: ["button"], entitySuffixes: ["_calibrate_wet"] },
   clear_calibration_entity: { domains: ["button"], entitySuffixes: ["_clear_calibration"] },
   wipe_wifi_entity: { domains: ["button"], entitySuffixes: ["_wipe_wifi"] },
+  ota_pull_entity: { domains: ["button"], entitySuffixes: ["_ota_pull"] },
+  ota_state_entity: { domains: ["sensor"], entitySuffixes: ["_ota_state"] },
+  ota_progress_entity: { domains: ["sensor"], entitySuffixes: ["_ota_progress"] },
+  ota_last_status_entity: { domains: ["sensor"], entitySuffixes: ["_ota_last_status"] },
+  ota_last_message_entity: { domains: ["sensor"], entitySuffixes: ["_ota_last_message"] },
+  update_available_entity: { domains: ["binary_sensor"], entitySuffixes: ["_update_available"] },
   simulation_mode_entity: { domains: ["select", "input_select"], entitySuffixes: ["_simulation_mode"] },
   sense_mode_entity: { domains: ["select", "input_select"], entitySuffixes: ["_sense_mode"] },
   cal_dry_value_entity: { domains: ["sensor", "number", "input_number"], entitySuffixes: ["_cal_dry"] },
@@ -200,6 +218,12 @@ class WaterTankCard extends HTMLElement {
       calibrate_wet_entity: null,
       clear_calibration_entity: null,
       wipe_wifi_entity: null,
+      ota_pull_entity: null,
+      ota_state_entity: null,
+      ota_progress_entity: null,
+      ota_last_status_entity: null,
+      ota_last_message_entity: null,
+      update_available_entity: null,
 
       // simulation controls (optional)
       simulation_mode_entity: null,
@@ -503,6 +527,12 @@ class WaterTankCard extends HTMLElement {
     if (s === null || s === undefined) return true;
     const v = String(s).trim().toLowerCase();
     return v === "unknown" || v === "unavailable" || v === "none";
+  }
+
+  _isOtaBusyValue(value) {
+    if (this._isUnknownState(value)) return false;
+    const v = String(value).trim().toLowerCase();
+    return v === "downloading" || v === "verifying" || v === "applying" || v === "rebooting";
   }
 
   _safeText(v, fallback = "—") {
@@ -1195,6 +1225,39 @@ class WaterTankCard extends HTMLElement {
       .map((l) => `<div class="wt-diag-row"><span>${l.label}</span><b>${l.value}</b></div>`)
       .join("");
 
+    const otaState = this._config.ota_state_entity ? this._state(this._config.ota_state_entity) : null;
+    const otaBusy = this._isOtaBusyValue(otaState);
+    const otaProgressVal = this._config.ota_progress_entity ? this._num(this._config.ota_progress_entity) : null;
+    const otaProgressLabel = otaProgressVal === null ? "—" : `${this._formatNumber(otaProgressVal, 0)}%`;
+    const otaLastStatus = this._config.ota_last_status_entity ? this._state(this._config.ota_last_status_entity) : null;
+    const otaLastMessage = this._config.ota_last_message_entity ? this._state(this._config.ota_last_message_entity) : null;
+    const updateAvailableState = this._config.update_available_entity ? this._state(this._config.update_available_entity) : null;
+    const updateAvailableLabel = this._boolLabelFromState(updateAvailableState, "Yes", "No");
+    const otaButtonDisabled = !online || otaBusy || !this._config.ota_pull_entity;
+    const hasOtaSection =
+      !!(this._config.ota_pull_entity ||
+        this._config.ota_state_entity ||
+        this._config.ota_progress_entity ||
+        this._config.ota_last_status_entity ||
+        this._config.ota_last_message_entity ||
+        this._config.update_available_entity);
+    const otaSection = hasOtaSection ? `
+      <div class="wt-section">
+        <div class="wt-section-sub" style="margin-bottom:8px;">OTA Update</div>
+        <div class="wt-diag-list">
+          <div class="wt-diag-row"><span>Update available</span><b>${this._safeText(updateAvailableLabel)}</b></div>
+          <div class="wt-diag-row"><span>State</span><b>${this._safeText(otaState)}</b></div>
+          <div class="wt-diag-row"><span>Progress</span><b>${otaProgressLabel}</b></div>
+          <div class="wt-diag-row"><span>Last status</span><b>${this._safeText(otaLastStatus)}</b></div>
+          <div class="wt-diag-row"><span>Last message</span><b>${this._safeText(otaLastMessage)}</b></div>
+        </div>
+        <div class="wt-setup-input" style="margin-top:10px;">
+          <button class="wt-btn" id="btnOtaUpdate" data-entity="${this._config.ota_pull_entity || ""}" ${otaButtonDisabled ? "disabled" : ""}>
+            Update now
+          </button>
+        </div>
+      </div>` : "";
+
     const advancedPage = `
       <div class="wt-modal-header">
         <button class="wt-link wt-modal-back"><ha-icon icon="mdi:chevron-left"></ha-icon><span>Back</span></button>
@@ -1242,6 +1305,7 @@ class WaterTankCard extends HTMLElement {
         <div class="wt-section-sub" style="margin-bottom:8px;">Diagnostics</div>
         <div class="wt-diag-list">${diagnosticsHtml}</div>
       </div>
+      ${otaSection}
       ${this._config.wipe_wifi_entity ? `
       <div class="wt-section">
         <div class="wt-section-sub" style="margin-bottom:8px;">Maintenance</div>
@@ -1403,6 +1467,18 @@ class WaterTankCard extends HTMLElement {
         if (!ok) return;
         this._showToast("Wiping WiFi credentials…", "warning", TOAST_RESULT_MS);
         pressButton(this._config.wipe_wifi_entity);
+      };
+    }
+    const otaBtn = sr.getElementById("btnOtaUpdate");
+    if (otaBtn) {
+      otaBtn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (otaBtn.disabled) return;
+        const entityId = otaBtn.dataset.entity;
+        if (!entityId) return;
+        this._showToast("Starting OTA update…", "info", TOAST_RESULT_MS);
+        pressButton(entityId);
       };
     }
 
