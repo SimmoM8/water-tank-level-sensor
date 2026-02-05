@@ -10,6 +10,7 @@
 #include <ArduinoJson.h>
 #include <string.h>
 #include "domain_strings.h"
+#include "mqtt_transport.h"
 
 #ifdef __has_include
 #if __has_include("config.h")
@@ -160,12 +161,28 @@ static void ota_setResult(DeviceState *state, const char *status, const char *me
     state->ota.completed_ts = (uint32_t)(millis() / 1000);
 }
 
+static inline void ota_requestPublish()
+{
+    mqtt_requestStatePublish();
+}
+
 static inline void ota_setProgress(DeviceState *state, uint8_t progress)
 {
     if (!state)
         return;
     state->ota.progress = progress;
     state->ota_progress = progress;
+}
+
+static void ota_clearActive(DeviceState *state)
+{
+    if (!state)
+        return;
+    state->ota.request_id[0] = '\0';
+    state->ota.version[0] = '\0';
+    state->ota.url[0] = '\0';
+    state->ota.sha256[0] = '\0';
+    state->ota.started_ts = 0;
 }
 
 static void ota_setFlat(DeviceState *state,
@@ -206,6 +223,8 @@ static void ota_markFailed(DeviceState *state, const char *reason)
     state->ota.status = OtaStatus::ERROR;
     ota_setResult(state, "error", reason ? reason : "error");
     ota_setFlat(state, "failed", 0, reason ? reason : "error", state->ota.version, true);
+    ota_clearActive(state);
+    ota_requestPublish();
 }
 
 bool ota_pullStart(DeviceState *state,
@@ -250,6 +269,7 @@ bool ota_pullStart(DeviceState *state,
         ota_setResult(state, "success", "noop_already_on_version");
         ota_setFlat(state, "success", 100, "", version ? version : "", true);
         state->update_available = false;
+        ota_requestPublish();
         setErr(errBuf, errBufLen, "noop");
         return true;
     }
@@ -566,6 +586,8 @@ static void ota_abort(DeviceState *state, const char *reason)
         state->ota.status = OtaStatus::ERROR;
         ota_setResult(state, "error", reason ? reason : "error");
         ota_setFlat(state, "failed", state->ota.progress, reason ? reason : "error", state->ota.version, true);
+        ota_clearActive(state);
+        ota_requestPublish();
     }
 
     if (g_job.updateBegun)
@@ -598,6 +620,7 @@ static void ota_finishSuccess(DeviceState *state)
         ota_setResult(state, "success", "applied");
         ota_setFlat(state, "success", 100, "", state->ota.version, true);
         state->update_available = false;
+        ota_requestPublish();
     }
 
     if (g_job.httpBegun)
@@ -726,6 +749,7 @@ void ota_tick(DeviceState *state)
         {
             state->ota.status = OtaStatus::DOWNLOADING;
             ota_setFlat(state, "downloading", 0, "", nullptr, false);
+            ota_requestPublish();
         }
 
         g_job.lastProgressMs = millis();
@@ -809,6 +833,7 @@ void ota_tick(DeviceState *state)
             // unknown total size
             ota_setProgress(state, 255); // use 255 to indicate indeterminate progress
         }
+        ota_requestPublish();
     }
 
     // Detect end of download
@@ -843,6 +868,7 @@ void ota_tick(DeviceState *state)
     {
         state->ota.status = OtaStatus::VERIFYING;
         ota_setFlat(state, "verifying", state->ota.progress, nullptr, nullptr, false);
+        ota_requestPublish();
     }
 
     if (g_job.bytesWritten < OTA_MIN_BYTES)
@@ -899,6 +925,7 @@ void ota_tick(DeviceState *state)
     {
         state->ota.status = OtaStatus::APPLYING;
         ota_setFlat(state, "applying", state->ota.progress, nullptr, nullptr, false);
+        ota_requestPublish();
     }
 
     bool okEnd = Update.end(true);
