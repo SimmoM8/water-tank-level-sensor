@@ -50,6 +50,8 @@ const OPTIONAL_ENTITY_KEYS = [
   "cal_wet_value_entity",
   "cal_dry_set_entity",
   "cal_wet_set_entity",
+  "fw_version_entity",
+  "ota_target_version_entity",
 ];
 
 // Expected unique_id suffixes (or contains) for each logical key.
@@ -81,6 +83,8 @@ const UNIQUE_ID_SUFFIX_MAP = {
   cal_wet_value_entity: ["_cal_wet"],
   cal_dry_set_entity: ["_cal_dry_set"],
   cal_wet_set_entity: ["_cal_wet_set"],
+  fw_version_entity: ["_fw_version"],
+  ota_target_version_entity: ["_ota_target_version"],
 };
 
 // Matching rules per logical key (domains and entity_id fallbacks).
@@ -112,6 +116,8 @@ const ENTITY_MATCH_RULES = {
   cal_wet_value_entity: { domains: ["sensor", "number", "input_number"], entitySuffixes: ["_cal_wet"] },
   cal_dry_set_entity: { domains: ["number", "input_number"], entitySuffixes: ["_cal_dry_set"] },
   cal_wet_set_entity: { domains: ["number", "input_number"], entitySuffixes: ["_cal_wet_set"] },
+  fw_version_entity: { domains: ["sensor"], entitySuffixes: ["_fw_version"] },
+  ota_target_version_entity: { domains: ["sensor"], entitySuffixes: ["_ota_target_version"] },
 };
 
 // Cache resolved configs per device_id to avoid repeated websocket queries.
@@ -188,6 +194,7 @@ class WaterTankCard extends HTMLElement {
     this._suspendRender = false;
     this._deferredRender = false;
     this._deferTimer = null;
+    this._scrollToOta = false;
     this._renderDeferMs = 350;
     this._lastInteractionAt = 0;
     this._draft = {
@@ -224,6 +231,8 @@ class WaterTankCard extends HTMLElement {
       ota_last_status_entity: null,
       ota_last_message_entity: null,
       update_available_entity: null,
+      fw_version_entity: null,
+      ota_target_version_entity: null,
 
       // simulation controls (optional)
       simulation_mode_entity: null,
@@ -1242,7 +1251,7 @@ class WaterTankCard extends HTMLElement {
         this._config.ota_last_message_entity ||
         this._config.update_available_entity);
     const otaSection = hasOtaSection ? `
-      <div class="wt-section">
+      <div class="wt-section" id="ota-section">
         <div class="wt-section-sub" style="margin-bottom:8px;">OTA Update</div>
         <div class="wt-diag-list">
           <div class="wt-diag-row"><span>Update available</span><b>${this._safeText(updateAvailableLabel)}</b></div>
@@ -1953,6 +1962,26 @@ class WaterTankCard extends HTMLElement {
       : false;
     const probeState = this._state(this._config.probe_entity);
 
+    const updateAvailableState = this._config.update_available_entity ? this._state(this._config.update_available_entity) : null;
+    const updateAvailable = this._isTruthyState(updateAvailableState);
+    const otaState = this._config.ota_state_entity ? this._state(this._config.ota_state_entity) : null;
+    const otaStateLower = otaState ? String(otaState).trim().toLowerCase() : "";
+    const otaInProgress = otaStateLower === "downloading" || otaStateLower === "verifying" || otaStateLower === "applying";
+    const currentFw = this._config.fw_version_entity ? this._state(this._config.fw_version_entity) : null;
+    const targetFw = this._config.ota_target_version_entity ? this._state(this._config.ota_target_version_entity) : null;
+    const showUpdateBanner = updateAvailable && !otaInProgress;
+    const showVersionLine = !this._isUnknownState(currentFw) && !this._isUnknownState(targetFw);
+    const versionLine = showVersionLine ? `${this._safeText(currentFw, "")} → ${this._safeText(targetFw, "")}` : "";
+    const updateBanner = showUpdateBanner ? `
+      <div class="notice" id="otaBanner" role="button" tabindex="0" style="cursor:pointer;">
+        <div>
+          <div class="msg">Update available</div>
+          ${versionLine ? `<div style="font-size:12px;opacity:0.7;">${versionLine}</div>` : ``}
+        </div>
+        <ha-icon icon="mdi:chevron-right" style="margin-left:auto;"></ha-icon>
+      </div>
+    ` : "";
+
     const css = `
       :host { display:block; }
       ha-card {
@@ -2593,6 +2622,8 @@ class WaterTankCard extends HTMLElement {
           </div>
         </div>
 
+        ${updateBanner}
+
         <div class="rawLine">Raw: ${this._safeText(raw)}</div>
 
         <div class="footer">
@@ -2650,6 +2681,23 @@ class WaterTankCard extends HTMLElement {
       };
     }
 
+    const otaBanner = this.shadowRoot.getElementById("otaBanner");
+    if (otaBanner) {
+      otaBanner.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this._scrollToOta = true;
+        this._openModal("advanced");
+      };
+      otaBanner.onkeydown = (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          this._scrollToOta = true;
+          this._openModal("advanced");
+        }
+      };
+    }
+
     this._bindModalHandlers();
 
     if (this._modalOpen && this.shadowRoot) {
@@ -2665,6 +2713,13 @@ class WaterTankCard extends HTMLElement {
         const focusId = this._focusAfterRender || modalFocusId;
         const selection = focusId === modalFocusId ? modalFocusSelection : null;
         this._focusAfterRender = null;
+        if (this._scrollToOta) {
+          this._scrollToOta = false;
+          const otaAnchor = this.shadowRoot.getElementById("ota-section");
+          if (otaAnchor && typeof otaAnchor.scrollIntoView === "function") {
+            otaAnchor.scrollIntoView({ behavior: "auto", block: "start" });
+          }
+        }
         if (focusId) {
           const focusEl = this.shadowRoot.getElementById(focusId);
           if (focusEl && typeof focusEl.focus === "function") {
