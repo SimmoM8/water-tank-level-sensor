@@ -2,7 +2,6 @@
 #include <ArduinoJson.h>
 #include <string.h>
 #include "telemetry_registry.h"
-#include "domain_strings.h"
 #include "logger.h"
 
 // Contract: outBuf must be non-null; outSize must allow at least "{}\\0".
