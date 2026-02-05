@@ -61,6 +61,7 @@ struct DeviceInfo
 {
     const char *id;
     const char *name;
+    // Canonical installed firmware version (used for OTA comparisons).
     const char *fw;
 };
 
@@ -154,6 +155,8 @@ struct DeviceState
     uint32_t ts; // epoch seconds if you have it; otherwise millis()/1000 is ok
 
     DeviceInfo device;
+    // Mirror of device.fw for telemetry safety (stable, null-terminated buffer).
+    // Keep in sync with device.fw if firmware version changes.
     char fw_version[DEVICE_FW_VERSION_MAX] = {0};
     WifiInfo wifi;
     MqttInfo mqtt;
@@ -164,11 +167,12 @@ struct DeviceState
     ConfigInfo config;
 
     OtaState ota;
-    char ota_state[OTA_STATE_MAX] = {0};
-    uint8_t ota_progress = 0;
-    char ota_error[OTA_ERROR_MAX] = {0};
-    char ota_target_version[OTA_TARGET_VERSION_MAX] = {0};
-    uint32_t ota_last_ts = 0;
+    // Flat OTA fields for telemetry/HA compatibility (derived or legacy mirrors of ota.*).
+    char ota_state[OTA_STATE_MAX] = {0};              // optional override of ota.status label
+    uint8_t ota_progress = 0;                         // mirror of ota.progress
+    char ota_error[OTA_ERROR_MAX] = {0};              // mirror/summary of ota.result.message
+    char ota_target_version[OTA_TARGET_VERSION_MAX] = {0}; // mirror of ota.version or manifest
+    uint32_t ota_last_ts = 0;                         // mirror of ota.started_ts/completed_ts
     bool update_available = false;
 
     LastCmdInfo lastCmd;
