@@ -4,7 +4,7 @@
  */
 
 const CARD_TAG = "water-tank-card";
-const VERSION = "0.5.9";
+const VERSION = "0.5.10";
 
 // Toast timing (ms)
 const TOAST_RESULT_MS = 2200;

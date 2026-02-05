@@ -158,22 +158,19 @@ No flashing occurs here.
 
 ### Step 2 — OTA Start Command
 
-HA sends a command:
+HA sends a command (typically via MQTT Discovery button or Update entity):
 
 ```json
 {
   "schema": 1,
   "type": "ota_pull",
   "request_id": "uuid",
-  "data": {
-    "mode": "manifest",
-    "reboot": true,
-    "force": false
-  }
+  "data": {}
 }
 ```
 
-HA does **not** provide firmware URLs or hashes unless explicitly commanded.
+If `url`/`sha256` are missing, the device uses the manifest URL from config.  
+Optional flags can be provided (or stored as defaults): `force`, `reboot`.
 
 ---
 
@@ -247,6 +244,24 @@ This allows:
 - Remote debugging
 - Post-mortem analysis
 
+### HA Discovery (What Appears)
+
+Discovery publishes these entities automatically:
+
+- `button.<device>_ota_pull` — triggers OTA pull from manifest
+- `sensor.<device>_ota_state` — string state
+- `sensor.<device>_ota_progress` — 0–100
+- `sensor.<device>_ota_error` — last error string (if any)
+- `sensor.<device>_ota_target_version` — latest/target version
+- `sensor.<device>_ota_last_ts` — last OTA timestamp
+- `sensor.<device>_ota_last_status` / `sensor.<device>_ota_last_message` — last result info
+- `binary_sensor.<device>_update_available` — update availability
+- `update.<device>_firmware` — HA Update entity (Install triggers `ota_pull`)
+- `switch.<device>_ota_force` — default force flag
+- `switch.<device>_ota_reboot` — default reboot flag
+
+Pressing **Update now** (or the Update entity “Install”) sends `ota_pull` and the device performs the full download/verify/apply flow.
+
 ---
 
 ## 9. Why This Is Future-Proof
@@ -285,3 +300,16 @@ That rule resolves most design questions.
 - OTA is a system, not a feature
 
 End of document.
+
+---
+
+## Troubleshooting (Common Failures)
+
+- `http_handshake_timeout` / `http_begin_failed`: TLS handshake or URL failed. Check Wi‑Fi, clock/time, and CA cert (`ota_ca_cert.h`).
+- `http_<code>`: HTTP error code from host (404, 403, 429, etc). Confirm release URL and access.
+- `bad_content_type` / `content_too_small`: host returned HTML/JSON or tiny body (often rate-limit or error page).
+- `sha256_mismatch`: manifest SHA does not match firmware.bin (bad upload or wrong hash).
+- `download_timeout`: no download progress for 60s.
+- `update_end_failed_<code>`: flash write failed; check partition size and free space.
+
+The device continues running the previous firmware on any failure.
