@@ -2,43 +2,36 @@
 #include <string.h>
 #include "domain_strings.h"
 
-// Split dotted path into parent path and leaf key.
-static void splitPath(const char *full, char *parentOut, size_t parentLen, char *leafOut, size_t leafLen)
+static constexpr size_t kPathSegMax = 32;
+
+static bool writeAtPath(JsonObject &root, const char *dottedPath, const char *value, bool allowEmpty = true)
 {
-    const char *dot = strrchr(full, '.');
-    if (!dot)
-    {
-        parentOut[0] = '\0';
-        strncpy(leafOut, full, leafLen);
-        leafOut[leafLen - 1] = '\0';
-        return;
-    }
+    if (!dottedPath || dottedPath[0] == '\0')
+        return false;
+    const char *v = value ? value : "";
+    if (!allowEmpty && v[0] == '\0')
+        return false;
 
-    size_t parentSize = (size_t)(dot - full);
-    if (parentSize >= parentLen)
-        parentSize = parentLen - 1;
-    memcpy(parentOut, full, parentSize);
-    parentOut[parentSize] = '\0';
-
-    strncpy(leafOut, dot + 1, leafLen);
-    leafOut[leafLen - 1] = '\0';
-}
-
-// Ensure a JsonObject exists at the given dotted path; return that object.
-static JsonObject ensureObject(JsonObject root, const char *path)
-{
     JsonObject obj = root;
-    const char *p = path;
-
+    const char *p = dottedPath;
     while (p && *p)
     {
         const char *dot = strchr(p, '.');
-        char key[32];
         size_t len = dot ? (size_t)(dot - p) : strlen(p);
+        if (len == 0)
+            return false;
+
+        char key[kPathSegMax];
         if (len >= sizeof(key))
             len = sizeof(key) - 1;
         memcpy(key, p, len);
         key[len] = '\0';
+
+        if (!dot)
+        {
+            obj[key] = v;
+            return true;
+        }
 
         JsonVariant child = obj[key];
         if (!child.is<JsonObject>())
@@ -46,224 +39,282 @@ static JsonObject ensureObject(JsonObject root, const char *path)
             child = obj.createNestedObject(key);
         }
         obj = child.as<JsonObject>();
-
-        if (!dot)
-            break;
         p = dot + 1;
     }
 
-    return obj;
+    return false;
+}
+
+static bool writeAtPath(JsonObject &root, const char *dottedPath, uint32_t value)
+{
+    if (!dottedPath || dottedPath[0] == '\0')
+        return false;
+    JsonObject obj = root;
+    const char *p = dottedPath;
+    while (p && *p)
+    {
+        const char *dot = strchr(p, '.');
+        size_t len = dot ? (size_t)(dot - p) : strlen(p);
+        if (len == 0)
+            return false;
+
+        char key[kPathSegMax];
+        if (len >= sizeof(key))
+            len = sizeof(key) - 1;
+        memcpy(key, p, len);
+        key[len] = '\0';
+
+        if (!dot)
+        {
+            obj[key] = value;
+            return true;
+        }
+
+        JsonVariant child = obj[key];
+        if (!child.is<JsonObject>())
+        {
+            child = obj.createNestedObject(key);
+        }
+        obj = child.as<JsonObject>();
+        p = dot + 1;
+    }
+    return false;
+}
+
+static bool writeAtPath(JsonObject &root, const char *dottedPath, int32_t value)
+{
+    if (!dottedPath || dottedPath[0] == '\0')
+        return false;
+    JsonObject obj = root;
+    const char *p = dottedPath;
+    while (p && *p)
+    {
+        const char *dot = strchr(p, '.');
+        size_t len = dot ? (size_t)(dot - p) : strlen(p);
+        if (len == 0)
+            return false;
+
+        char key[kPathSegMax];
+        if (len >= sizeof(key))
+            len = sizeof(key) - 1;
+        memcpy(key, p, len);
+        key[len] = '\0';
+
+        if (!dot)
+        {
+            obj[key] = value;
+            return true;
+        }
+
+        JsonVariant child = obj[key];
+        if (!child.is<JsonObject>())
+        {
+            child = obj.createNestedObject(key);
+        }
+        obj = child.as<JsonObject>();
+        p = dot + 1;
+    }
+    return false;
+}
+
+static bool writeAtPath(JsonObject &root, const char *dottedPath, float value)
+{
+    if (!dottedPath || dottedPath[0] == '\0')
+        return false;
+    JsonObject obj = root;
+    const char *p = dottedPath;
+    while (p && *p)
+    {
+        const char *dot = strchr(p, '.');
+        size_t len = dot ? (size_t)(dot - p) : strlen(p);
+        if (len == 0)
+            return false;
+
+        char key[kPathSegMax];
+        if (len >= sizeof(key))
+            len = sizeof(key) - 1;
+        memcpy(key, p, len);
+        key[len] = '\0';
+
+        if (!dot)
+        {
+            obj[key] = value;
+            return true;
+        }
+
+        JsonVariant child = obj[key];
+        if (!child.is<JsonObject>())
+        {
+            child = obj.createNestedObject(key);
+        }
+        obj = child.as<JsonObject>();
+        p = dot + 1;
+    }
+    return false;
+}
+
+static bool writeAtPath(JsonObject &root, const char *dottedPath, bool value)
+{
+    if (!dottedPath || dottedPath[0] == '\0')
+        return false;
+    JsonObject obj = root;
+    const char *p = dottedPath;
+    while (p && *p)
+    {
+        const char *dot = strchr(p, '.');
+        size_t len = dot ? (size_t)(dot - p) : strlen(p);
+        if (len == 0)
+            return false;
+
+        char key[kPathSegMax];
+        if (len >= sizeof(key))
+            len = sizeof(key) - 1;
+        memcpy(key, p, len);
+        key[len] = '\0';
+
+        if (!dot)
+        {
+            obj[key] = value;
+            return true;
+        }
+
+        JsonVariant child = obj[key];
+        if (!child.is<JsonObject>())
+        {
+            child = obj.createNestedObject(key);
+        }
+        obj = child.as<JsonObject>();
+        p = dot + 1;
+    }
+    return false;
 }
 
 // Writers
-static void write_schema(const DeviceState &, JsonObject &root)
+static bool write_schema(const DeviceState &, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("schema", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = (parent[0] == '\0') ? root : ensureObject(root, parent);
-    obj[leaf] = STATE_SCHEMA_VERSION;
+    return writeAtPath(root, "schema", (uint32_t)STATE_SCHEMA_VERSION);
 }
 
-static void write_ts(const DeviceState &s, JsonObject &root)
+static bool write_ts(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("ts", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = (parent[0] == '\0') ? root : ensureObject(root, parent);
-    obj[leaf] = s.ts;
+    return writeAtPath(root, "ts", s.ts);
 }
 
-static void write_device(const DeviceState &s, JsonObject &root)
+static bool write_device(const DeviceState &s, JsonObject &root)
 {
-    JsonObject o = ensureObject(root, "device");
-    o["id"] = s.device.id;
-    o["name"] = s.device.name;
-    o["fw"] = s.device.fw;
+    bool wrote = false;
+    wrote |= writeAtPath(root, "device.id", s.device.id, true);
+    wrote |= writeAtPath(root, "device.name", s.device.name, true);
+    wrote |= writeAtPath(root, "device.fw", s.device.fw, true);
+    return wrote;
 }
 
-static void write_wifi(const DeviceState &s, JsonObject &root)
+static bool write_wifi(const DeviceState &s, JsonObject &root)
 {
-    JsonObject o = ensureObject(root, "wifi");
-    o["rssi"] = s.wifi.rssi;
-    o["ip"] = s.wifi.ip;
+    bool wrote = false;
+    wrote |= writeAtPath(root, "wifi.rssi", s.wifi.rssi);
+    wrote |= writeAtPath(root, "wifi.ip", s.wifi.ip, true);
+    return wrote;
 }
 
-static void write_mqtt(const DeviceState &s, JsonObject &root)
+static bool write_mqtt(const DeviceState &s, JsonObject &root)
 {
-    JsonObject o = ensureObject(root, "mqtt");
-    o["connected"] = s.mqtt.connected;
+    return writeAtPath(root, "mqtt.connected", s.mqtt.connected);
 }
 
-static void write_probe_connected(const DeviceState &s, JsonObject &root)
+static bool write_probe_connected(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("probe.connected", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = ensureObject(root, parent);
-    obj[leaf] = s.probe.connected;
+    return writeAtPath(root, "probe.connected", s.probe.connected);
 }
 
-static void write_probe_quality(const DeviceState &s, JsonObject &root)
+static bool write_probe_quality(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("probe.quality", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = ensureObject(root, parent);
-    obj[leaf] = toString(s.probe.quality);
+    return writeAtPath(root, "probe.quality", toString(s.probe.quality), true);
 }
 
-static void write_probe_raw(const DeviceState &s, JsonObject &root)
+static bool write_probe_raw(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("probe.raw", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = ensureObject(root, parent);
-    obj[leaf] = s.probe.raw;
+    return writeAtPath(root, "probe.raw", s.probe.raw);
 }
 
-static void write_probe_raw_valid(const DeviceState &s, JsonObject &root)
+static bool write_probe_raw_valid(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("probe.raw_valid", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = ensureObject(root, parent);
-    obj[leaf] = s.probe.rawValid;
+    return writeAtPath(root, "probe.raw_valid", s.probe.rawValid);
 }
 
-static void write_cal_state(const DeviceState &s, JsonObject &root)
+static bool write_cal_state(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("calibration.state", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = ensureObject(root, parent);
-    obj[leaf] = toString(s.calibration.state);
+    return writeAtPath(root, "calibration.state", toString(s.calibration.state), true);
 }
 
-static void write_cal_dry(const DeviceState &s, JsonObject &root)
+static bool write_cal_dry(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("calibration.dry", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = ensureObject(root, parent);
-    obj[leaf] = s.calibration.dry;
+    return writeAtPath(root, "calibration.dry", s.calibration.dry);
 }
 
-static void write_cal_wet(const DeviceState &s, JsonObject &root)
+static bool write_cal_wet(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("calibration.wet", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = ensureObject(root, parent);
-    obj[leaf] = s.calibration.wet;
+    return writeAtPath(root, "calibration.wet", s.calibration.wet);
 }
 
-static void write_cal_inverted(const DeviceState &s, JsonObject &root)
+static bool write_cal_inverted(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("calibration.inverted", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = ensureObject(root, parent);
-    obj[leaf] = s.calibration.inverted;
+    return writeAtPath(root, "calibration.inverted", s.calibration.inverted);
 }
 
-static void write_cal_min_diff(const DeviceState &s, JsonObject &root)
+static bool write_cal_min_diff(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("calibration.min_diff", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = ensureObject(root, parent);
-    obj[leaf] = s.calibration.minDiff;
+    return writeAtPath(root, "calibration.min_diff", s.calibration.minDiff);
 }
 
-static void write_level_percent(const DeviceState &s, JsonObject &root)
+static bool write_level_percent(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("level.percent", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = ensureObject(root, parent);
-    obj[leaf] = s.level.percent;
+    return writeAtPath(root, "level.percent", s.level.percent);
 }
 
-static void write_level_percent_valid(const DeviceState &s, JsonObject &root)
+static bool write_level_percent_valid(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("level.percent_valid", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = ensureObject(root, parent);
-    obj[leaf] = s.level.percentValid;
+    return writeAtPath(root, "level.percent_valid", s.level.percentValid);
 }
 
-static void write_level_liters(const DeviceState &s, JsonObject &root)
+static bool write_level_liters(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("level.liters", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = ensureObject(root, parent);
-    obj[leaf] = s.level.liters;
+    return writeAtPath(root, "level.liters", s.level.liters);
 }
 
-static void write_level_liters_valid(const DeviceState &s, JsonObject &root)
+static bool write_level_liters_valid(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("level.liters_valid", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = ensureObject(root, parent);
-    obj[leaf] = s.level.litersValid;
+    return writeAtPath(root, "level.liters_valid", s.level.litersValid);
 }
 
-static void write_level_cm(const DeviceState &s, JsonObject &root)
+static bool write_level_cm(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("level.centimeters", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = ensureObject(root, parent);
-    obj[leaf] = s.level.centimeters;
+    return writeAtPath(root, "level.centimeters", s.level.centimeters);
 }
 
-static void write_level_cm_valid(const DeviceState &s, JsonObject &root)
+static bool write_level_cm_valid(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("level.centimeters_valid", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = ensureObject(root, parent);
-    obj[leaf] = s.level.centimetersValid;
+    return writeAtPath(root, "level.centimeters_valid", s.level.centimetersValid);
 }
 
-static void write_config_volume(const DeviceState &s, JsonObject &root)
+static bool write_config_volume(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("config.tank_volume_l", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = ensureObject(root, parent);
-    obj[leaf] = s.config.tankVolumeLiters;
+    return writeAtPath(root, "config.tank_volume_l", s.config.tankVolumeLiters);
 }
 
-static void write_config_rod(const DeviceState &s, JsonObject &root)
+static bool write_config_rod(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("config.rod_length_cm", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = ensureObject(root, parent);
-    obj[leaf] = s.config.rodLengthCm;
+    return writeAtPath(root, "config.rod_length_cm", s.config.rodLengthCm);
 }
 
-static void write_config_sense_mode(const DeviceState &s, JsonObject &root)
+static bool write_config_sense_mode(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("config.sense_mode", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = ensureObject(root, parent);
-    obj[leaf] = toString(s.config.senseMode);
+    return writeAtPath(root, "config.sense_mode", toString(s.config.senseMode), true);
 }
 
-static void write_config_sim_mode(const DeviceState &s, JsonObject &root)
+static bool write_config_sim_mode(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("config.simulation_mode", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = ensureObject(root, parent);
-    obj[leaf] = s.config.simulationMode;
+    return writeAtPath(root, "config.simulation_mode", (uint32_t)s.config.simulationMode);
 }
 
 static const char *ota_state_label(OtaStatus st)
@@ -289,141 +340,104 @@ static const char *ota_state_label(OtaStatus st)
     }
 }
 
-static void write_fw_version(const DeviceState &s, JsonObject &root)
+static bool write_fw_version(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("fw_version", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = (parent[0] == '\0') ? root : ensureObject(root, parent);
     const char *fw = s.fw_version[0] ? s.fw_version : s.device.fw;
-    obj[leaf] = fw ? fw : "";
+    return writeAtPath(root, "fw_version", fw, true);
 }
 
-static void write_installed_version(const DeviceState &s, JsonObject &root)
+static bool write_installed_version(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("installed_version", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = (parent[0] == '\0') ? root : ensureObject(root, parent);
     const char *fw = s.fw_version[0] ? s.fw_version : s.device.fw;
-    obj[leaf] = fw ? fw : "";
+    return writeAtPath(root, "installed_version", fw, true);
 }
 
-static void write_latest_version(const DeviceState &s, JsonObject &root)
+static bool write_latest_version(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("latest_version", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = (parent[0] == '\0') ? root : ensureObject(root, parent);
-    obj[leaf] = s.ota_target_version;
+    return writeAtPath(root, "latest_version", s.ota_target_version, true);
 }
 
-static void write_update_available(const DeviceState &s, JsonObject &root)
+static bool write_update_available(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("update_available", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = (parent[0] == '\0') ? root : ensureObject(root, parent);
-    obj[leaf] = s.update_available;
+    return writeAtPath(root, "update_available", s.update_available);
 }
 
-static void write_ota_state_flat(const DeviceState &s, JsonObject &root)
+static bool write_ota_state_flat(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("ota_state", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = (parent[0] == '\0') ? root : ensureObject(root, parent);
     const char *state = s.ota_state[0] ? s.ota_state : ota_state_label(s.ota.status);
-    obj[leaf] = state;
+    return writeAtPath(root, "ota_state", state, true);
 }
 
-static void write_ota_progress_flat(const DeviceState &s, JsonObject &root)
+static bool write_ota_progress_flat(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("ota_progress", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = (parent[0] == '\0') ? root : ensureObject(root, parent);
-    obj[leaf] = s.ota.progress;
+    return writeAtPath(root, "ota_progress", (uint32_t)s.ota.progress);
 }
 
-static void write_ota_error_flat(const DeviceState &s, JsonObject &root)
+static bool write_ota_error_flat(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("ota_error", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = (parent[0] == '\0') ? root : ensureObject(root, parent);
     if (s.ota_error[0])
     {
-        obj[leaf] = s.ota_error;
-        return;
+        return writeAtPath(root, "ota_error", s.ota_error, true);
     }
-    obj[leaf] = (s.ota.status == OtaStatus::ERROR) ? s.ota.last_message : "";
+    const char *fallback = (s.ota.status == OtaStatus::ERROR) ? s.ota.last_message : "";
+    return writeAtPath(root, "ota_error", fallback, true);
 }
 
-static void write_ota_target_version_flat(const DeviceState &s, JsonObject &root)
+static bool write_ota_target_version_flat(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("ota_target_version", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = (parent[0] == '\0') ? root : ensureObject(root, parent);
     const char *v = s.ota_target_version[0] ? s.ota_target_version : s.ota.version;
-    obj[leaf] = v ? v : "";
+    return writeAtPath(root, "ota_target_version", v, true);
 }
 
-static void write_ota_last_ts_flat(const DeviceState &s, JsonObject &root)
+static bool write_ota_last_ts_flat(const DeviceState &s, JsonObject &root)
 {
-    char parent[32];
-    char leaf[32];
-    splitPath("ota_last_ts", parent, sizeof(parent), leaf, sizeof(leaf));
-    JsonObject obj = (parent[0] == '\0') ? root : ensureObject(root, parent);
     uint32_t ts = s.ota_last_ts;
     if (ts == 0)
     {
         ts = s.ota.completed_ts ? s.ota.completed_ts : s.ota.started_ts;
     }
-    obj[leaf] = ts;
+    return writeAtPath(root, "ota_last_ts", ts);
 }
 
-static void write_ota_status(const DeviceState &s, JsonObject &root)
+static bool write_ota_status(const DeviceState &s, JsonObject &root)
 {
-    JsonObject ota = ensureObject(root, "ota");
-    ota["status"] = toString(s.ota.status);
+    return writeAtPath(root, "ota.status", toString(s.ota.status), true);
 }
 
-static void write_ota_progress(const DeviceState &s, JsonObject &root)
+static bool write_ota_progress(const DeviceState &s, JsonObject &root)
 {
-    JsonObject ota = ensureObject(root, "ota");
-    ota["progress"] = s.ota.progress;
+    return writeAtPath(root, "ota.progress", (uint32_t)s.ota.progress);
 }
 
-static void write_ota_active(const DeviceState &s, JsonObject &root)
+static bool write_ota_active(const DeviceState &s, JsonObject &root)
 {
-    JsonObject active = ensureObject(root, "ota.active");
-
-    active["request_id"] = s.ota.request_id;
-    active["version"] = s.ota.version;
-    active["url"] = s.ota.url;
-    active["sha256"] = s.ota.sha256;
-    active["started_ts"] = s.ota.started_ts;
+    bool wrote = false;
+    wrote |= writeAtPath(root, "ota.active.request_id", s.ota.request_id, true);
+    wrote |= writeAtPath(root, "ota.active.version", s.ota.version, true);
+    wrote |= writeAtPath(root, "ota.active.url", s.ota.url, true);
+    wrote |= writeAtPath(root, "ota.active.sha256", s.ota.sha256, true);
+    wrote |= writeAtPath(root, "ota.active.started_ts", s.ota.started_ts);
+    return wrote;
 }
 
-static void write_ota_result(const DeviceState &s, JsonObject &root)
+static bool write_ota_result(const DeviceState &s, JsonObject &root)
 {
-    JsonObject result = ensureObject(root, "ota.result");
-
-    result["status"] = s.ota.last_status;
-    result["message"] = s.ota.last_message;
-    result["completed_ts"] = s.ota.completed_ts;
+    bool wrote = false;
+    wrote |= writeAtPath(root, "ota.result.status", s.ota.last_status, true);
+    wrote |= writeAtPath(root, "ota.result.message", s.ota.last_message, true);
+    wrote |= writeAtPath(root, "ota.result.completed_ts", s.ota.completed_ts);
+    return wrote;
 }
 
-static void write_last_cmd(const DeviceState &s, JsonObject &root)
+static bool write_last_cmd(const DeviceState &s, JsonObject &root)
 {
-    JsonObject o = ensureObject(root, "last_cmd");
-    o["request_id"] = s.lastCmd.requestId;
-    o["type"] = s.lastCmd.type;
-    o["status"] = toString(s.lastCmd.status);
-    o["message"] = s.lastCmd.message;
-    o["ts"] = s.lastCmd.ts;
+    bool wrote = false;
+    wrote |= writeAtPath(root, "last_cmd.request_id", s.lastCmd.requestId, true);
+    wrote |= writeAtPath(root, "last_cmd.type", s.lastCmd.type, true);
+    wrote |= writeAtPath(root, "last_cmd.status", toString(s.lastCmd.status), true);
+    wrote |= writeAtPath(root, "last_cmd.message", s.lastCmd.message, true);
+    wrote |= writeAtPath(root, "last_cmd.ts", s.lastCmd.ts);
+    return wrote;
 }
 
 // Telemetry fields (sensors + internal-only writers)
