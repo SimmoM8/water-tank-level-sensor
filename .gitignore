@@ -11,3 +11,7 @@ secrets.h
 # Build / temp
 *.tmp
 *.log
+
+# Adobe files
+*.ai
+*.psd
