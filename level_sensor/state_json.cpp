@@ -4,10 +4,21 @@
 #include "domain_strings.h"
 #include "logger.h"
 
+// Contract: outBuf must be non-null; outSize must allow at least "{}\\0".
+// Returns true only if the JSON is fully serialized and non-empty.
 bool buildStateJson(const DeviceState &s, char *outBuf, size_t outSize)
 {
+    static constexpr size_t kStateJsonCapacity = 4096;
+    static constexpr size_t kMinJsonSize = 4; // "{}" + NUL
+
+    if (!outBuf || outSize < kMinJsonSize)
+    {
+        return false;
+    }
+    outBuf[0] = '\0';
+
     // Sized to fit all telemetry fields comfortably.
-    StaticJsonDocument<4096> doc;
+    StaticJsonDocument<kStateJsonCapacity> doc;
     JsonObject root = doc.to<JsonObject>();
 
     size_t count = 0;
@@ -22,31 +33,24 @@ bool buildStateJson(const DeviceState &s, char *outBuf, size_t outSize)
 
     const size_t written = serializeJson(doc, outBuf, outSize);
     const bool emptyRoot = root.isNull() || root.size() == 0;
-    if (written <= 2 || written >= outSize || emptyRoot)
+    const bool overflowed = doc.overflowed();
+    if (written <= 2 || written >= outSize || emptyRoot || overflowed)
     {
-        LOG_WARN(LogDomain::MQTT, "State JSON build failed bytes=%u empty_root=%s", (unsigned)written, emptyRoot ? "true" : "false");
+        outBuf[0] = '\0';
+        LOG_WARN(LogDomain::MQTT, "State JSON build failed bytes=%u empty_root=%s overflowed=%s",
+                 (unsigned)written,
+                 emptyRoot ? "true" : "false",
+                 overflowed ? "true" : "false");
         return false;
     }
 
-    static const char *kEmptyPattern = "{\"probe\":{},\"calibration\":{},\"level\":{},\"config\":{}}";
-    if (strcmp(outBuf, kEmptyPattern) == 0)
-    {
-        size_t regCount = 0;
-        telemetry_registry_fields(regCount);
-        logger_logEvery("state_json_empty_objects", 5000, LogLevel::WARN, LogDomain::MQTT,
-                        "State JSON suspicious empty objects; registry fields=%u", (unsigned)regCount);
-    }
-
-    // Debug small payloads only (throttled to avoid spam)
+    // Debug small payloads only (throttled to avoid spam) without logging raw JSON.
     if (written < 256)
     {
-        size_t previewLen = written < 120 ? written : 120;
-        char preview[121];
-        memcpy(preview, outBuf, previewLen);
-        preview[previewLen] = '\0';
-        logger_logEvery("state_json_preview", 5000, LogLevel::DEBUG, LogDomain::MQTT,
-                        "State JSON len=%u preview=%s", (unsigned)written, preview);
+        logger_logEvery("state_json_len", 5000, LogLevel::DEBUG, LogDomain::MQTT,
+                        "State JSON len=%u", (unsigned)written);
     }
 
     return true;
 }
+

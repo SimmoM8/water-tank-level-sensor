@@ -2,6 +2,7 @@
 #include <math.h>
 #include <Arduino.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <string.h>
 #include "main.h"
 #include "probe_reader.h"
@@ -127,6 +128,13 @@ static const uint8_t TOUCH_SAMPLE_DELAY_MS = 5;
 static const uint32_t RAW_SAMPLE_MS = CFG_RAW_SAMPLE_MS;
 static const uint32_t PERCENT_SAMPLE_MS = CFG_PERCENT_SAMPLE_MS;
 static const float PERCENT_EMA_ALPHA = CFG_PERCENT_EMA_ALPHA;
+static constexpr uint8_t SIM_MODE_MAX = 5;
+static constexpr float LEVEL_CHANGE_EPS = 0.01f;
+static constexpr size_t SERIAL_CMD_BUF = 64;
+static constexpr char SERIAL_CMD_DELIMS[] = " \t";
+
+static_assert(TOUCH_SAMPLES > 0, "TOUCH_SAMPLES must be > 0");
+static_assert(CFG_PERCENT_EMA_ALPHA >= 0.0f && CFG_PERCENT_EMA_ALPHA <= 1.0f, "CFG_PERCENT_EMA_ALPHA must be 0..1");
 
 static const uint32_t OTA_MANIFEST_CHECK_MS = 21600000u; // 6h
 static const uint32_t OTA_MANIFEST_RETRY_MS = 60000u;    // 60s on failure
@@ -185,11 +193,6 @@ static void runWindow(LoopWindow &w, uint32_t now)
 
 // ----------------- Helpers -----------------
 
-static void logLine(const char *msg)
-{
-  LOG_INFO(LogDomain::SYSTEM, "%s", msg);
-}
-
 static void printHelpMenu()
 {
   LOG_INFO(LogDomain::SYSTEM, "[CAL] Serial commands:");
@@ -205,6 +208,78 @@ static void printHelpMenu()
   LOG_INFO(LogDomain::SYSTEM, "  mode touch -> use touchRead()");
   LOG_INFO(LogDomain::SYSTEM, "  mode sim   -> use simulation backend");
   LOG_INFO(LogDomain::SYSTEM, "  help  -> show this menu");
+}
+
+static int32_t clampNonNegativeInt32(int32_t value)
+{
+  return value < 0 ? 0 : value;
+}
+
+static uint8_t clampSimulationMode(int value)
+{
+  if (value < 0)
+  {
+    return 0;
+  }
+  if (value > SIM_MODE_MAX)
+  {
+    return SIM_MODE_MAX;
+  }
+  return (uint8_t)value;
+}
+
+static bool parseInt(const char *s, int &out)
+{
+  if (!s || *s == '\0')
+  {
+    return false;
+  }
+  char *end = nullptr;
+  long v = strtol(s, &end, 10);
+  if (!end || *end != '\0')
+  {
+    return false;
+  }
+  out = (int)v;
+  return true;
+}
+
+static bool readSerialLine(char *buf, size_t bufSize)
+{
+  if (!buf || bufSize < 2 || !Serial.available())
+  {
+    return false;
+  }
+
+  size_t len = Serial.readBytesUntil('\n', buf, bufSize - 1);
+  if (len == 0)
+  {
+    return false;
+  }
+
+  while (len > 0 && (buf[len - 1] == '\r' || buf[len - 1] == '\n' || buf[len - 1] == ' ' || buf[len - 1] == '\t'))
+  {
+    len--;
+  }
+  buf[len] = '\0';
+
+  size_t start = 0;
+  while (buf[start] != '\0' && (buf[start] == ' ' || buf[start] == '\t'))
+  {
+    start++;
+  }
+  if (start > 0)
+  {
+    memmove(buf, buf + start, len - start + 1);
+    len -= start;
+  }
+
+  for (size_t i = 0; i < len; i++)
+  {
+    buf[i] = (char)tolower((unsigned char)buf[i]);
+  }
+
+  return buf[0] != '\0';
 }
 
 static bool hasCalibrationValues()
@@ -232,79 +307,6 @@ static float computePercent(int32_t raw)
   const float percent = ((float)raw - inputStart) * 100.0f / (inputEnd - inputStart);
 
   return constrain(percent, 0.0f, 100.0f);
-}
-
-static bool evaluateProbeConnected(int32_t raw)
-{
-  static bool hasLast = false;
-  static int32_t lastRaw = 0;
-  static uint8_t spikeCount = 0;
-  static uint32_t spikeWindowStart = 0;
-  static uint32_t stuckStartMs = 0;
-
-  const uint32_t now = millis();
-  if (spikeWindowStart == 0)
-  {
-    spikeWindowStart = now;
-  }
-  if (stuckStartMs == 0)
-  {
-    stuckStartMs = now;
-  }
-
-  ProbeQualityReason reason = ProbeQualityReason::OK;
-  if (raw < CFG_PROBE_DISCONNECTED_BELOW_RAW)
-  {
-    reason = ProbeQualityReason::DISCONNECTED_LOW_RAW;
-  }
-  else if (raw < CFG_PROBE_MIN_RAW || raw > CFG_PROBE_MAX_RAW)
-  {
-    reason = ProbeQualityReason::OUT_OF_BOUNDS;
-  }
-  else
-  {
-    uint32_t delta = 0;
-    if (hasLast)
-    {
-      delta = (uint32_t)abs((int32_t)raw - (int32_t)lastRaw);
-    }
-
-    if (delta >= CFG_RAPID_FLUCTUATION_DELTA)
-    {
-      reason = ProbeQualityReason::UNRELIABLE_RAPID;
-    }
-    else
-    {
-      if (now - spikeWindowStart > CFG_SPIKE_WINDOW_MS)
-      {
-        spikeWindowStart = now;
-        spikeCount = 0;
-      }
-      if (delta >= CFG_SPIKE_DELTA)
-      {
-        spikeCount++;
-        if (spikeCount >= CFG_SPIKE_COUNT_THRESHOLD)
-        {
-          reason = ProbeQualityReason::UNRELIABLE_SPIKES;
-        }
-      }
-
-      if (delta > CFG_STUCK_EPS)
-      {
-        stuckStartMs = now;
-      }
-      else if ((now - stuckStartMs) >= CFG_STUCK_MS)
-      {
-        reason = ProbeQualityReason::UNRELIABLE_STUCK;
-      }
-    }
-  }
-
-  lastRaw = raw;
-  hasLast = true;
-
-  probeQualityReason = reason;
-  return reason == ProbeQualityReason::OK;
 }
 
 static int32_t getRaw()
@@ -352,8 +354,8 @@ static void refreshLevelFromPercent(float percent)
     g_state.level.centimeters = centimeters;
     g_state.level.centimetersValid = true;
 
-    const bool litersChanged = isnan(lastLiters) || fabs(lastLiters - liters) > 0.01f;
-    const bool cmChanged = isnan(lastCentimeters) || fabs(lastCentimeters - centimeters) > 0.01f;
+    const bool litersChanged = isnan(lastLiters) || fabs(lastLiters - liters) > LEVEL_CHANGE_EPS;
+    const bool cmChanged = isnan(lastCentimeters) || fabs(lastCentimeters - centimeters) > LEVEL_CHANGE_EPS;
     if (litersChanged || cmChanged)
     {
       mqtt_requestStatePublish();
@@ -558,7 +560,7 @@ static void setSenseMode(SenseMode mode, bool /*forcePublish*/ = false, const ch
 
 static void setSimulationModeInternal(uint8_t mode, bool /*forcePublish*/ = false, const char * /*sourceMsg*/ = nullptr)
 {
-  uint8_t clamped = mode > 5 ? 5 : mode;
+  uint8_t clamped = clampSimulationMode(mode);
   storage_saveSimulationMode(clamped);
   g_state.config.simulationMode = clamped;
   setSimulationMode(clamped);
@@ -568,7 +570,7 @@ static void setSimulationModeInternal(uint8_t mode, bool /*forcePublish*/ = fals
 
 static void setCalibrationValueInternal(int32_t value, bool isDry, const char *sourceMsg)
 {
-  const int32_t clamped = value < 0 ? 0 : value;
+  const int32_t clamped = clampNonNegativeInt32(value);
   if (isDry)
   {
     calDry = clamped;
@@ -724,102 +726,141 @@ static void windowMqtt()
 
 static void handleSerialCommands()
 {
-  if (!Serial.available())
-    return;
-
-  String cmd = Serial.readStringUntil('\n');
-  cmd.trim();
-  cmd.toLowerCase();
-
-  if (cmd == "mode touch")
+  char line[SERIAL_CMD_BUF];
+  if (!readSerialLine(line, sizeof(line)))
   {
-    setSenseMode(SenseMode::TOUCH, true, "serial");
-    probe_updateMode(READ_PROBE);
-    return;
-  }
-  if (cmd.startsWith("mode sim "))
-  {
-    int m = cmd.substring(9).toInt();
-    if (m < 0)
-      m = 0;
-    if (m > 5)
-      m = 5;
-    setSenseMode(SenseMode::SIM, true, "serial");
-    setSimulationModeInternal((uint8_t)m, true, "serial");
-    setSimulationMode((uint8_t)m);
-    probe_updateMode(READ_SIM);
-    LOG_INFO(LogDomain::SYSTEM, "Simulation mode set to %d (serial)", m);
-    return;
-  }
-  if (cmd == "mode sim")
-  {
-    setSenseMode(SenseMode::SIM, true, "serial");
-    probe_updateMode(READ_SIM);
-    return;
-  }
-  if (cmd.startsWith("sim "))
-  {
-    int m = cmd.substring(4).toInt();
-    if (m < 0)
-      m = 0;
-    if (m > 5)
-      m = 5;
-    setSenseMode(SenseMode::SIM, true, "serial");
-    setSimulationModeInternal((uint8_t)m, true, "serial");
-    setSimulationMode((uint8_t)m);
-    probe_updateMode(READ_SIM);
-    LOG_INFO(LogDomain::SYSTEM, "Simulation mode set to %d (serial)", m);
     return;
   }
 
-  if (cmd == "dry")
+  char *save = nullptr;
+  char *cmd = strtok_r(line, SERIAL_CMD_DELIMS, &save);
+  if (!cmd || *cmd == '\0')
+  {
+    return;
+  }
+
+  if (strcmp(cmd, "mode") == 0)
+  {
+    const char *mode = strtok_r(nullptr, SERIAL_CMD_DELIMS, &save);
+    if (!mode)
+    {
+      printHelpMenu();
+      return;
+    }
+    if (strcmp(mode, "touch") == 0)
+    {
+      setSenseMode(SenseMode::TOUCH, true, "serial");
+      return;
+    }
+    if (strcmp(mode, "sim") == 0)
+    {
+      const char *modeStr = strtok_r(nullptr, SERIAL_CMD_DELIMS, &save);
+      if (!modeStr)
+      {
+        setSenseMode(SenseMode::SIM, true, "serial");
+        return;
+      }
+      int modeVal = 0;
+      if (!parseInt(modeStr, modeVal))
+      {
+        printHelpMenu();
+        return;
+      }
+      const uint8_t clamped = clampSimulationMode(modeVal);
+      setSenseMode(SenseMode::SIM, true, "serial");
+      setSimulationModeInternal(clamped, true, "serial");
+      LOG_INFO(LogDomain::SYSTEM, "Simulation mode set to %u (serial)", (unsigned)clamped);
+      return;
+    }
+    printHelpMenu();
+    return;
+  }
+
+  if (strcmp(cmd, "sim") == 0)
+  {
+    const char *modeStr = strtok_r(nullptr, SERIAL_CMD_DELIMS, &save);
+    int modeVal = 0;
+    if (!modeStr || !parseInt(modeStr, modeVal))
+    {
+      printHelpMenu();
+      return;
+    }
+    const uint8_t clamped = clampSimulationMode(modeVal);
+    setSenseMode(SenseMode::SIM, true, "serial");
+    setSimulationModeInternal(clamped, true, "serial");
+    LOG_INFO(LogDomain::SYSTEM, "Simulation mode set to %u (serial)", (unsigned)clamped);
+    return;
+  }
+
+  if (strcmp(cmd, "dry") == 0)
   {
     captureCalibrationPoint(true);
+    return;
   }
-  else if (cmd == "wet")
+  if (strcmp(cmd, "wet") == 0)
   {
     captureCalibrationPoint(false);
+    return;
   }
-  else if (cmd == "show")
+  if (strcmp(cmd, "show") == 0)
   {
     LOG_INFO(LogDomain::CAL, "[CAL] Dry=%ld Wet=%ld Inverted=%s", (long)calDry, (long)calWet, calInverted ? "true" : "false");
     LOG_INFO(LogDomain::CAL, "[CAL] Valid=%s", hasCalibrationValues() ? "yes" : "no");
     storage_dump();
+    return;
   }
-  else if (cmd == "clear")
+  if (strcmp(cmd, "clear") == 0)
   {
     clearCalibration();
+    return;
   }
-  else if (cmd == "invert")
+  if (strcmp(cmd, "invert") == 0)
   {
     handleInvertCalibration();
+    return;
   }
-  else if (cmd == "log hf on" || cmd == "loghf on")
+
+  if (strcmp(cmd, "log") == 0 || strcmp(cmd, "loghf") == 0)
   {
-    logger_setHighFreqEnabled(true);
-    LOG_INFO(LogDomain::SYSTEM, "High-frequency logging enabled (serial command)");
+    const bool isLogHf = strcmp(cmd, "loghf") == 0;
+    const char *arg1 = isLogHf ? "hf" : strtok_r(nullptr, SERIAL_CMD_DELIMS, &save);
+    const char *arg2 = strtok_r(nullptr, SERIAL_CMD_DELIMS, &save);
+    if (arg1 && strcmp(arg1, "hf") == 0 && arg2)
+    {
+      if (strcmp(arg2, "on") == 0)
+      {
+        logger_setHighFreqEnabled(true);
+        LOG_INFO(LogDomain::SYSTEM, "High-frequency logging enabled (serial command)");
+        return;
+      }
+      if (strcmp(arg2, "off") == 0)
+      {
+        logger_setHighFreqEnabled(false);
+        LOG_INFO(LogDomain::SYSTEM, "High-frequency logging disabled (serial command)");
+        return;
+      }
+    }
+    printHelpMenu();
+    return;
   }
-  else if (cmd == "log hf off" || cmd == "loghf off")
-  {
-    logger_setHighFreqEnabled(false);
-    LOG_INFO(LogDomain::SYSTEM, "High-frequency logging disabled (serial command)");
-  }
-  else if (cmd == "wifi")
+
+  if (strcmp(cmd, "wifi") == 0)
   {
     wifi_requestPortal();
+    return;
   }
-  else if (cmd == "wipewifi")
+  if (strcmp(cmd, "wipewifi") == 0)
   {
     wifi_wipeCredentialsAndReboot();
+    return;
   }
-  else if (cmd == "help")
+  if (strcmp(cmd, "help") == 0)
   {
     printHelpMenu();
+    return;
   }
-  else if (cmd.length() > 0)
-  {
-    printHelpMenu();
-  }
+
+  printHelpMenu();
 }
 
 static void updatePercentFromRaw()
@@ -863,6 +904,7 @@ static LoopWindow g_windows[] = {
 
 // ---------------- Arduino lifecycle ----------------
 
+// Contract: call once after boot. Initializes subsystems, state, and MQTT/OTA handlers.
 void appSetup()
 {
   Serial.begin(115200);
@@ -938,6 +980,7 @@ void appSetup()
   mqtt_begin(mqttCfg, commands_handle);
 }
 
+// Contract: called frequently from the Arduino loop; must remain non-blocking.
 void appLoop()
 {
   const uint32_t now = millis();

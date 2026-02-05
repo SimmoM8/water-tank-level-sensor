@@ -1,6 +1,7 @@
 // Optional config overrides for water_level_sensor.ino
+// Contract: values must be sane/positive; this file should only define overrides.
+#pragma once
 // Copy any of the defines below to change probe reliability thresholds.
-// This file contains no secrets and is safe to commit (or add to .gitignore if preferred).
 
 #define CFG_PROBE_DISCONNECTED_BELOW_RAW 60000u
 #define CFG_CAL_MIN_DIFF 20u

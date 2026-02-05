@@ -1,8 +1,19 @@
 #pragma once
 #include <stdint.h>
+#include <stddef.h>
 
 // Keep schema version explicit so consumers can evolve safely
 static constexpr uint8_t STATE_SCHEMA_VERSION = 1;
+static constexpr size_t DEVICE_FW_VERSION_MAX = 16;
+static constexpr size_t OTA_STATE_MAX = 16;
+static constexpr size_t OTA_ERROR_MAX = 64;
+static constexpr size_t OTA_TARGET_VERSION_MAX = 16;
+static constexpr size_t OTA_REQUEST_ID_MAX = 48;
+static constexpr size_t OTA_VERSION_MAX = 16;
+static constexpr size_t OTA_URL_MAX = 256;
+static constexpr size_t OTA_SHA256_MAX = 65; // 64 hex chars + NUL
+static constexpr size_t OTA_STATUS_MAX = 16;
+static constexpr size_t OTA_MESSAGE_MAX = 64;
 
 // --- C++ enums (stronger than magic ints/strings) ---
 enum class SenseMode : uint8_t
@@ -39,6 +50,11 @@ enum class CmdStatus : uint8_t
     REJECTED = 3,
     ERROR = 4
 };
+
+static_assert(static_cast<uint8_t>(SenseMode::SIM) == 1, "SenseMode values must be stable");
+static_assert(static_cast<uint8_t>(CalibrationState::CALIBRATED) == 2, "CalibrationState values must be stable");
+static_assert(static_cast<uint8_t>(CmdStatus::ERROR) == 4, "CmdStatus values must be stable");
+static_assert(OTA_SHA256_MAX == 65, "SHA256 buffer must fit 64 hex chars + NUL");
 
 // --- Nested structs (composition) ---
 struct DeviceInfo
@@ -112,15 +128,15 @@ struct OtaState
     uint8_t progress = 0;
 
     // active request
-    char request_id[48] = {0};
-    char version[16] = {0};
-    char url[256] = {0};
-    char sha256[65] = {0};
+    char request_id[OTA_REQUEST_ID_MAX] = {0};
+    char version[OTA_VERSION_MAX] = {0};
+    char url[OTA_URL_MAX] = {0};
+    char sha256[OTA_SHA256_MAX] = {0};
     uint32_t started_ts = 0;
 
     // last result
-    char last_status[16] = {0};
-    char last_message[64] = {0};
+    char last_status[OTA_STATUS_MAX] = {0};
+    char last_message[OTA_MESSAGE_MAX] = {0};
     uint32_t completed_ts = 0;
 };
 
@@ -138,7 +154,7 @@ struct DeviceState
     uint32_t ts; // epoch seconds if you have it; otherwise millis()/1000 is ok
 
     DeviceInfo device;
-    char fw_version[16] = {0};
+    char fw_version[DEVICE_FW_VERSION_MAX] = {0};
     WifiInfo wifi;
     MqttInfo mqtt;
 
@@ -148,10 +164,10 @@ struct DeviceState
     ConfigInfo config;
 
     OtaState ota;
-    char ota_state[16] = {0};
+    char ota_state[OTA_STATE_MAX] = {0};
     uint8_t ota_progress = 0;
-    char ota_error[64] = {0};
-    char ota_target_version[16] = {0};
+    char ota_error[OTA_ERROR_MAX] = {0};
+    char ota_target_version[OTA_TARGET_VERSION_MAX] = {0};
     uint32_t ota_last_ts = 0;
     bool update_available = false;
 
