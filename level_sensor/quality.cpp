@@ -1,5 +1,4 @@
 #include "quality.h"
-#include <Arduino.h>
 #include <limits.h>
 
 static constexpr uint32_t kWindowInactive = UINT32_MAX;
