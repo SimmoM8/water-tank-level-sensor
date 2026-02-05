@@ -3,6 +3,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include <strings.h>
+#include <WiFi.h>
 #include "logger.h"
 
 #include "device_state.h"
@@ -82,6 +83,16 @@ static void appendChange(char *buf, size_t bufSize, const char *fmt, ...)
     vsnprintf(buf + len, bufSize - len, fmt, args);
     va_end(args);
     buf[bufSize - 1] = '\0';
+}
+
+static void buildAutoRequestId(char *buf, size_t len)
+{
+    if (!buf || len == 0)
+        return;
+    const uint32_t now = (uint32_t)millis();
+    const uint32_t rand16 = (uint32_t)random(0, 0xFFFF);
+    snprintf(buf, len, "auto_%08lx_%04lx", (unsigned long)now, (unsigned long)rand16);
+    buf[len - 1] = '\0';
 }
 
 static void finish(const char *reqId, const char *type, CmdStatus st, const char *msg)
@@ -230,12 +241,27 @@ static void handleOtaPull(JsonObject data, const char *requestId)
 {
     char err[48] = {0};
 
+    if (ota_isBusy())
+    {
+        finish(requestId, "ota_pull", CmdStatus::REJECTED, "busy");
+        LOG_WARN(LogDomain::COMMAND, "OTA pull rejected request_id=%s reason=busy", requestId ? requestId : "");
+        return;
+    }
+    if (!WiFi.isConnected())
+    {
+        finish(requestId, "ota_pull", CmdStatus::REJECTED, "wifi_disconnected");
+        LOG_WARN(LogDomain::COMMAND, "OTA pull rejected request_id=%s reason=wifi_disconnected", requestId ? requestId : "");
+        return;
+    }
+
     const char *version = data["version"] | "";
     const char *url = data["url"] | "";
     const char *sha256 = data["sha256"] | "";
 
-    bool reboot = data["reboot"].is<bool>() ? data["reboot"].as<bool>() : true;
-    bool force = data["force"].is<bool>() ? data["force"].as<bool>() : false;
+    const bool rebootDefault = true;
+    const bool forceDefault = false;
+    bool reboot = data["reboot"].is<bool>() ? data["reboot"].as<bool>() : rebootDefault;
+    bool force = data["force"].is<bool>() ? data["force"].as<bool>() : forceDefault;
 
     const bool hasUrl = url && url[0] != '\0';
     const bool hasSha = sha256 && sha256[0] != '\0';
@@ -252,27 +278,33 @@ static void handleOtaPull(JsonObject data, const char *requestId)
         if (!hasUrl)
         {
             finish(requestId, "ota_pull", CmdStatus::REJECTED, "missing_url");
+            LOG_WARN(LogDomain::COMMAND, "OTA pull rejected request_id=%s reason=missing_url", requestId ? requestId : "");
             return;
         }
         if (!hasSha)
         {
             finish(requestId, "ota_pull", CmdStatus::REJECTED, "missing_sha256");
+            LOG_WARN(LogDomain::COMMAND, "OTA pull rejected request_id=%s reason=missing_sha256", requestId ? requestId : "");
             return;
         }
         if (!isHex64(sha256))
         {
             finish(requestId, "ota_pull", CmdStatus::REJECTED, "bad_sha256_format");
+            LOG_WARN(LogDomain::COMMAND, "OTA pull rejected request_id=%s reason=bad_sha256_format", requestId ? requestId : "");
             return;
         }
         ok = ota_pullStart(s_ctx.state, requestId, version, url, sha256, force, reboot, err, sizeof(err));
     }
     if (!ok)
     {
-        finish(requestId, "ota_pull", CmdStatus::REJECTED, err[0] ? err : "start_failed");
+        const char *reason = err[0] ? err : "start_failed";
+        finish(requestId, "ota_pull", CmdStatus::REJECTED, reason);
+        LOG_WARN(LogDomain::COMMAND, "OTA pull rejected request_id=%s reason=%s", requestId ? requestId : "", reason);
         return;
     }
 
     finish(requestId, "ota_pull", CmdStatus::APPLIED, "queued");
+    LOG_INFO(LogDomain::COMMAND, "OTA pull accepted request_id=%s reason=queued", requestId ? requestId : "");
 }
 
 static SenseMode parseSenseMode(JsonVariant value)
@@ -443,10 +475,19 @@ void commands_handle(const uint8_t *payload, size_t len)
         return;
     }
 
+    char autoReqId[32] = {0};
     if (!requestId || requestId[0] == '\0')
     {
-        finish("", type, CmdStatus::REJECTED, "missing_request_id");
-        return;
+        if (strcmp(type, "ota_pull") == 0)
+        {
+            buildAutoRequestId(autoReqId, sizeof(autoReqId));
+            requestId = autoReqId;
+        }
+        else
+        {
+            finish("", type, CmdStatus::REJECTED, "missing_request_id");
+            return;
+        }
     }
 
     // Mark command as received
