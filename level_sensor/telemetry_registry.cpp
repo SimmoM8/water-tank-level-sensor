@@ -20,6 +20,9 @@ static constexpr const char *ICON_TAG = "mdi:tag-outline";
 static constexpr const char *ICON_CLOCK = "mdi:clock-outline";
 static constexpr const char *ICON_PLAYLIST = "mdi:playlist-check";
 
+using domain_strings::to_string;
+using domain_strings::c_str;
+
 static bool writeAtPath(JsonObject &root, const char *dottedPath, const char *value, bool allowEmpty = true)
 {
     if (!dottedPath || dottedPath[0] == '\0')
@@ -275,7 +278,7 @@ static bool write_probe_connected(const DeviceState &s, JsonObject &root)
 
 static bool write_probe_quality(const DeviceState &s, JsonObject &root)
 {
-    return writeAtPath(root, "probe.quality", toString(s.probe.quality), true);
+    return writeAtPath(root, "probe.quality", c_str(to_string(s.probe.quality)), true);
 }
 
 static bool write_probe_raw(const DeviceState &s, JsonObject &root)
@@ -290,7 +293,7 @@ static bool write_probe_raw_valid(const DeviceState &s, JsonObject &root)
 
 static bool write_cal_state(const DeviceState &s, JsonObject &root)
 {
-    return writeAtPath(root, "calibration.state", toString(s.calibration.state), true);
+    return writeAtPath(root, "calibration.state", c_str(to_string(s.calibration.state)), true);
 }
 
 static bool write_cal_dry(const DeviceState &s, JsonObject &root)
@@ -355,7 +358,7 @@ static bool write_config_rod(const DeviceState &s, JsonObject &root)
 
 static bool write_config_sense_mode(const DeviceState &s, JsonObject &root)
 {
-    return writeAtPath(root, "config.sense_mode", toString(s.config.senseMode), true);
+    return writeAtPath(root, "config.sense_mode", c_str(to_string(s.config.senseMode)), true);
 }
 
 static bool write_config_sim_mode(const DeviceState &s, JsonObject &root)
@@ -391,7 +394,7 @@ static bool write_update_available(const DeviceState &s, JsonObject &root)
 
 static bool write_ota_state_flat(const DeviceState &s, JsonObject &root)
 {
-    const char *state = s.ota_state[0] ? s.ota_state : toString(s.ota.status);
+    const char *state = s.ota_state[0] ? s.ota_state : c_str(to_string(s.ota.status));
     return writeAtPath(root, "ota_state", state, true);
 }
 
@@ -428,7 +431,7 @@ static bool write_ota_last_ts_flat(const DeviceState &s, JsonObject &root)
 
 static bool write_ota_status(const DeviceState &s, JsonObject &root)
 {
-    return writeAtPath(root, "ota.status", toString(s.ota.status), true);
+    return writeAtPath(root, "ota.status", c_str(to_string(s.ota.status)), true);
 }
 
 static bool write_ota_progress(const DeviceState &s, JsonObject &root)
@@ -461,7 +464,7 @@ static bool write_last_cmd(const DeviceState &s, JsonObject &root)
     bool wrote = false;
     wrote |= writeAtPath(root, "last_cmd.request_id", s.lastCmd.requestId, true);
     wrote |= writeAtPath(root, "last_cmd.type", s.lastCmd.type, true);
-    wrote |= writeAtPath(root, "last_cmd.status", toString(s.lastCmd.status), true);
+    wrote |= writeAtPath(root, "last_cmd.status", c_str(to_string(s.lastCmd.status)), true);
     wrote |= writeAtPath(root, "last_cmd.message", s.lastCmd.message, true);
     wrote |= writeAtPath(root, "last_cmd.ts", s.lastCmd.ts);
     return wrote;
