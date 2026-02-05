@@ -941,6 +941,7 @@ void appSetup()
   g_state.ota_error[0] = '\0';
   g_state.ota_target_version[0] = '\0';
   g_state.ota_last_ts = 0;
+  g_state.ota_last_success_ts = 0;
   g_state.update_available = false;
   {
     bool otaForce = false;
@@ -948,6 +949,11 @@ void appSetup()
     storage_loadOtaOptions(otaForce, otaReboot);
     g_state.ota_force = otaForce;
     g_state.ota_reboot = otaReboot;
+    uint32_t otaLastOk = 0;
+    if (storage_loadOtaLastSuccess(otaLastOk))
+    {
+      g_state.ota_last_success_ts = otaLastOk;
+    }
   }
 
   g_state.level.percent = NAN;

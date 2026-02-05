@@ -173,6 +173,7 @@ struct DeviceState
     char ota_error[OTA_ERROR_MAX] = {0};              // mirror/summary of ota.result.message
     char ota_target_version[OTA_TARGET_VERSION_MAX] = {0}; // mirror of ota.version or manifest
     uint32_t ota_last_ts = 0;                         // mirror of ota.started_ts/completed_ts
+    uint32_t ota_last_success_ts = 0;                 // epoch seconds of last successful OTA
     bool update_available = false;
     bool ota_force = false;                           // default force behavior for ota_pull
     bool ota_reboot = true;                           // default reboot behavior for ota_pull

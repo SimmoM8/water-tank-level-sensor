@@ -28,6 +28,8 @@ void storage_saveSenseMode(SenseMode senseMode);
 bool storage_loadOtaOptions(bool &force, bool &reboot);
 void storage_saveOtaForce(bool force);
 void storage_saveOtaReboot(bool reboot);
+bool storage_loadOtaLastSuccess(uint32_t &ts);
+void storage_saveOtaLastSuccess(uint32_t ts);
 
 /* ---------------- Debug ---------------- */
 void storage_dump();

@@ -10,9 +10,9 @@ bool buildStateJson(const DeviceState &s, char *outBuf, size_t outSize)
 {
     // Capacity rationale (ArduinoJson v6):
     // - Objects created by dotted paths: root + device + wifi + mqtt + probe + calibration + level + config + ota + ota.active + ota.result + last_cmd = 12
-    // - Leaf keys (worst case): 53 (schema/ts/device/.../last_cmd.* + ota.force + ota.reboot)
+    // - Leaf keys (worst case): 54 (schema/ts/device/.../last_cmd.* + ota.force + ota.reboot + ota_last_success_ts)
     // - String pool: conservative sum of max field sizes + enum labels + key bytes headroom.
-    static constexpr size_t kRootMembers = 20;
+    static constexpr size_t kRootMembers = 21;
     static constexpr size_t kDeviceMembers = 3;
     static constexpr size_t kWifiMembers = 2;
     static constexpr size_t kMqttMembers = 1;

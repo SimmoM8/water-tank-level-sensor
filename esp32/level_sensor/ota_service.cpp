@@ -9,7 +9,9 @@
 #include <Update.h>
 #include <ArduinoJson.h>
 #include <string.h>
+#include <time.h>
 #include "domain_strings.h"
+#include "storage_nvs.h"
 #include "mqtt_transport.h"
 
 #ifdef __has_include
@@ -183,6 +185,16 @@ static void ota_clearActive(DeviceState *state)
     state->ota.url[0] = '\0';
     state->ota.sha256[0] = '\0';
     state->ota.started_ts = 0;
+}
+
+static uint32_t ota_epochNow()
+{
+    const time_t now = time(nullptr);
+    if (now < 1600000000)
+    {
+        return 0;
+    }
+    return (uint32_t)now;
 }
 
 static void ota_setFlat(DeviceState *state,
@@ -620,6 +632,12 @@ static void ota_finishSuccess(DeviceState *state)
         ota_setResult(state, "success", "applied");
         ota_setFlat(state, "success", 100, "", state->ota.version, true);
         state->update_available = false;
+        const uint32_t epochNow = ota_epochNow();
+        if (epochNow > 0)
+        {
+            state->ota_last_success_ts = epochNow;
+            storage_saveOtaLastSuccess(epochNow);
+        }
         ota_requestPublish();
     }
 

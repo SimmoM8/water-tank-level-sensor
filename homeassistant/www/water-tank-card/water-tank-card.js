@@ -53,6 +53,7 @@ const OPTIONAL_ENTITY_KEYS = [
   "cal_wet_set_entity",
   "fw_version_entity",
   "ota_target_version_entity",
+  "ota_last_success_ts_entity",
 ];
 
 // Expected unique_id suffixes (or contains) for each logical key.
@@ -87,6 +88,7 @@ const UNIQUE_ID_SUFFIX_MAP = {
   cal_wet_set_entity: ["_cal_wet_set"],
   fw_version_entity: ["_fw_version"],
   ota_target_version_entity: ["_ota_target_version"],
+  ota_last_success_ts_entity: ["_ota_last_success_ts"],
 };
 
 // Matching rules per logical key (domains and entity_id fallbacks).
@@ -121,6 +123,7 @@ const ENTITY_MATCH_RULES = {
   cal_wet_set_entity: { domains: ["number", "input_number"], entitySuffixes: ["_cal_wet_set"] },
   fw_version_entity: { domains: ["sensor"], entitySuffixes: ["_fw_version"] },
   ota_target_version_entity: { domains: ["sensor"], entitySuffixes: ["_ota_target_version"] },
+  ota_last_success_ts_entity: { domains: ["sensor"], entitySuffixes: ["_ota_last_success_ts"] },
 };
 
 // Cache resolved configs per device_id to avoid repeated websocket queries.
@@ -250,6 +253,7 @@ class WaterTankCard extends HTMLElement {
 
       // optional diagnostics
       quality_reason_entity: null,
+      ota_last_success_ts_entity: null,
     };
 
     const cfg = { ...defaults, ...config };
@@ -553,6 +557,22 @@ class WaterTankCard extends HTMLElement {
     if (typeof v === "number" && !Number.isFinite(v)) return fallback;
     const s = String(v);
     return s.length ? s : fallback;
+  }
+
+  _humanizeAgeFromEpochSeconds(ts) {
+    const n = Number(ts);
+    if (!Number.isFinite(n) || n <= 0) return "—";
+    const nowMs = Date.now();
+    const tsMs = n * 1000;
+    if (!Number.isFinite(tsMs) || tsMs <= 0) return "—";
+    const diffMs = nowMs - tsMs;
+    if (diffMs < 0) return "—";
+    const diffMin = diffMs / 60000;
+    if (diffMin < 60) return "just now";
+    const diffHours = Math.round(diffMin / 60);
+    if (diffHours < 24) return `${diffHours} hours ago`;
+    const diffDays = Math.round(diffHours / 24);
+    return `${diffDays} days ago`;
   }
 
   _formatNumber(value, decimals) {
@@ -1222,6 +1242,11 @@ class WaterTankCard extends HTMLElement {
       const qm = this._qualityMeta(qualityReason);
       const qualityLabel = qm ? `${qm.label} (${qualityReason})` : qualityReason;
       diagnosticsLines.push({ label: "Quality", value: this._safeText(qualityLabel) });
+    }
+    if (this._config.ota_last_success_ts_entity) {
+      const tsRaw = this._state(this._config.ota_last_success_ts_entity);
+      const tsValue = this._isUnknownState(tsRaw) ? NaN : Number(tsRaw);
+      diagnosticsLines.push({ label: "Last update", value: this._humanizeAgeFromEpochSeconds(tsValue) });
     }
     if (this._config.percent_entity) diagnosticsLines.push({ label: "Percent", value: this._formatNumber(this._num(this._config.percent_entity), DIAGNOSTICS_DECIMALS) });
     if (this._config.liters_entity) {
