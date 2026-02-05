@@ -2,6 +2,8 @@
 
 #include <stdint.h>
 
+// Contract: logger is intended for single-threaded Arduino loop usage (not ISR-safe).
+
 // Logging levels
 enum class LogLevel : uint8_t
 {
