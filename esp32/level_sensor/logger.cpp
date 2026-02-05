@@ -12,12 +12,45 @@ static bool s_highFreqEnabled = true;
 static LoggerMqttPublishFn s_mqttPublisher = nullptr;
 static LoggerMqttConnectedFn s_mqttConnectedFn = nullptr;
 
+static constexpr size_t kThrottleSlots = 16;
+static constexpr size_t kKeyTagLen = 12;
+static constexpr size_t kMsgBufSize = 256;
+static constexpr size_t kJsonBufSize = 512;
+static constexpr const char *kLogTopicSuffix = "event/log";
+
 struct ThrottleEntry
 {
-    const char *key;
-    uint32_t lastMs;
+    uint32_t hash = 0;
+    uint32_t lastMs = 0;
+    char keyTag[kKeyTagLen] = {0};
 };
-static ThrottleEntry s_throttle[16] = {};
+static ThrottleEntry s_throttle[kThrottleSlots] = {};
+
+static uint32_t fnv1a32(const char *s)
+{
+    if (!s)
+        return 0;
+    uint32_t hash = 2166136261u;
+    for (const uint8_t *p = (const uint8_t *)s; *p; ++p)
+    {
+        hash ^= *p;
+        hash *= 16777619u;
+    }
+    return hash == 0 ? 1u : hash;
+}
+
+static void makeKeyTag(const char *key, char *outTag, size_t tagLen)
+{
+    if (!outTag || tagLen == 0)
+        return;
+    if (!key)
+    {
+        outTag[0] = '\0';
+        return;
+    }
+    strncpy(outTag, key, tagLen - 1);
+    outTag[tagLen - 1] = '\0';
+}
 
 static const char *levelToString(LogLevel lvl)
 {
@@ -61,15 +94,123 @@ static const char *domainToString(LogDomain dom)
     }
 }
 
-static void sanitizeMessage(char *buf, size_t bufSize)
+static void appendTruncMarker(char *buf, size_t bufSize)
 {
-    for (size_t i = 0; i < bufSize && buf[i] != '\0'; ++i)
+    if (!buf || bufSize < 4)
+        return;
+    const size_t end = bufSize - 1;
+    buf[end - 3] = '.';
+    buf[end - 2] = '.';
+    buf[end - 1] = '.';
+    buf[end] = '\0';
+}
+
+static size_t jsonEscapeString(const char *src, char *dst, size_t dstSize, bool &truncated)
+{
+    truncated = false;
+    if (!dst || dstSize == 0)
     {
-        if (buf[i] == '"')
+        truncated = (src && src[0] != '\0');
+        return 0;
+    }
+
+    size_t out = 0;
+    for (const char *p = src ? src : ""; *p; ++p)
+    {
+        const unsigned char c = (unsigned char)*p;
+        const char *esc = nullptr;
+        char scratch[7] = {0};
+        size_t escLen = 0;
+
+        switch (c)
         {
-            buf[i] = '\'';
+        case '\\':
+            esc = "\\\\";
+            escLen = 2;
+            break;
+        case '"':
+            esc = "\\\"";
+            escLen = 2;
+            break;
+        case '\n':
+            esc = "\\n";
+            escLen = 2;
+            break;
+        case '\r':
+            esc = "\\r";
+            escLen = 2;
+            break;
+        case '\t':
+            esc = "\\t";
+            escLen = 2;
+            break;
+        default:
+            if (c < 0x20)
+            {
+                snprintf(scratch, sizeof(scratch), "\\u%04X", (unsigned)c);
+                esc = scratch;
+                escLen = 6;
+            }
+            else
+            {
+                esc = nullptr;
+                escLen = 1;
+            }
+            break;
+        }
+
+        if (out + escLen > dstSize)
+        {
+            truncated = true;
+            break;
+        }
+
+        if (esc)
+        {
+            memcpy(dst + out, esc, escLen);
+            out += escLen;
+        }
+        else
+        {
+            dst[out++] = (char)c;
         }
     }
+
+    if (truncated)
+    {
+        if (out + 3 <= dstSize)
+        {
+            dst[out++] = '.';
+            dst[out++] = '.';
+            dst[out++] = '.';
+        }
+    }
+
+    return out;
+}
+
+static bool buildLogJson(char *out, size_t outSize, uint32_t tsSec, LogLevel lvl, LogDomain dom, const char *msg)
+{
+    if (!out || outSize < 8)
+        return false;
+
+    const int prefixLen = snprintf(out, outSize, "{\"ts\":%lu,\"lvl\":\"%s\",\"dom\":\"%s\",\"msg\":\"",
+                                   (unsigned long)tsSec, levelToString(lvl), domainToString(dom));
+    if (prefixLen <= 0 || (size_t)prefixLen >= outSize)
+        return false;
+
+    size_t pos = (size_t)prefixLen;
+    if (outSize - pos < 3)
+        return false;
+
+    const size_t msgAvail = outSize - pos - 3;
+    bool truncated = false;
+    const size_t escapedLen = jsonEscapeString(msg, out + pos, msgAvail, truncated);
+    pos += escapedLen;
+    out[pos++] = '"';
+    out[pos++] = '}';
+    out[pos] = '\0';
+    return true;
 }
 
 void logger_begin(const char *baseTopic, bool serialEnabled, bool mqttEnabled)
@@ -128,25 +269,30 @@ static void logToMqtt(uint32_t tsSec, LogLevel lvl, LogDomain dom, const char *m
     if (s_mqttConnectedFn && !s_mqttConnectedFn())
         return;
 
-    char safeMsg[192];
-    strncpy(safeMsg, msg, sizeof(safeMsg));
-    safeMsg[sizeof(safeMsg) - 1] = '\0';
-    sanitizeMessage(safeMsg, sizeof(safeMsg));
+    char jsonBuf[kJsonBufSize];
+    if (!buildLogJson(jsonBuf, sizeof(jsonBuf), tsSec, lvl, dom, msg))
+    {
+        return;
+    }
 
-    char jsonBuf[256];
-    snprintf(jsonBuf, sizeof(jsonBuf), "{\"ts\":%lu,\"lvl\":\"%s\",\"dom\":\"%s\",\"msg\":\"%s\"}",
-             (unsigned long)tsSec, levelToString(lvl), domainToString(dom), safeMsg);
-
-    s_mqttPublisher("event/log", jsonBuf, false);
+    s_mqttPublisher(kLogTopicSuffix, jsonBuf, false);
 }
 
 void logger_log(LogLevel lvl, LogDomain dom, const char *fmt, ...)
 {
-    char msgBuf[192];
+    char msgBuf[kMsgBufSize];
     va_list args;
     va_start(args, fmt);
-    vsnprintf(msgBuf, sizeof(msgBuf), fmt, args);
+    const int needed = vsnprintf(msgBuf, sizeof(msgBuf), fmt, args);
     va_end(args);
+    if (needed < 0)
+    {
+        msgBuf[0] = '\0';
+    }
+    else if ((size_t)needed >= sizeof(msgBuf))
+    {
+        appendTruncMarker(msgBuf, sizeof(msgBuf));
+    }
 
     uint32_t tsSec = millis() / 1000;
     logToSerial(tsSec, lvl, dom, msgBuf);
@@ -161,42 +307,70 @@ void logger_logEvery(const char *key, uint32_t intervalMs, LogLevel lvl, LogDoma
     }
 
     uint32_t now = millis();
+    uint32_t keyHash = fnv1a32(key);
+    char keyTag[kKeyTagLen];
+    makeKeyTag(key, keyTag, sizeof(keyTag));
+
     ThrottleEntry *slot = nullptr;
-    for (size_t i = 0; i < (sizeof(s_throttle) / sizeof(s_throttle[0])); ++i)
+    ThrottleEntry *oldest = nullptr;
+    uint32_t oldestAge = 0;
+    if (key && key[0] != '\0' && intervalMs > 0)
     {
-        if (s_throttle[i].key == key)
+        for (size_t i = 0; i < kThrottleSlots; ++i)
         {
-            slot = &s_throttle[i];
-            break;
+            ThrottleEntry &e = s_throttle[i];
+            if (e.hash == keyHash && strncmp(e.keyTag, keyTag, sizeof(e.keyTag)) == 0)
+            {
+                slot = &e;
+                break;
+            }
+            if (e.hash == 0 && slot == nullptr)
+            {
+                slot = &e;
+            }
+            if (e.hash != 0)
+            {
+                const uint32_t age = now - e.lastMs;
+                if (!oldest || age > oldestAge)
+                {
+                    oldest = &e;
+                    oldestAge = age;
+                }
+            }
         }
-        if (slot == nullptr && s_throttle[i].key == nullptr)
+
+        if (slot == nullptr)
         {
-            slot = &s_throttle[i];
+            slot = oldest ? oldest : &s_throttle[0];
         }
+
+        if (slot->hash != 0)
+        {
+            const uint32_t delta = now - slot->lastMs;
+            if (delta < intervalMs)
+            {
+                return;
+            }
+        }
+
+        slot->hash = keyHash;
+        makeKeyTag(key, slot->keyTag, sizeof(slot->keyTag));
+        slot->lastMs = now;
     }
 
-    if (slot == nullptr)
-    {
-        slot = &s_throttle[0];
-    }
-
-    if (intervalMs > 0 && slot->key != nullptr)
-    {
-        uint32_t delta = now - slot->lastMs;
-        if (delta < intervalMs)
-        {
-            return;
-        }
-    }
-
-    slot->key = key;
-    slot->lastMs = now;
-
-    char msgBuf[192];
+    char msgBuf[kMsgBufSize];
     va_list args;
     va_start(args, fmt);
-    vsnprintf(msgBuf, sizeof(msgBuf), fmt, args);
+    const int needed = vsnprintf(msgBuf, sizeof(msgBuf), fmt, args);
     va_end(args);
+    if (needed < 0)
+    {
+        msgBuf[0] = '\0';
+    }
+    else if ((size_t)needed >= sizeof(msgBuf))
+    {
+        appendTruncMarker(msgBuf, sizeof(msgBuf));
+    }
 
     uint32_t tsSec = now / 1000;
     logToSerial(tsSec, lvl, dom, msgBuf);
