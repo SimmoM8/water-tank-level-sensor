@@ -1,6 +1,6 @@
 #include "ota_service.h"
 #include <WiFiClientSecure.h>
-#include <ESP32CertBundle.h> // provides tt_x509_crt_bundle
+#include "ota_ca_cert.h"
 #include "mbedtls/sha256.h"
 #include <ArduinoOTA.h>
 #include <WiFi.h>
@@ -74,6 +74,11 @@ void ota_begin(const char *hostName, const char *password)
 
 void ota_handle()
 {
+    if (g_job.active)
+    {
+        return; // avoid concurrent flash access during pull-OTA
+    }
+
     if (!s_started)
     {
         if (WiFi.status() != WL_CONNECTED)
@@ -137,7 +142,7 @@ static bool isHex64(const char *s)
 
 static inline char lowerHexChar(char c)
 {
-    if (c >= 'A' && c <= 'Z')
+    if (c >= 'A' && c <= 'F')
         return (char)(c - 'A' + 'a');
     return c;
 }
@@ -155,12 +160,20 @@ static void ota_setResult(DeviceState *state, const char *status, const char *me
     state->ota.completed_ts = (uint32_t)(millis() / 1000);
 }
 
+static inline void ota_setProgress(DeviceState *state, uint8_t progress)
+{
+    if (!state)
+        return;
+    state->ota.progress = progress;
+    state->ota_progress = progress;
+}
+
 static void ota_setFlat(DeviceState *state,
-                         const char *stateStr,
-                         uint8_t progress,
-                         const char *error,
-                         const char *targetVersion,
-                         bool stamp)
+                        const char *stateStr,
+                        uint8_t progress,
+                        const char *error,
+                        const char *targetVersion,
+                        bool stamp)
 {
     if (!state)
         return;
@@ -169,7 +182,7 @@ static void ota_setFlat(DeviceState *state,
         strncpy(state->ota_state, stateStr, sizeof(state->ota_state));
         state->ota_state[sizeof(state->ota_state) - 1] = '\0';
     }
-    state->ota_progress = progress;
+    ota_setProgress(state, progress);
     if (error)
     {
         strncpy(state->ota_error, error, sizeof(state->ota_error));
@@ -191,9 +204,8 @@ static void ota_markFailed(DeviceState *state, const char *reason)
     if (!state)
         return;
     state->ota.status = OtaStatus::ERROR;
-    state->ota.progress = 0;
     ota_setResult(state, "error", reason ? reason : "error");
-    ota_setFlat(state, "failed", state->ota.progress, reason ? reason : "error", state->ota.version, true);
+    ota_setFlat(state, "failed", 0, reason ? reason : "error", state->ota.version, true);
 }
 
 bool ota_pullStart(DeviceState *state,
@@ -235,7 +247,6 @@ bool ota_pullStart(DeviceState *state,
     if (!force && version && version[0] != '\0' && state->device.fw && strcmp(version, state->device.fw) == 0)
     {
         state->ota.status = OtaStatus::SUCCESS;
-        state->ota.progress = 100;
         ota_setResult(state, "success", "noop_already_on_version");
         ota_setFlat(state, "success", 100, "", version ? version : "", true);
         state->update_available = false;
@@ -290,7 +301,6 @@ bool ota_pullStart(DeviceState *state,
 
     // Mirror into device-owned state
     state->ota.status = OtaStatus::DOWNLOADING;
-    state->ota.progress = 0;
     strncpy(state->ota.request_id, g_job.request_id, sizeof(state->ota.request_id));
     strncpy(state->ota.version, g_job.version, sizeof(state->ota.version));
     strncpy(state->ota.url, g_job.url, sizeof(state->ota.url));
@@ -354,7 +364,7 @@ bool ota_pullStartFromManifest(DeviceState *state,
     }
 
     WiFiClientSecure client;
-    client.setCACertBundle(tt_x509_crt_bundle);
+    client.setCACert(OTA_GITHUB_CA);
     client.setTimeout(12000);
 
     HTTPClient http;
@@ -477,7 +487,7 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
     }
 
     WiFiClientSecure client;
-    client.setCACertBundle(tt_x509_crt_bundle);
+    client.setCACert(OTA_GITHUB_CA);
     client.setTimeout(12000);
 
     HTTPClient http;
@@ -585,7 +595,6 @@ static void ota_finishSuccess(DeviceState *state)
     if (state)
     {
         state->ota.status = OtaStatus::SUCCESS;
-        state->ota.progress = 100;
         ota_setResult(state, "success", "applied");
         ota_setFlat(state, "success", 100, "", state->ota.version, true);
         state->update_available = false;
@@ -625,8 +634,9 @@ void ota_tick(DeviceState *state)
     // Step A: begin HTTP if not begun
     if (!g_job.httpBegun)
     {
+        static constexpr uint32_t kHandshakeTimeoutMs = 20000;
         // Setup secure client with CA bundle
-        g_job.client.setCACertBundle(tt_x509_crt_bundle);
+        g_job.client.setCACert(OTA_GITHUB_CA);
         g_job.client.setTimeout(12000); // 12s timeout for handshake and read
 
         // Follow GitHub redirects (releases/download -> objects.githubusercontent.com)
@@ -634,13 +644,23 @@ void ota_tick(DeviceState *state)
         g_job.http.setRedirectLimit(5);
 
         // HTTPS: WiFiClientSecure + CA bundle + redirect-following (GitHub releases).
+        const uint32_t hsStartMs = millis();
         bool ok = g_job.http.begin(g_job.client, g_job.url);
+        const uint32_t hsElapsedMs = millis() - hsStartMs;
+        if (ok)
+        {
+            g_job.httpBegun = true;
+        }
+        if (hsElapsedMs > kHandshakeTimeoutMs)
+        {
+            ota_abort(state, "http_handshake_timeout");
+            return;
+        }
         if (!ok)
         {
             ota_abort(state, "http_begin_failed");
             return;
         }
-        g_job.httpBegun = true;
 
         static const char *kHeaders[] = {"Content-Type", "Content-Length", "Location"};
         g_job.http.collectHeaders(kHeaders, 3);
@@ -694,15 +714,17 @@ void ota_tick(DeviceState *state)
             return;
         }
         mbedtls_sha256_init(&g_job.shaCtx);
-        mbedtls_sha256_starts(&g_job.shaCtx, 0); // SHA-256
+        if (mbedtls_sha256_starts(&g_job.shaCtx, 0) != 0)
+        {
+            ota_abort(state, "sha_init_failed");
+            return;
+        }
         g_job.shaInit = true;
         g_job.updateBegun = true;
 
         if (state)
         {
             state->ota.status = OtaStatus::DOWNLOADING;
-            state->ota.progress = 0;
-            state->ota_progress = 0;
             ota_setFlat(state, "downloading", 0, "", nullptr, false);
         }
 
@@ -780,14 +802,12 @@ void ota_tick(DeviceState *state)
             uint32_t pct = (g_job.bytesWritten * 100u) / g_job.bytesTotal;
             if (pct > 100u)
                 pct = 100u;
-            state->ota.progress = (uint8_t)pct;
-            state->ota_progress = state->ota.progress;
+            ota_setProgress(state, (uint8_t)pct);
         }
         else
         {
             // unknown total size
-            state->ota.progress = 0;
-            state->ota_progress = state->ota.progress;
+            ota_setProgress(state, 255); // use 255 to indicate indeterminate progress
         }
     }
 

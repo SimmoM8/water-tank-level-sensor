@@ -78,6 +78,13 @@ QualityResult quality_evaluate(uint32_t raw,
     QualityResult res{true, ProbeQualityReason::OK};
     bool updateLast = true;
 
+    const int32_t dry = cfg.calDry;
+    const int32_t wet = cfg.calWet;
+    const int32_t calMin = (dry < wet) ? dry : wet;
+    const int32_t calMax = (dry > wet) ? dry : wet;
+    const int32_t calRange = calMax - calMin;
+    const bool hasCal = (dry > 0) && (wet > 0) && (calRange >= (int32_t)qc.calRecommendMargin);
+
     // Disconnected if raw below threshold
     if (raw < qc.disconnectedBelowRaw)
     {
@@ -162,12 +169,6 @@ QualityResult quality_evaluate(uint32_t raw,
     }
 
     // Calibration recommended: raw repeatedly beyond stored cal bounds + margin.
-    const int32_t dry = cfg.calDry;
-    const int32_t wet = cfg.calWet;
-    const int32_t calMin = (dry < wet) ? dry : wet;
-    const int32_t calMax = (dry > wet) ? dry : wet;
-    const int32_t calRange = calMax - calMin;
-    const bool hasCal = (dry > 0) && (wet > 0) && (calRange >= (int32_t)qc.calRecommendMargin);
     if (hasCal)
     {
         startWindowIfExpired(nowMs, qc.calRecommendWindowMs, rt.calWindowStart, rt.calBelowCount, rt.calAboveCount);
