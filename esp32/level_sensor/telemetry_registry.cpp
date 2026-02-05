@@ -392,6 +392,16 @@ static bool write_update_available(const DeviceState &s, JsonObject &root)
     return writeAtPath(root, "update_available", s.update_available);
 }
 
+static bool write_ota_force(const DeviceState &s, JsonObject &root)
+{
+    return writeAtPath(root, "ota.force", s.ota_force);
+}
+
+static bool write_ota_reboot(const DeviceState &s, JsonObject &root)
+{
+    return writeAtPath(root, "ota.reboot", s.ota_reboot);
+}
+
 static bool write_ota_state_flat(const DeviceState &s, JsonObject &root)
 {
     const char *state = s.ota_state[0] ? s.ota_state : c_str(to_string(s.ota.status));
@@ -522,6 +532,8 @@ static const TelemetryFieldDef TELEMETRY_FIELDS[] = {
     {HaComponent::Sensor, "ota_last_ts", "OTA Last Timestamp", "ota_last_ts", "timestamp", nullptr, ICON_CLOCK, nullptr, nullptr, write_ota_last_ts_flat},
 
     // OTA (internal state)
+    {HaComponent::Internal, "ota_force", "OTA Force", "ota.force", nullptr, nullptr, nullptr, nullptr, nullptr, write_ota_force},
+    {HaComponent::Internal, "ota_reboot", "OTA Reboot", "ota.reboot", nullptr, nullptr, nullptr, nullptr, nullptr, write_ota_reboot},
     {HaComponent::Internal, "ota_status", "OTA Status", "ota.status", nullptr, nullptr, nullptr, nullptr, nullptr, write_ota_status},
     {HaComponent::Internal, "ota_progress", "OTA Progress", "ota.progress", nullptr, nullptr, nullptr, nullptr, nullptr, write_ota_progress},
     {HaComponent::Internal, "ota_active", "OTA Active", "ota.active", nullptr, nullptr, nullptr, nullptr, nullptr, write_ota_active},
@@ -542,6 +554,16 @@ static const ControlDef CONTROL_DEFS[] = {
     {HaComponent::Button, "wipe_wifi", "Wipe WiFi Credentials", nullptr, nullptr, nullptr, "mdi:wifi-remove", "wipe_wifi", nullptr, 0, 0, 0, nullptr, 0, nullptr, nullptr, nullptr, "{\"schema\":1,\"type\":\"wipe_wifi\",\"request_id\":\"{{ timestamp }}\"}", nullptr},
     {HaComponent::Button, "reannounce", "Re-announce Device", nullptr, nullptr, nullptr, nullptr, "reannounce", nullptr, 0, 0, 0, nullptr, 0, nullptr, nullptr, nullptr, "{\"schema\":1,\"type\":\"reannounce\",\"request_id\":\"{{ timestamp }}\"}", nullptr},
     {HaComponent::Button, "ota_pull", "OTA Pull", nullptr, nullptr, nullptr, "mdi:update", "ota_pull", nullptr, 0, 0, 0, nullptr, 0, nullptr, nullptr, nullptr, "{\"schema\":1,\"type\":\"ota_pull\",\"request_id\":\"{{ timestamp }}\",\"data\":{}}", "ota_pull"},
+    {HaComponent::Switch, "ota_force", "OTA Force", "ota.force", nullptr, nullptr, "mdi:flash", "ota_options", "ota_force", 0, 0, 0,
+     nullptr, 0,
+     "{\"schema\":1,\"type\":\"ota_options\",\"request_id\":\"{{ timestamp }}\",\"data\":{\"ota_force\":true}}",
+     "{\"schema\":1,\"type\":\"ota_options\",\"request_id\":\"{{ timestamp }}\",\"data\":{\"ota_force\":false}}",
+     nullptr, nullptr, "ota_force"},
+    {HaComponent::Switch, "ota_reboot", "OTA Reboot", "ota.reboot", nullptr, nullptr, "mdi:restart", "ota_options", "ota_reboot", 0, 0, 0,
+     nullptr, 0,
+     "{\"schema\":1,\"type\":\"ota_options\",\"request_id\":\"{{ timestamp }}\",\"data\":{\"ota_reboot\":true}}",
+     "{\"schema\":1,\"type\":\"ota_options\",\"request_id\":\"{{ timestamp }}\",\"data\":{\"ota_reboot\":false}}",
+     nullptr, nullptr, "ota_reboot"},
 
     // Numbers
     {HaComponent::Number, "tank_volume_l", "Tank Volume (L)", "config.tank_volume_l", nullptr, nullptr, nullptr, "set_config", "tank_volume_l", 0.0f, 10000000.0f, 1.0f, nullptr, 0, nullptr, nullptr, "{\"schema\":1,\"type\":\"set_config\",\"request_id\":\"{{ timestamp }}\",\"data\":{\"tank_volume_l\":{{ value }}}}", nullptr, nullptr},

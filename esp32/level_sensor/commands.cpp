@@ -9,6 +9,7 @@
 #include "device_state.h"
 #include "domain_strings.h"
 #include "ota_service.h"
+#include "storage_nvs.h"
 
 #ifndef CMD_SCHEMA_VERSION
 #define CMD_SCHEMA_VERSION 1
@@ -258,8 +259,8 @@ static void handleOtaPull(JsonObject data, const char *requestId)
     const char *url = data["url"] | "";
     const char *sha256 = data["sha256"] | "";
 
-    const bool rebootDefault = true;
-    const bool forceDefault = false;
+    const bool rebootDefault = s_ctx.state ? s_ctx.state->ota_reboot : true;
+    const bool forceDefault = s_ctx.state ? s_ctx.state->ota_force : false;
     bool reboot = data["reboot"].is<bool>() ? data["reboot"].as<bool>() : rebootDefault;
     bool force = data["force"].is<bool>() ? data["force"].as<bool>() : forceDefault;
 
@@ -305,6 +306,52 @@ static void handleOtaPull(JsonObject data, const char *requestId)
 
     finish(requestId, "ota_pull", CmdStatus::APPLIED, "queued");
     LOG_INFO(LogDomain::COMMAND, "OTA pull accepted request_id=%s reason=queued", requestId ? requestId : "");
+}
+
+static void handleOtaOptions(JsonObject data, const char *requestId)
+{
+    if (!s_ctx.state)
+    {
+        finish(requestId, "ota_options", CmdStatus::ERROR, "missing_state");
+        return;
+    }
+
+    bool updatedAny = false;
+
+    if (data.containsKey("ota_force"))
+    {
+        if (!data["ota_force"].is<bool>())
+        {
+            finish(requestId, "ota_options", CmdStatus::REJECTED, "invalid_fields");
+            return;
+        }
+        const bool v = data["ota_force"].as<bool>();
+        s_ctx.state->ota_force = v;
+        storage_saveOtaForce(v);
+        updatedAny = true;
+    }
+
+    if (data.containsKey("ota_reboot"))
+    {
+        if (!data["ota_reboot"].is<bool>())
+        {
+            finish(requestId, "ota_options", CmdStatus::REJECTED, "invalid_fields");
+            return;
+        }
+        const bool v = data["ota_reboot"].as<bool>();
+        s_ctx.state->ota_reboot = v;
+        storage_saveOtaReboot(v);
+        updatedAny = true;
+    }
+
+    if (!updatedAny)
+    {
+        finish(requestId, "ota_options", CmdStatus::REJECTED, "invalid_fields");
+        return;
+    }
+
+    finish(requestId, "ota_options", CmdStatus::APPLIED, "applied");
+    LOG_INFO(LogDomain::COMMAND, "OTA options applied request_id=%s", requestId ? requestId : "");
 }
 
 static SenseMode parseSenseMode(JsonVariant value)
@@ -560,6 +607,15 @@ void commands_handle(const uint8_t *payload, size_t len)
             return;
         }
         handleOtaPull(data, requestId);
+    }
+    else if (strcmp(type, "ota_options") == 0)
+    {
+        if (!hasDataObj)
+        {
+            finish(requestId, type, CmdStatus::REJECTED, "missing_data");
+            return;
+        }
+        handleOtaOptions(data, requestId);
     }
     else
     {

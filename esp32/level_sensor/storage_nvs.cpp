@@ -28,6 +28,10 @@ static constexpr const char kKeyTankHeight[] = "tank_height";
 static constexpr const char kKeySenseMode[] = "sense_mode";
 static constexpr const char kKeySimMode[] = "sim_mode";
 
+// ---------------- OTA Options ----------------
+static constexpr const char kKeyOtaForce[] = "ota_force";
+static constexpr const char kKeyOtaReboot[] = "ota_reboot";
+
 static constexpr uint32_t kWarnThrottleMs = 5000;
 } // namespace nvs
 } // namespace storage
@@ -171,6 +175,17 @@ bool storage_loadSimulation(SenseMode &senseMode, uint8_t &mode)
     return ok;
 }
 
+bool storage_loadOtaOptions(bool &force, bool &reboot)
+{
+    const bool hasForce = prefs.isKey(storage::nvs::kKeyOtaForce);
+    const bool hasReboot = prefs.isKey(storage::nvs::kKeyOtaReboot);
+
+    force = prefs.getBool(storage::nvs::kKeyOtaForce, false);
+    reboot = prefs.getBool(storage::nvs::kKeyOtaReboot, true);
+
+    return hasForce || hasReboot;
+}
+
 void storage_saveCalibrationDry(int32_t dry)
 {
     prefs.putInt(storage::nvs::kKeyDry, dry);
@@ -213,6 +228,16 @@ void storage_saveSenseMode(SenseMode senseMode)
     prefs.putUChar(storage::nvs::kKeySenseMode, (uint8_t)senseMode);
 }
 
+void storage_saveOtaForce(bool force)
+{
+    prefs.putBool(storage::nvs::kKeyOtaForce, force);
+}
+
+void storage_saveOtaReboot(bool reboot)
+{
+    prefs.putBool(storage::nvs::kKeyOtaReboot, reboot);
+}
+
 void storage_dump()
 {
     int32_t dry = prefs.getInt(storage::nvs::kKeyDry, 0);
@@ -224,9 +249,13 @@ void storage_dump()
 
     SenseMode sense = (SenseMode)prefs.getUChar(storage::nvs::kKeySenseMode, (uint8_t)SenseMode::TOUCH);
     uint8_t simMode = (uint8_t)prefs.getUChar(storage::nvs::kKeySimMode, 0);
+    bool otaForce = prefs.getBool(storage::nvs::kKeyOtaForce, false);
+    bool otaReboot = prefs.getBool(storage::nvs::kKeyOtaReboot, true);
 
     LOG_INFO(LogDomain::CONFIG, "NVS: dry=%ld wet=%ld inv=%s", (long)dry, (long)wet, inv ? "true" : "false");
     LOG_INFO(LogDomain::CONFIG, "NVS: tank_volume_l=%.2f tank_height_cm=%.2f", (double)vol, (double)height);
     LOG_INFO(LogDomain::CONFIG, "NVS: sense_mode=%s sim_mode=%u",
              domain_strings::c_str(domain_strings::to_string(sense)), (unsigned)simMode);
+    LOG_INFO(LogDomain::CONFIG, "NVS: ota_force=%s ota_reboot=%s",
+             otaForce ? "true" : "false", otaReboot ? "true" : "false");
 }
