@@ -15,10 +15,29 @@ static const char *AVAIL_TOPIC_SUFFIX = "availability";
 static const char *STATE_TOPIC_SUFFIX = "state";
 static const char *PAYLOAD_AVAILABLE = "online";
 static const char *PAYLOAD_NOT_AVAILABLE = "offline";
+static const char *DEVICE_MANUFACTURER = "Dads Smart Home";
 
 static const char *buildUniqId(const char *objectId, const char *overrideId)
 {
     return overrideId ? overrideId : objectId;
+}
+
+static void addDeviceShort(JsonObject dev)
+{
+    dev["name"] = s_cfg.deviceName;
+    dev["ids"] = s_cfg.deviceId;
+    dev["mdl"] = s_cfg.deviceModel;
+    dev["sw"] = s_cfg.deviceSw;
+    dev["mf"] = DEVICE_MANUFACTURER;
+}
+
+static void addDeviceLong(JsonObject dev)
+{
+    dev["name"] = s_cfg.deviceName;
+    dev["identifiers"] = s_cfg.deviceId;
+    dev["model"] = s_cfg.deviceModel;
+    dev["sw_version"] = s_cfg.deviceSw;
+    dev["manufacturer"] = DEVICE_MANUFACTURER;
 }
 
 static bool publishSensor(const TelemetryFieldDef &s)
@@ -49,10 +68,7 @@ static bool publishSensor(const TelemetryFieldDef &s)
     }
 
     JsonObject dev = doc.createNestedObject("dev");
-    dev["name"] = s_cfg.deviceName;
-    dev["ids"] = s_cfg.deviceId;
-    dev["mdl"] = s_cfg.deviceModel;
-    dev["sw"] = s_cfg.deviceSw;
+    addDeviceShort(dev);
 
     char buf[896];
     const size_t n = serializeJson(doc, buf, sizeof(buf));
@@ -93,10 +109,7 @@ static bool publishBinarySensor(const TelemetryFieldDef &s)
         doc["icon"] = s.icon;
 
     JsonObject dev = doc.createNestedObject("dev");
-    dev["name"] = s_cfg.deviceName;
-    dev["ids"] = s_cfg.deviceId;
-    dev["mdl"] = s_cfg.deviceModel;
-    dev["sw"] = s_cfg.deviceSw;
+    addDeviceShort(dev);
 
     char buf[896];
     const size_t n = serializeJson(doc, buf, sizeof(buf));
@@ -132,10 +145,7 @@ static bool publishControlButton(const ControlDef &b)
     doc["payload_not_available"] = PAYLOAD_NOT_AVAILABLE;
 
     JsonObject dev = doc.createNestedObject("dev");
-    dev["name"] = s_cfg.deviceName;
-    dev["ids"] = s_cfg.deviceId;
-    dev["mdl"] = s_cfg.deviceModel;
-    dev["sw"] = s_cfg.deviceSw;
+    addDeviceShort(dev);
 
     char buf[768];
     const size_t n = serializeJson(doc, buf, sizeof(buf));
@@ -188,10 +198,7 @@ static bool publishNumber(const ControlDef &nSpec)
         doc["icon"] = nSpec.icon;
 
     JsonObject dev = doc.createNestedObject("dev");
-    dev["name"] = s_cfg.deviceName;
-    dev["ids"] = s_cfg.deviceId;
-    dev["mdl"] = s_cfg.deviceModel;
-    dev["sw"] = s_cfg.deviceSw;
+    addDeviceShort(dev);
 
     char buf[960];
     const size_t n = serializeJson(doc, buf, sizeof(buf));
@@ -229,10 +236,7 @@ static bool publishSwitch(const ControlDef &s)
     doc["pl_not_avail"] = PAYLOAD_NOT_AVAILABLE;
 
     JsonObject dev = doc.createNestedObject("dev");
-    dev["name"] = s_cfg.deviceName;
-    dev["ids"] = s_cfg.deviceId;
-    dev["mdl"] = s_cfg.deviceModel;
-    dev["sw"] = s_cfg.deviceSw;
+    addDeviceShort(dev);
 
     char buf[960];
     const size_t n = serializeJson(doc, buf, sizeof(buf));
@@ -283,10 +287,7 @@ static bool publishSelect(const ControlDef &s)
     doc["pl_not_avail"] = PAYLOAD_NOT_AVAILABLE;
 
     JsonObject dev = doc.createNestedObject("dev");
-    dev["name"] = s_cfg.deviceName;
-    dev["ids"] = s_cfg.deviceId;
-    dev["mdl"] = s_cfg.deviceModel;
-    dev["sw"] = s_cfg.deviceSw;
+    addDeviceShort(dev);
 
     char buf[960];
     const size_t n = serializeJson(doc, buf, sizeof(buf));
@@ -321,10 +322,7 @@ static bool publishOnlineEntity()
     doc["pl_not_avail"] = PAYLOAD_NOT_AVAILABLE;
 
     JsonObject dev = doc.createNestedObject("dev");
-    dev["name"] = s_cfg.deviceName;
-    dev["ids"] = s_cfg.deviceId;
-    dev["mdl"] = s_cfg.deviceModel;
-    dev["sw"] = s_cfg.deviceSw;
+    addDeviceShort(dev);
 
     char buf[640];
     const size_t n = serializeJson(doc, buf, sizeof(buf));
@@ -361,10 +359,7 @@ static bool publishUpdateEntity()
     doc["device_class"] = "firmware";
 
     JsonObject dev = doc.createNestedObject("device");
-    dev["name"] = s_cfg.deviceName;
-    dev["identifiers"] = s_cfg.deviceId;
-    dev["model"] = s_cfg.deviceModel;
-    dev["sw_version"] = s_cfg.deviceSw;
+    addDeviceLong(dev);
 
     char buf[896];
     const size_t n = serializeJson(doc, buf, sizeof(buf));
@@ -379,6 +374,25 @@ static bool publishUpdateEntity()
     {
         LOG_WARN(LogDomain::MQTT, "Failed HA discovery update %s", topic);
     }
+    return ok;
+}
+
+static bool publishOtaExtras()
+{
+    static const TelemetryFieldDef kOtaLastStatus{
+        HaComponent::Sensor, "ota_last_status", "OTA Last Status", "ota.result.status",
+        nullptr, nullptr, "mdi:update", nullptr, nullptr, nullptr};
+    static const TelemetryFieldDef kOtaLastMessage{
+        HaComponent::Sensor, "ota_last_message", "OTA Last Message", "ota.result.message",
+        nullptr, nullptr, "mdi:message-alert-outline", nullptr, nullptr, nullptr};
+    static const TelemetryFieldDef kUpdateAvailable{
+        HaComponent::BinarySensor, "update_available", "Update Available", "update_available",
+        "update", nullptr, "mdi:update", nullptr, nullptr, nullptr};
+
+    bool ok = false;
+    ok |= publishSensor(kOtaLastStatus);
+    ok |= publishSensor(kOtaLastMessage);
+    ok |= publishBinarySensor(kUpdateAvailable);
     return ok;
 }
 
@@ -416,6 +430,7 @@ void ha_discovery_publishAll()
 
     anyOk |= publishOnlineEntity();
     anyOk |= publishUpdateEntity();
+    anyOk |= publishOtaExtras();
 
     size_t tCount = 0;
     const TelemetryFieldDef *fields = telemetry_registry_fields(tCount);
