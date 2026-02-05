@@ -1,6 +1,6 @@
-#pragma once // prevent multiple inclusion of this header file
+#pragma once
 
-#include <Arduino.h>
+#include <stdint.h>
 #include "device_state.h"
 
 /* ---------------- Boot Lifecycle ---------------- */
