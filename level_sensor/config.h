@@ -35,4 +35,4 @@
 #define CFG_PERCENT_EMA_ALPHA 1.0f
 
 // — OTA —
-// #define CFG_OTA_MANIFEST_URL "https://example.com/firmware/manifest.json"
+#define CFG_OTA_MANIFEST_URL "https://raw.githubusercontent.com/SimmoM8/water-tank-level-sensor/main/manifests/dev.json"
