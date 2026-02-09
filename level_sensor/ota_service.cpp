@@ -69,6 +69,8 @@ static PullOtaJob g_job;
 static const char *s_lastTlsTrustMode = "none";
 static int s_lastTlsErrCode = 0;
 static char s_lastTlsErrMsg[128] = {0};
+static const char *OTA_PROGRESS_TOPIC_SUFFIX = "ota/progress";
+static const char *OTA_STATUS_TOPIC_SUFFIX = "ota/status";
 
 static inline bool ota_isSystemTimeValid()
 {
@@ -266,12 +268,53 @@ static inline void ota_requestPublish()
     mqtt_requestStatePublish();
 }
 
+static const char *ota_externalStatusFor(OtaStatus status)
+{
+    switch (status)
+    {
+    case OtaStatus::IDLE:
+        return "idle";
+    case OtaStatus::DOWNLOADING:
+        return "downloading";
+    case OtaStatus::VERIFYING:
+    case OtaStatus::APPLYING:
+        return "flashing";
+    case OtaStatus::SUCCESS:
+    case OtaStatus::REBOOTING:
+        return "success";
+    case OtaStatus::ERROR:
+        return "fail";
+    }
+    return "idle";
+}
+
+static inline void ota_publishProgressRaw(uint8_t progress)
+{
+    char payload[8];
+    snprintf(payload, sizeof(payload), "%u", (unsigned int)progress);
+    mqtt_publishLog(OTA_PROGRESS_TOPIC_SUFFIX, payload, true);
+}
+
+static inline void ota_publishStatusRaw(OtaStatus status)
+{
+    mqtt_publishLog(OTA_STATUS_TOPIC_SUFFIX, ota_externalStatusFor(status), true);
+}
+
+static inline void ota_setStatus(DeviceState *state, OtaStatus status)
+{
+    if (!state)
+        return;
+    state->ota.status = status;
+    ota_publishStatusRaw(status);
+}
+
 static inline void ota_setProgress(DeviceState *state, uint8_t progress)
 {
     if (!state)
         return;
     state->ota.progress = progress;
     state->ota_progress = progress;
+    ota_publishProgressRaw(progress);
 }
 
 static void ota_clearActive(DeviceState *state)
@@ -330,7 +373,7 @@ static void ota_markFailed(DeviceState *state, const char *reason)
 {
     if (!state)
         return;
-    state->ota.status = OtaStatus::ERROR;
+    ota_setStatus(state, OtaStatus::ERROR);
     ota_setResult(state, "error", reason ? reason : "error");
     ota_setFlat(state, "failed", 0, reason ? reason : "error", state->ota.version, true);
     ota_clearActive(state);
@@ -375,7 +418,7 @@ bool ota_pullStart(DeviceState *state,
     // Idempotency: if not forcing and version matches current, no-op success.
     if (!force && version && version[0] != '\0' && state->device.fw && strcmp(version, state->device.fw) == 0)
     {
-        state->ota.status = OtaStatus::SUCCESS;
+        ota_setStatus(state, OtaStatus::SUCCESS);
         ota_setResult(state, "success", "noop_already_on_version");
         ota_setFlat(state, "success", 100, "", version ? version : "", true);
         state->update_available = false;
@@ -430,7 +473,7 @@ bool ota_pullStart(DeviceState *state,
     g_job.sha256[sizeof(g_job.sha256) - 1] = '\0';
 
     // Mirror into device-owned state
-    state->ota.status = OtaStatus::DOWNLOADING;
+    ota_setStatus(state, OtaStatus::DOWNLOADING);
     strncpy(state->ota.request_id, g_job.request_id, sizeof(state->ota.request_id));
     strncpy(state->ota.version, g_job.version, sizeof(state->ota.version));
     strncpy(state->ota.url, g_job.url, sizeof(state->ota.url));
@@ -722,7 +765,7 @@ static void ota_abort(DeviceState *state, const char *reason)
 {
     if (state)
     {
-        state->ota.status = OtaStatus::ERROR;
+        ota_setStatus(state, OtaStatus::ERROR);
         ota_setResult(state, "error", reason ? reason : "error");
         ota_setFlat(state, "failed", state->ota.progress, reason ? reason : "error", state->ota.version, true);
         ota_clearActive(state);
@@ -755,7 +798,7 @@ static void ota_finishSuccess(DeviceState *state)
 {
     if (state)
     {
-        state->ota.status = OtaStatus::SUCCESS;
+        ota_setStatus(state, OtaStatus::SUCCESS);
         ota_setResult(state, "success", "applied");
         ota_setFlat(state, "success", 100, "", state->ota.version, true);
         state->update_available = false;
@@ -781,7 +824,7 @@ static void ota_finishSuccess(DeviceState *state)
     {
         if (state)
         {
-            state->ota.status = OtaStatus::REBOOTING;
+            ota_setStatus(state, OtaStatus::REBOOTING);
         }
         delay(250);
         ESP.restart();
@@ -905,7 +948,7 @@ void ota_tick(DeviceState *state)
 
         if (state)
         {
-            state->ota.status = OtaStatus::DOWNLOADING;
+            ota_setStatus(state, OtaStatus::DOWNLOADING);
             ota_setFlat(state, "downloading", 0, "", nullptr, false);
             ota_requestPublish();
         }
@@ -1024,7 +1067,7 @@ void ota_tick(DeviceState *state)
     // Step C: finalize update
     if (state)
     {
-        state->ota.status = OtaStatus::VERIFYING;
+        ota_setStatus(state, OtaStatus::VERIFYING);
         ota_setFlat(state, "verifying", state->ota.progress, nullptr, nullptr, false);
         ota_requestPublish();
     }
@@ -1081,7 +1124,7 @@ void ota_tick(DeviceState *state)
 
     if (state)
     {
-        state->ota.status = OtaStatus::APPLYING;
+        ota_setStatus(state, OtaStatus::APPLYING);
         ota_setFlat(state, "applying", state->ota.progress, nullptr, nullptr, false);
         ota_requestPublish();
     }
