@@ -251,26 +251,133 @@ void storage_saveOtaLastSuccess(uint32_t ts)
     prefs.putUInt(storage::nvs::kKeyOtaLastSuccess, ts);
 }
 
+static inline void fnv1aMixByte(uint32_t &h, uint8_t b)
+{
+    h ^= (uint32_t)b;
+    h *= 16777619u;
+}
+
+static inline void fnv1aMixBool(uint32_t &h, bool v)
+{
+    fnv1aMixByte(h, v ? 1u : 0u);
+}
+
+static inline void fnv1aMixU32(uint32_t &h, uint32_t v)
+{
+    fnv1aMixByte(h, (uint8_t)(v & 0xFFu));
+    fnv1aMixByte(h, (uint8_t)((v >> 8) & 0xFFu));
+    fnv1aMixByte(h, (uint8_t)((v >> 16) & 0xFFu));
+    fnv1aMixByte(h, (uint8_t)((v >> 24) & 0xFFu));
+}
+
+static inline void fnv1aMixI32(uint32_t &h, int32_t v)
+{
+    fnv1aMixU32(h, (uint32_t)v);
+}
+
+static inline void fnv1aMixFloat(uint32_t &h, float v)
+{
+    union
+    {
+        float f;
+        uint32_t u;
+    } conv{};
+    conv.f = v;
+    fnv1aMixU32(h, conv.u);
+}
+
 void storage_dump()
 {
+    const bool hasSchema = prefs.isKey(storage::nvs::kSchemaKey);
+    const uint32_t schema = prefs.getUInt(storage::nvs::kSchemaKey, 0u);
+
+    const bool hasDry = prefs.isKey(storage::nvs::kKeyDry);
+    const bool hasWet = prefs.isKey(storage::nvs::kKeyWet);
+    const bool hasInv = prefs.isKey(storage::nvs::kKeyInv);
     int32_t dry = prefs.getInt(storage::nvs::kKeyDry, 0);
     int32_t wet = prefs.getInt(storage::nvs::kKeyWet, 0);
     bool inv = prefs.getBool(storage::nvs::kKeyInv, false);
 
+    const bool hasVol = prefs.isKey(storage::nvs::kKeyTankVol);
+    const bool hasHeight = prefs.isKey(storage::nvs::kKeyTankHeight);
     float vol = prefs.getFloat(storage::nvs::kKeyTankVol, 0.0f);
     float height = prefs.getFloat(storage::nvs::kKeyTankHeight, 0.0f);
 
-    SenseMode sense = (SenseMode)prefs.getUChar(storage::nvs::kKeySenseMode, (uint8_t)SenseMode::TOUCH);
+    const bool hasSense = prefs.isKey(storage::nvs::kKeySenseMode);
+    const bool hasSimMode = prefs.isKey(storage::nvs::kKeySimMode);
+    uint8_t senseRaw = (uint8_t)prefs.getUChar(storage::nvs::kKeySenseMode, (uint8_t)SenseMode::TOUCH);
     uint8_t simMode = (uint8_t)prefs.getUChar(storage::nvs::kKeySimMode, 0);
+
+    const bool senseValid =
+        (senseRaw >= (uint8_t)SenseMode::TOUCH) &&
+        (senseRaw <= (uint8_t)SenseMode::SIM);
+    const SenseMode sense = senseValid ? static_cast<SenseMode>(senseRaw) : SenseMode::TOUCH;
+    const char *senseText = senseValid ? domain_strings::c_str(domain_strings::to_string(sense)) : "unknown";
+
+    const bool hasOtaForce = prefs.isKey(storage::nvs::kKeyOtaForce);
+    const bool hasOtaReboot = prefs.isKey(storage::nvs::kKeyOtaReboot);
+    const bool hasOtaLastOk = prefs.isKey(storage::nvs::kKeyOtaLastSuccess);
     bool otaForce = prefs.getBool(storage::nvs::kKeyOtaForce, false);
     bool otaReboot = prefs.getBool(storage::nvs::kKeyOtaReboot, true);
     uint32_t otaLastOk = prefs.getUInt(storage::nvs::kKeyOtaLastSuccess, 0);
 
-    LOG_INFO(LogDomain::CONFIG, "NVS: dry=%ld wet=%ld inv=%s", (long)dry, (long)wet, inv ? "true" : "false");
-    LOG_INFO(LogDomain::CONFIG, "NVS: tank_volume_l=%.2f tank_height_cm=%.2f", (double)vol, (double)height);
-    LOG_INFO(LogDomain::CONFIG, "NVS: sense_mode=%s sim_mode=%u",
-             domain_strings::c_str(domain_strings::to_string(sense)), (unsigned)simMode);
-    LOG_INFO(LogDomain::CONFIG, "NVS: ota_force=%s ota_reboot=%s",
-             otaForce ? "true" : "false", otaReboot ? "true" : "false");
-    LOG_INFO(LogDomain::CONFIG, "NVS: ota_last_success_ts=%lu", (unsigned long)otaLastOk);
+    // Deterministic marker over presence + values to detect unexpected NVS drift.
+    uint32_t marker = 2166136261u; // FNV-1a 32-bit offset basis
+    fnv1aMixBool(marker, hasSchema);
+    fnv1aMixU32(marker, schema);
+    fnv1aMixBool(marker, hasDry);
+    fnv1aMixI32(marker, dry);
+    fnv1aMixBool(marker, hasWet);
+    fnv1aMixI32(marker, wet);
+    fnv1aMixBool(marker, hasInv);
+    fnv1aMixBool(marker, inv);
+    fnv1aMixBool(marker, hasVol);
+    fnv1aMixFloat(marker, vol);
+    fnv1aMixBool(marker, hasHeight);
+    fnv1aMixFloat(marker, height);
+    fnv1aMixBool(marker, hasSense);
+    fnv1aMixByte(marker, senseRaw);
+    fnv1aMixBool(marker, hasSimMode);
+    fnv1aMixByte(marker, simMode);
+    fnv1aMixBool(marker, hasOtaForce);
+    fnv1aMixBool(marker, otaForce);
+    fnv1aMixBool(marker, hasOtaReboot);
+    fnv1aMixBool(marker, otaReboot);
+    fnv1aMixBool(marker, hasOtaLastOk);
+    fnv1aMixU32(marker, otaLastOk);
+
+    LOG_INFO(LogDomain::CONFIG,
+             "NVS dump v1 schema=%lu expected=%lu marker=0x%08lX",
+             (unsigned long)schema,
+             (unsigned long)storage::nvs::kSchemaVersion,
+             (unsigned long)marker);
+    LOG_INFO(LogDomain::CONFIG,
+             "NVS cal has[dry=%s wet=%s inv=%s] dry=%ld wet=%ld inv=%s",
+             hasDry ? "y" : "n",
+             hasWet ? "y" : "n",
+             hasInv ? "y" : "n",
+             (long)dry,
+             (long)wet,
+             inv ? "true" : "false");
+    LOG_INFO(LogDomain::CONFIG,
+             "NVS tank has[vol=%s height=%s] tank_volume_l=%.2f tank_height_cm=%.2f",
+             hasVol ? "y" : "n",
+             hasHeight ? "y" : "n",
+             (double)vol,
+             (double)height);
+    LOG_INFO(LogDomain::CONFIG,
+             "NVS sim has[sense=%s mode=%s] sense_mode=%s(raw=%u) sim_mode=%u",
+             hasSense ? "y" : "n",
+             hasSimMode ? "y" : "n",
+             senseText,
+             (unsigned)senseRaw,
+             (unsigned)simMode);
+    LOG_INFO(LogDomain::CONFIG,
+             "NVS ota has[force=%s reboot=%s last_ok=%s] ota_force=%s ota_reboot=%s ota_last_success_ts=%lu",
+             hasOtaForce ? "y" : "n",
+             hasOtaReboot ? "y" : "n",
+             hasOtaLastOk ? "y" : "n",
+             otaForce ? "true" : "false",
+             otaReboot ? "true" : "false",
+             (unsigned long)otaLastOk);
 }
