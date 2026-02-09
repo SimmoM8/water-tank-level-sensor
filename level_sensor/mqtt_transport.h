@@ -18,6 +18,7 @@ struct MqttConfig
     const char *deviceName;
     const char *deviceModel;
     const char *deviceSw;
+    const char *deviceHw;
 };
 
 using CommandHandlerFn = void (*)(const uint8_t *payload, size_t len);

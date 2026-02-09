@@ -13,9 +13,11 @@ static bool s_published = false;
 
 static const char *AVAIL_TOPIC_SUFFIX = "availability";
 static const char *STATE_TOPIC_SUFFIX = "state";
+static const char *DEVICE_INFO_TOPIC_SUFFIX = "device_info";
 static const char *PAYLOAD_AVAILABLE = "online";
 static const char *PAYLOAD_NOT_AVAILABLE = "offline";
 static const char *DEVICE_MANUFACTURER = "Dads Smart Home";
+static const char *ORIGIN_NAME = "dads-smart-home-water-tank";
 
 static const char *buildUniqId(const char *objectId, const char *overrideId)
 {
@@ -28,6 +30,12 @@ static void addDeviceShort(JsonObject dev)
     dev["ids"] = s_cfg.deviceId;
     dev["mdl"] = s_cfg.deviceModel;
     dev["sw"] = s_cfg.deviceSw;
+    dev["sw_version"] = s_cfg.deviceSw;
+    if (s_cfg.deviceHw && s_cfg.deviceHw[0] != '\0')
+    {
+        dev["hw"] = s_cfg.deviceHw;
+        dev["hw_version"] = s_cfg.deviceHw;
+    }
     dev["mf"] = DEVICE_MANUFACTURER;
 }
 
@@ -37,7 +45,23 @@ static void addDeviceLong(JsonObject dev)
     dev["identifiers"] = s_cfg.deviceId;
     dev["model"] = s_cfg.deviceModel;
     dev["sw_version"] = s_cfg.deviceSw;
+    if (s_cfg.deviceHw && s_cfg.deviceHw[0] != '\0')
+    {
+        dev["hw_version"] = s_cfg.deviceHw;
+    }
     dev["manufacturer"] = DEVICE_MANUFACTURER;
+}
+
+template <typename TDoc>
+static void addOriginBlock(TDoc &doc)
+{
+    JsonObject origin = doc.createNestedObject("origin");
+    origin["name"] = ORIGIN_NAME;
+    origin["sw_version"] = s_cfg.deviceSw;
+    if (s_cfg.deviceHw && s_cfg.deviceHw[0] != '\0')
+    {
+        origin["hw_version"] = s_cfg.deviceHw;
+    }
 }
 
 static bool publishSensor(const TelemetryFieldDef &s)
@@ -45,7 +69,7 @@ static bool publishSensor(const TelemetryFieldDef &s)
     char topic[192];
     snprintf(topic, sizeof(topic), "homeassistant/sensor/%s_%s/config", s_cfg.deviceId, s.objectId);
 
-    StaticJsonDocument<640> doc;
+    StaticJsonDocument<768> doc;
     doc["name"] = s.name;
     doc["uniq_id"] = String(s_cfg.deviceId) + "_" + buildUniqId(s.objectId, s.uniqIdOverride);
     doc["stat_t"] = String(s_cfg.baseTopic) + "/" + STATE_TOPIC_SUFFIX;
@@ -66,6 +90,7 @@ static bool publishSensor(const TelemetryFieldDef &s)
         doc["json_attr_t"] = String(s_cfg.baseTopic) + "/" + STATE_TOPIC_SUFFIX;
         doc["json_attr_tpl"] = s.attrTemplate;
     }
+    addOriginBlock(doc);
 
     JsonObject dev = doc.createNestedObject("dev");
     addDeviceShort(dev);
@@ -91,7 +116,7 @@ static bool publishBinarySensor(const TelemetryFieldDef &s)
     char topic[192];
     snprintf(topic, sizeof(topic), "homeassistant/binary_sensor/%s_%s/config", s_cfg.deviceId, s.objectId);
 
-    StaticJsonDocument<640> doc;
+    StaticJsonDocument<768> doc;
     doc["name"] = s.name;
     doc["uniq_id"] = String(s_cfg.deviceId) + "_" + buildUniqId(s.objectId, s.uniqIdOverride);
     doc["stat_t"] = String(s_cfg.baseTopic) + "/" + STATE_TOPIC_SUFFIX;
@@ -107,6 +132,7 @@ static bool publishBinarySensor(const TelemetryFieldDef &s)
         doc["dev_cla"] = s.deviceClass;
     if (s.icon)
         doc["icon"] = s.icon;
+    addOriginBlock(doc);
 
     JsonObject dev = doc.createNestedObject("dev");
     addDeviceShort(dev);
@@ -132,7 +158,7 @@ static bool publishControlButton(const ControlDef &b)
     char topic[192];
     snprintf(topic, sizeof(topic), "homeassistant/button/%s_%s/config", s_cfg.deviceId, b.objectId);
 
-    StaticJsonDocument<640> doc;
+    StaticJsonDocument<768> doc;
     doc["name"] = b.name;
     doc["uniq_id"] = String(s_cfg.deviceId) + "_" + buildUniqId(b.objectId, b.uniqIdOverride);
     // Use full discovery keys for MQTT button to ensure HA publishes the JSON payload,
@@ -143,11 +169,12 @@ static bool publishControlButton(const ControlDef &b)
     doc["availability_topic"] = String(s_cfg.baseTopic) + "/" + AVAIL_TOPIC_SUFFIX;
     doc["payload_available"] = PAYLOAD_AVAILABLE;
     doc["payload_not_available"] = PAYLOAD_NOT_AVAILABLE;
+    addOriginBlock(doc);
 
     JsonObject dev = doc.createNestedObject("dev");
     addDeviceShort(dev);
 
-    char buf[768];
+    char buf[960];
     const size_t n = serializeJson(doc, buf, sizeof(buf));
     if (n == 0 || n >= sizeof(buf))
     {
@@ -196,6 +223,7 @@ static bool publishNumber(const ControlDef &nSpec)
         doc["unit_of_meas"] = nSpec.unit;
     if (nSpec.icon)
         doc["icon"] = nSpec.icon;
+    addOriginBlock(doc);
 
     JsonObject dev = doc.createNestedObject("dev");
     addDeviceShort(dev);
@@ -234,6 +262,7 @@ static bool publishSwitch(const ControlDef &s)
     doc["avty_t"] = String(s_cfg.baseTopic) + "/" + AVAIL_TOPIC_SUFFIX;
     doc["pl_avail"] = PAYLOAD_AVAILABLE;
     doc["pl_not_avail"] = PAYLOAD_NOT_AVAILABLE;
+    addOriginBlock(doc);
 
     JsonObject dev = doc.createNestedObject("dev");
     addDeviceShort(dev);
@@ -285,6 +314,7 @@ static bool publishSelect(const ControlDef &s)
     doc["avty_t"] = String(s_cfg.baseTopic) + "/" + AVAIL_TOPIC_SUFFIX;
     doc["pl_avail"] = PAYLOAD_AVAILABLE;
     doc["pl_not_avail"] = PAYLOAD_NOT_AVAILABLE;
+    addOriginBlock(doc);
 
     JsonObject dev = doc.createNestedObject("dev");
     addDeviceShort(dev);
@@ -310,7 +340,7 @@ static bool publishOnlineEntity()
     char topic[192];
     snprintf(topic, sizeof(topic), "homeassistant/binary_sensor/%s_online/config", s_cfg.deviceId);
 
-    StaticJsonDocument<512> doc;
+    StaticJsonDocument<640> doc;
     doc["name"] = "Device Online";
     doc["uniq_id"] = String(s_cfg.deviceId) + "_online";
     doc["stat_t"] = String(s_cfg.baseTopic) + "/" + AVAIL_TOPIC_SUFFIX;
@@ -320,6 +350,7 @@ static bool publishOnlineEntity()
     doc["avty_t"] = String(s_cfg.baseTopic) + "/" + AVAIL_TOPIC_SUFFIX;
     doc["pl_avail"] = PAYLOAD_AVAILABLE;
     doc["pl_not_avail"] = PAYLOAD_NOT_AVAILABLE;
+    addOriginBlock(doc);
 
     JsonObject dev = doc.createNestedObject("dev");
     addDeviceShort(dev);
@@ -359,6 +390,7 @@ static bool publishUpdateEntity()
     doc["payload_not_available"] = PAYLOAD_NOT_AVAILABLE;
 
     doc["device_class"] = "firmware";
+    addOriginBlock(doc);
 
     JsonObject dev = doc.createNestedObject("device");
     addDeviceLong(dev);
@@ -375,6 +407,39 @@ static bool publishUpdateEntity()
     if (!ok)
     {
         LOG_WARN(LogDomain::MQTT, "Failed HA discovery update %s", topic);
+    }
+    return ok;
+}
+
+static bool publishDeviceInfo()
+{
+    char topic[192];
+    snprintf(topic, sizeof(topic), "%s/%s", s_cfg.baseTopic, DEVICE_INFO_TOPIC_SUFFIX);
+
+    StaticJsonDocument<512> doc;
+    doc["device_id"] = s_cfg.deviceId;
+    doc["device_name"] = s_cfg.deviceName;
+    doc["device_model"] = s_cfg.deviceModel;
+    doc["manufacturer"] = DEVICE_MANUFACTURER;
+    doc["sw_version"] = s_cfg.deviceSw;
+    if (s_cfg.deviceHw && s_cfg.deviceHw[0] != '\0')
+    {
+        doc["hw_version"] = s_cfg.deviceHw;
+    }
+    addOriginBlock(doc);
+
+    char buf[640];
+    const size_t n = serializeJson(doc, buf, sizeof(buf));
+    if (n == 0 || n >= sizeof(buf))
+    {
+        LOG_WARN(LogDomain::MQTT, "HA device_info payload too large");
+        return false;
+    }
+
+    const bool ok = s_cfg.publish(topic, buf, true);
+    if (!ok)
+    {
+        LOG_WARN(LogDomain::MQTT, "Failed device_info publish %s", topic);
     }
     return ok;
 }
@@ -430,6 +495,7 @@ void ha_discovery_publishAll()
 
     bool anyOk = false;
 
+    anyOk |= publishDeviceInfo();
     anyOk |= publishOnlineEntity();
     anyOk |= publishUpdateEntity();
     anyOk |= publishOtaExtras();

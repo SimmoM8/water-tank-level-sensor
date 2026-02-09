@@ -7,6 +7,12 @@
 #define FW_VERSION "0.0.0-dev"
 #endif
 
+// Optional build-time hardware revision/version label.
+// Leave empty if unknown.
+#ifndef HW_VERSION
+#define HW_VERSION ""
+#endif
+
 namespace fw_version
 {
 template <size_t N>
@@ -28,3 +34,9 @@ constexpr size_t literal_size(const char (&)[N])
 static constexpr size_t kSizeWithNul = literal_size(FW_VERSION);
 static_assert(kSizeWithNul >= 2, "FW_VERSION must be a non-empty string literal");
 } // namespace fw_version
+
+namespace hw_version
+{
+[[maybe_unused]] static constexpr const char *kLiteral = fw_version::as_literal(HW_VERSION);
+static constexpr size_t kSizeWithNul = fw_version::literal_size(HW_VERSION);
+} // namespace hw_version
