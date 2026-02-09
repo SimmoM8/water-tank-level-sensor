@@ -2,6 +2,8 @@
 #include <WiFiClientSecure.h>
 #include "ota_ca_cert.h"
 #include "mbedtls/sha256.h"
+#include "mbedtls/ssl.h"
+#include "mbedtls/x509.h"
 #include <ArduinoOTA.h>
 #include <WiFi.h>
 #include "logger.h"
@@ -62,6 +64,101 @@ struct PullOtaJob
 };
 
 static PullOtaJob g_job;
+
+static const char *s_lastTlsTrustMode = "none";
+static int s_lastTlsErrCode = 0;
+static char s_lastTlsErrMsg[128] = {0};
+
+static inline bool ota_isSystemTimeValid()
+{
+    return time(nullptr) >= 1600000000;
+}
+
+static inline void ota_resetTlsError()
+{
+    s_lastTlsErrCode = 0;
+    s_lastTlsErrMsg[0] = '\0';
+}
+
+static inline void ota_captureTlsError(WiFiClientSecure &client)
+{
+    ota_resetTlsError();
+    char msg[sizeof(s_lastTlsErrMsg)] = {0};
+    s_lastTlsErrCode = client.lastError(msg, sizeof(msg));
+    strncpy(s_lastTlsErrMsg, msg, sizeof(s_lastTlsErrMsg));
+    s_lastTlsErrMsg[sizeof(s_lastTlsErrMsg) - 1] = '\0';
+}
+
+static void ota_logTlsStatus(const char *phase, bool success, int httpCode)
+{
+    const char *phaseStr = phase ? phase : "";
+    const char *trustMode = s_lastTlsTrustMode ? s_lastTlsTrustMode : "none";
+    LOG_INFO(LogDomain::OTA,
+             "TLS status phase=%s trust=%s request_ok=%s http_code=%d",
+             phaseStr,
+             trustMode,
+             success ? "true" : "false",
+             httpCode);
+
+    if (success)
+    {
+        return;
+    }
+
+    if (!ota_isSystemTimeValid())
+    {
+        LOG_ERROR(LogDomain::OTA, "TLS handshake failed: time not set");
+    }
+    else
+    {
+        bool certVerifyFailed = false;
+#if defined(MBEDTLS_ERR_X509_CERT_VERIFY_FAILED)
+        certVerifyFailed = certVerifyFailed || (s_lastTlsErrCode == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED);
+#endif
+#if defined(MBEDTLS_ERR_SSL_PEER_VERIFY_FAILED)
+        certVerifyFailed = certVerifyFailed || (s_lastTlsErrCode == MBEDTLS_ERR_SSL_PEER_VERIFY_FAILED);
+#endif
+        if (!certVerifyFailed && s_lastTlsErrMsg[0] != '\0')
+        {
+            certVerifyFailed = (strstr(s_lastTlsErrMsg, "verify") != nullptr) ||
+                               (strstr(s_lastTlsErrMsg, "certificate") != nullptr) ||
+                               (strstr(s_lastTlsErrMsg, "x509") != nullptr);
+        }
+
+        if (certVerifyFailed)
+        {
+            LOG_ERROR(LogDomain::OTA, "TLS handshake failed: cert verify failed");
+        }
+        else
+        {
+            if (httpCode == 0)
+            {
+                LOG_ERROR(LogDomain::OTA, "HTTP begin failed");
+            }
+            else
+            {
+                LOG_ERROR(LogDomain::OTA, "HTTP request failed");
+            }
+        }
+    }
+
+    if (s_lastTlsErrCode != 0 || s_lastTlsErrMsg[0] != '\0')
+    {
+        LOG_ERROR(LogDomain::OTA, "TLS error detail phase=%s code=%d msg=%s",
+                  phaseStr,
+                  s_lastTlsErrCode,
+                  s_lastTlsErrMsg[0] ? s_lastTlsErrMsg : "<none>");
+    }
+}
+
+static inline OtaCaMode ota_prepareTlsClient(WiFiClientSecure &client, const char *phase)
+{
+    const OtaCaMode caMode = ota_configureTlsClient(client);
+    s_lastTlsTrustMode = ota_caModeName(caMode);
+    ota_resetTlsError();
+    LOG_INFO(LogDomain::OTA, "TLS trust=%s phase=%s", s_lastTlsTrustMode, phase ? phase : "");
+    return caMode;
+}
 
 bool ota_isBusy()
 {
@@ -396,15 +493,17 @@ bool ota_pullStartFromManifest(DeviceState *state,
     }
 
     WiFiClientSecure client;
-    client.setCACert(OTA_GITHUB_CA);
-    client.setTimeout(12000);
+    ota_prepareTlsClient(client, "manifest_pull");
 
     HTTPClient http;
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
     http.setRedirectLimit(5);
 
-    if (!http.begin(client, manifestUrl))
+    const bool beginOk = http.begin(client, manifestUrl);
+    if (!beginOk)
     {
+        ota_captureTlsError(client);
+        ota_logTlsStatus("manifest_pull", false, 0);
         setErr(errBuf, errBufLen, "manifest_http_begin_failed");
         ota_markFailed(state, "manifest_http_begin_failed");
         return false;
@@ -417,6 +516,12 @@ bool ota_pullStartFromManifest(DeviceState *state,
     http.useHTTP10(false);
 
     const int code = http.GET();
+    const bool requestOk = (code > 0);
+    if (!requestOk)
+    {
+        ota_captureTlsError(client);
+    }
+    ota_logTlsStatus("manifest_pull", requestOk, code);
     if (code != HTTP_CODE_OK)
     {
         char msg[32];
@@ -519,15 +624,17 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
     }
 
     WiFiClientSecure client;
-    client.setCACert(OTA_GITHUB_CA);
-    client.setTimeout(12000);
+    ota_prepareTlsClient(client, "manifest_check");
 
     HTTPClient http;
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
     http.setRedirectLimit(5);
 
-    if (!http.begin(client, manifestUrl))
+    const bool beginOk = http.begin(client, manifestUrl);
+    if (!beginOk)
     {
+        ota_captureTlsError(client);
+        ota_logTlsStatus("manifest_check", false, 0);
         setErr(errBuf, errBufLen, "manifest_http_begin_failed");
         return false;
     }
@@ -539,6 +646,12 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
     http.useHTTP10(false);
 
     const int code = http.GET();
+    const bool requestOk = (code > 0);
+    if (!requestOk)
+    {
+        ota_captureTlsError(client);
+    }
+    ota_logTlsStatus("manifest_check", requestOk, code);
     if (code != HTTP_CODE_OK)
     {
         char msg[32];
@@ -676,21 +789,24 @@ void ota_tick(DeviceState *state)
     if (!g_job.httpBegun)
     {
         static constexpr uint32_t kHandshakeTimeoutMs = 20000;
-        // Setup secure client with CA bundle
-        g_job.client.setCACert(OTA_GITHUB_CA);
-        g_job.client.setTimeout(12000); // 12s timeout for handshake and read
+        ota_prepareTlsClient(g_job.client, "firmware_download");
 
         // Follow GitHub redirects (releases/download -> objects.githubusercontent.com)
         g_job.http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
         g_job.http.setRedirectLimit(5);
 
-        // HTTPS: WiFiClientSecure + CA bundle + redirect-following (GitHub releases).
+        // HTTPS: WiFiClientSecure + trusted CA (bundle-preferred) + redirect-following.
         const uint32_t hsStartMs = millis();
         bool ok = g_job.http.begin(g_job.client, g_job.url);
         const uint32_t hsElapsedMs = millis() - hsStartMs;
         if (ok)
         {
             g_job.httpBegun = true;
+        }
+        else
+        {
+            ota_captureTlsError(g_job.client);
+            ota_logTlsStatus("firmware_download", false, 0);
         }
         if (hsElapsedMs > kHandshakeTimeoutMs)
         {
@@ -711,6 +827,12 @@ void ota_tick(DeviceState *state)
         g_job.http.useHTTP10(false);
 
         int code = g_job.http.GET();
+        const bool requestOk = (code > 0);
+        if (!requestOk)
+        {
+            ota_captureTlsError(g_job.client);
+        }
+        ota_logTlsStatus("firmware_download", requestOk, code);
         if (code != HTTP_CODE_OK)
         {
             char msg[32];
