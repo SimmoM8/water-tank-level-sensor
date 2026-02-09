@@ -244,7 +244,8 @@ static bool write_device(const DeviceState &s, JsonObject &root)
     bool wrote = false;
     wrote |= writeAtPath(root, "device.id", s.device.id, true);
     wrote |= writeAtPath(root, "device.name", s.device.name, true);
-    wrote |= writeAtPath(root, "device.fw", (s.device.fw && s.device.fw[0]) ? s.device.fw : s.fw_version, true);
+    const char *fw = s.fw_version[0] ? s.fw_version : ((s.device.fw && s.device.fw[0]) ? s.device.fw : "");
+    wrote |= writeAtPath(root, "device.fw", fw, true);
     return wrote;
 }
 
@@ -368,7 +369,11 @@ static bool write_config_sim_mode(const DeviceState &s, JsonObject &root)
 
 static const char *installed_fw(const DeviceState &s)
 {
-    return (s.device.fw && s.device.fw[0]) ? s.device.fw : s.fw_version;
+    if (s.fw_version[0])
+    {
+        return s.fw_version;
+    }
+    return (s.device.fw && s.device.fw[0]) ? s.device.fw : "";
 }
 
 static bool write_fw_version(const DeviceState &s, JsonObject &root)
