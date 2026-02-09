@@ -384,7 +384,8 @@ static bool write_installed_version(const DeviceState &s, JsonObject &root)
 
 static bool write_latest_version(const DeviceState &s, JsonObject &root)
 {
-    return writeAtPath(root, "latest_version", s.ota_target_version, true);
+    const char *latest = s.ota_target_version[0] ? s.ota_target_version : installed_fw(s);
+    return writeAtPath(root, "latest_version", latest, true);
 }
 
 static bool write_update_available(const DeviceState &s, JsonObject &root)

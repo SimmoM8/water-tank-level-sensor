@@ -345,10 +345,12 @@ static bool publishUpdateEntity()
     char topic[192];
     snprintf(topic, sizeof(topic), "homeassistant/update/%s_firmware/config", s_cfg.deviceId);
 
-    StaticJsonDocument<768> doc;
+    StaticJsonDocument<1024> doc;
     doc["name"] = "Firmware";
     doc["uniq_id"] = String(s_cfg.deviceId) + "_firmware";
     doc["state_topic"] = String(s_cfg.baseTopic) + "/" + STATE_TOPIC_SUFFIX;
+    doc["installed_version_template"] = "{{ value_json.installed_version }}";
+    doc["latest_version_template"] = "{{ value_json.latest_version }}";
     doc["command_topic"] = String(s_cfg.baseTopic) + "/cmd";
     doc["payload_install"] = "{\"schema\":1,\"type\":\"ota_pull\",\"request_id\":\"{{ timestamp }}\",\"data\":{}}";
 

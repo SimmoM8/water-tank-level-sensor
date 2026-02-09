@@ -16,6 +16,7 @@
 #include "applied_config.h"
 #include "logger.h"
 #include "quality.h"
+#include "version.h"
 
 DeviceState g_state;
 
@@ -119,7 +120,10 @@ static const char *BASE_TOPIC = "water_tank/water_tank_esp32";
 // ===== Device identity =====
 static const char *DEVICE_ID = "water_tank_esp32";
 static const char *DEVICE_NAME = "Water Tank Sensor";
-static const char *DEVICE_FW = "1.3";
+static constexpr char DEVICE_FW[] = FW_VERSION;
+static_assert(sizeof(DEVICE_FW) == fw_version::kSizeWithNul, "FW_VERSION literal size mismatch");
+static_assert((sizeof(DEVICE_FW) - 1) < DEVICE_FW_VERSION_MAX,
+              "FW_VERSION too long: DEVICE_FW_VERSION_MAX must include the trailing NUL");
 
 // ===== Sensor / Sampling =====
 static const int TOUCH_PIN = 14; // GPIO14 or A7
@@ -428,7 +432,7 @@ static void refreshDeviceMeta()
   g_state.device.id = DEVICE_ID;
   g_state.device.name = DEVICE_NAME;
   g_state.device.fw = DEVICE_FW;
-  strncpy(g_state.fw_version, DEVICE_FW ? DEVICE_FW : "", sizeof(g_state.fw_version));
+  strncpy(g_state.fw_version, DEVICE_FW, sizeof(g_state.fw_version));
   g_state.fw_version[sizeof(g_state.fw_version) - 1] = '\0';
 
   g_state.wifi.rssi = WiFi.RSSI();
