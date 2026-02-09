@@ -14,6 +14,8 @@ static bool s_published = false;
 static const char *AVAIL_TOPIC_SUFFIX = "availability";
 static const char *STATE_TOPIC_SUFFIX = "state";
 static const char *DEVICE_INFO_TOPIC_SUFFIX = "device_info";
+static const char *OTA_PROGRESS_TOPIC_SUFFIX = "ota/progress";
+static const char *OTA_STATUS_TOPIC_SUFFIX = "ota/status";
 static const char *PAYLOAD_AVAILABLE = "online";
 static const char *PAYLOAD_NOT_AVAILABLE = "offline";
 static const char *DEVICE_MANUFACTURER = "Dads Smart Home";
@@ -411,6 +413,77 @@ static bool publishUpdateEntity()
     return ok;
 }
 
+static bool publishOtaProgressEntity()
+{
+    char topic[192];
+    snprintf(topic, sizeof(topic), "homeassistant/sensor/%s_ota_progress/config", s_cfg.deviceId);
+
+    StaticJsonDocument<896> doc;
+    doc["name"] = "OTA Progress";
+    doc["uniq_id"] = String(s_cfg.deviceId) + "_ota_progress";
+    doc["stat_t"] = String(s_cfg.baseTopic) + "/" + OTA_PROGRESS_TOPIC_SUFFIX;
+    doc["avty_t"] = String(s_cfg.baseTopic) + "/" + AVAIL_TOPIC_SUFFIX;
+    doc["pl_avail"] = PAYLOAD_AVAILABLE;
+    doc["pl_not_avail"] = PAYLOAD_NOT_AVAILABLE;
+    doc["unit_of_meas"] = "%";
+    doc["icon"] = "mdi:progress-download";
+    doc["val_tpl"] = "{% set v = value | int(0) %}{% if v == 255 %}{{ none }}{% else %}{{ v }}{% endif %}";
+    addOriginBlock(doc);
+
+    JsonObject dev = doc.createNestedObject("dev");
+    addDeviceShort(dev);
+
+    char buf[960];
+    const size_t n = serializeJson(doc, buf, sizeof(buf));
+    if (n == 0 || n >= sizeof(buf))
+    {
+        LOG_WARN(LogDomain::MQTT, "HA discovery OTA progress too large");
+        return false;
+    }
+
+    const bool ok = s_cfg.publish(topic, buf, true);
+    if (!ok)
+    {
+        LOG_WARN(LogDomain::MQTT, "Failed HA discovery OTA progress %s", topic);
+    }
+    return ok;
+}
+
+static bool publishOtaStatusEntity()
+{
+    char topic[192];
+    snprintf(topic, sizeof(topic), "homeassistant/sensor/%s_ota_status/config", s_cfg.deviceId);
+
+    StaticJsonDocument<896> doc;
+    doc["name"] = "OTA Status";
+    doc["uniq_id"] = String("water_tank_ota_status_") + s_cfg.deviceId;
+    doc["stat_t"] = String(s_cfg.baseTopic) + "/" + OTA_STATUS_TOPIC_SUFFIX;
+    doc["avty_t"] = String(s_cfg.baseTopic) + "/" + AVAIL_TOPIC_SUFFIX;
+    doc["pl_avail"] = PAYLOAD_AVAILABLE;
+    doc["pl_not_avail"] = PAYLOAD_NOT_AVAILABLE;
+    doc["entity_category"] = "diagnostic";
+    doc["icon"] = "mdi:update";
+    addOriginBlock(doc);
+
+    JsonObject dev = doc.createNestedObject("dev");
+    addDeviceShort(dev);
+
+    char buf[960];
+    const size_t n = serializeJson(doc, buf, sizeof(buf));
+    if (n == 0 || n >= sizeof(buf))
+    {
+        LOG_WARN(LogDomain::MQTT, "HA discovery OTA status too large");
+        return false;
+    }
+
+    const bool ok = s_cfg.publish(topic, buf, true);
+    if (!ok)
+    {
+        LOG_WARN(LogDomain::MQTT, "Failed HA discovery OTA status %s", topic);
+    }
+    return ok;
+}
+
 static bool publishDeviceInfo()
 {
     char topic[192];
@@ -457,6 +530,8 @@ static bool publishOtaExtras()
         "update", nullptr, "mdi:update", nullptr, nullptr, nullptr};
 
     bool ok = false;
+    ok |= publishOtaProgressEntity();
+    ok |= publishOtaStatusEntity();
     ok |= publishSensor(kOtaLastStatus);
     ok |= publishSensor(kOtaLastMessage);
     ok |= publishBinarySensor(kUpdateAvailable);
@@ -506,6 +581,10 @@ void ha_discovery_publishAll()
     {
         if (fields[i].component == HaComponent::Sensor)
         {
+            if (fields[i].objectId && strcmp(fields[i].objectId, "ota_progress") == 0)
+            {
+                continue;
+            }
             anyOk |= publishSensor(fields[i]);
         }
         else if (fields[i].component == HaComponent::BinarySensor)
