@@ -36,3 +36,6 @@
 
 // — OTA —
 #define CFG_OTA_MANIFEST_URL "https://raw.githubusercontent.com/SimmoM8/water-tank-level-sensor/main/manifests/dev.json"
+// Optional OTA safety guardrails (disabled by default):
+// #define CFG_OTA_GUARD_REQUIRE_MQTT_CONNECTED 1   // reject OTA if MQTT is not connected
+// #define CFG_OTA_GUARD_MIN_WIFI_RSSI -80          // reject OTA if RSSI is below threshold (dBm)

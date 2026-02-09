@@ -433,9 +433,9 @@ static void refreshDeviceMeta()
 
   g_state.device.id = DEVICE_ID;
   g_state.device.name = DEVICE_NAME;
-  g_state.device.fw = DEVICE_FW;
   strncpy(g_state.fw_version, DEVICE_FW, sizeof(g_state.fw_version));
   g_state.fw_version[sizeof(g_state.fw_version) - 1] = '\0';
+  g_state.device.fw = g_state.fw_version;
 
   g_state.wifi.rssi = WiFi.RSSI();
   g_state.wifi.ip = ipBuf;

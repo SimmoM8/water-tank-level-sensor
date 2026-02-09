@@ -29,6 +29,12 @@
 #ifndef CFG_OTA_MANIFEST_URL
 #define CFG_OTA_MANIFEST_URL ""
 #endif
+#ifndef CFG_OTA_GUARD_REQUIRE_MQTT_CONNECTED
+#define CFG_OTA_GUARD_REQUIRE_MQTT_CONNECTED 0
+#endif
+#ifndef CFG_OTA_GUARD_MIN_WIFI_RSSI
+#define CFG_OTA_GUARD_MIN_WIFI_RSSI -127
+#endif
 
 static const char *s_hostName = nullptr;
 static const char *s_password = nullptr;
@@ -77,6 +83,9 @@ static inline bool ota_isSystemTimeValid()
     return time(nullptr) >= 1600000000;
 }
 
+static void setErr(char *buf, size_t len, const char *msg);
+static inline void ota_requestPublish();
+
 static inline void ota_resetTlsError()
 {
     s_lastTlsErrCode = 0;
@@ -90,6 +99,99 @@ static inline void ota_captureTlsError(WiFiClientSecure &client)
     s_lastTlsErrCode = client.lastError(msg, sizeof(msg));
     strncpy(s_lastTlsErrMsg, msg, sizeof(s_lastTlsErrMsg));
     s_lastTlsErrMsg[sizeof(s_lastTlsErrMsg) - 1] = '\0';
+}
+
+static bool ota_tlsCertVerifyFailed()
+{
+    bool certVerifyFailed = false;
+#if defined(MBEDTLS_ERR_X509_CERT_VERIFY_FAILED)
+    certVerifyFailed = certVerifyFailed || (s_lastTlsErrCode == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED);
+#endif
+#if defined(MBEDTLS_ERR_SSL_PEER_VERIFY_FAILED)
+    certVerifyFailed = certVerifyFailed || (s_lastTlsErrCode == MBEDTLS_ERR_SSL_PEER_VERIFY_FAILED);
+#endif
+    if (!certVerifyFailed && s_lastTlsErrMsg[0] != '\0')
+    {
+        certVerifyFailed = (strstr(s_lastTlsErrMsg, "verify") != nullptr) ||
+                           (strstr(s_lastTlsErrMsg, "certificate") != nullptr) ||
+                           (strstr(s_lastTlsErrMsg, "x509") != nullptr);
+    }
+    return certVerifyFailed;
+}
+
+static const char *ota_tlsFailureReason(int httpCode)
+{
+    if (!ota_isSystemTimeValid())
+    {
+        return "time_not_set";
+    }
+    if (ota_tlsCertVerifyFailed())
+    {
+        return "cert_verify_failed";
+    }
+    if (httpCode == 0)
+    {
+        return "http_begin_failed";
+    }
+    if (httpCode < 0)
+    {
+        return "http_request_failed";
+    }
+    return "http_error";
+}
+
+static inline void ota_recordError(DeviceState *state, const char *reason)
+{
+    if (!state)
+        return;
+    const char *msg = (reason && reason[0] != '\0') ? reason : "error";
+    strncpy(state->ota_error, msg, sizeof(state->ota_error));
+    state->ota_error[sizeof(state->ota_error) - 1] = '\0';
+    strncpy(state->ota.last_status, "error", sizeof(state->ota.last_status));
+    state->ota.last_status[sizeof(state->ota.last_status) - 1] = '\0';
+    strncpy(state->ota.last_message, msg, sizeof(state->ota.last_message));
+    state->ota.last_message[sizeof(state->ota.last_message) - 1] = '\0';
+}
+
+static bool ota_checkSafetyGuards(DeviceState *state,
+                                  const char *phase,
+                                  char *errBuf,
+                                  size_t errBufLen)
+{
+    if (!state)
+    {
+        return true;
+    }
+
+#if (CFG_OTA_GUARD_REQUIRE_MQTT_CONNECTED)
+    if (!state->mqtt.connected)
+    {
+        const char *reason = "mqtt_disconnected";
+        LOG_ERROR(LogDomain::OTA, "OTA guard reject phase=%s reason=%s", phase ? phase : "", reason);
+        setErr(errBuf, errBufLen, reason);
+        ota_recordError(state, reason);
+        ota_requestPublish();
+        return false;
+    }
+#endif
+
+#if (CFG_OTA_GUARD_MIN_WIFI_RSSI > -127)
+    if (state->wifi.rssi < (int)CFG_OTA_GUARD_MIN_WIFI_RSSI)
+    {
+        const char *reason = "wifi_rssi_low";
+        LOG_ERROR(LogDomain::OTA, "OTA guard reject phase=%s reason=%s rssi=%d threshold=%d",
+                  phase ? phase : "",
+                  reason,
+                  state->wifi.rssi,
+                  (int)CFG_OTA_GUARD_MIN_WIFI_RSSI);
+        setErr(errBuf, errBufLen, reason);
+        ota_recordError(state, reason);
+        ota_requestPublish();
+        return false;
+    }
+#endif
+
+    return true;
 }
 
 static void ota_logTlsStatus(const char *phase, bool success, int httpCode)
@@ -114,21 +216,7 @@ static void ota_logTlsStatus(const char *phase, bool success, int httpCode)
     }
     else
     {
-        bool certVerifyFailed = false;
-#if defined(MBEDTLS_ERR_X509_CERT_VERIFY_FAILED)
-        certVerifyFailed = certVerifyFailed || (s_lastTlsErrCode == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED);
-#endif
-#if defined(MBEDTLS_ERR_SSL_PEER_VERIFY_FAILED)
-        certVerifyFailed = certVerifyFailed || (s_lastTlsErrCode == MBEDTLS_ERR_SSL_PEER_VERIFY_FAILED);
-#endif
-        if (!certVerifyFailed && s_lastTlsErrMsg[0] != '\0')
-        {
-            certVerifyFailed = (strstr(s_lastTlsErrMsg, "verify") != nullptr) ||
-                               (strstr(s_lastTlsErrMsg, "certificate") != nullptr) ||
-                               (strstr(s_lastTlsErrMsg, "x509") != nullptr);
-        }
-
-        if (certVerifyFailed)
+        if (ota_tlsCertVerifyFailed())
         {
             LOG_ERROR(LogDomain::OTA, "TLS handshake failed: cert verify failed");
         }
@@ -399,19 +487,43 @@ bool ota_pullStart(DeviceState *state,
     if (g_job.active)
     {
         setErr(errBuf, errBufLen, "busy");
+        ota_recordError(state, "busy");
+        ota_requestPublish();
+        return false;
+    }
+
+    if (!ota_checkSafetyGuards(state, "pull_start", errBuf, errBufLen))
+    {
+        return false;
+    }
+
+    if (!wifi_timeIsValid())
+    {
+        const char *reason = "time_not_set";
+        LOG_ERROR(LogDomain::OTA, "Pull OTA blocked: %s", reason);
+        setErr(errBuf, errBufLen, reason);
+        ota_markFailed(state, reason);
         return false;
     }
 
     if (!url || url[0] == '\0')
     {
-        setErr(errBuf, errBufLen, "missing_url");
+        const char *reason = "missing_url";
+        LOG_ERROR(LogDomain::OTA, "Pull OTA blocked: %s", reason);
+        setErr(errBuf, errBufLen, reason);
+        ota_recordError(state, reason);
+        ota_requestPublish();
         return false;
     }
 
     // Enforce HTTPS for pull-OTA URLs
     if (strncasecmp(url, "https://", 8) != 0)
     {
-        setErr(errBuf, errBufLen, "url_not_https");
+        const char *reason = "url_not_https";
+        LOG_ERROR(LogDomain::OTA, "Pull OTA blocked: %s", reason);
+        setErr(errBuf, errBufLen, reason);
+        ota_recordError(state, reason);
+        ota_requestPublish();
         return false;
     }
 
@@ -512,33 +624,48 @@ bool ota_pullStartFromManifest(DeviceState *state,
     if (g_job.active)
     {
         setErr(errBuf, errBufLen, "busy");
+        ota_recordError(state, "busy");
+        ota_requestPublish();
         return false;
     }
 
     if (!WiFi.isConnected())
     {
-        setErr(errBuf, errBufLen, "wifi_disconnected");
+        const char *reason = "wifi_disconnected";
+        LOG_ERROR(LogDomain::OTA, "Manifest pull blocked: %s", reason);
+        setErr(errBuf, errBufLen, reason);
         ota_markFailed(state, "wifi_disconnected");
         return false;
     }
     if (!wifi_timeIsValid())
     {
-        setErr(errBuf, errBufLen, "time_not_set");
-        ota_markFailed(state, "time_not_set");
+        const char *reason = "time_not_set";
+        LOG_ERROR(LogDomain::OTA, "Manifest pull blocked: %s", reason);
+        setErr(errBuf, errBufLen, reason);
+        ota_markFailed(state, reason);
+        return false;
+    }
+
+    if (!ota_checkSafetyGuards(state, "manifest_pull", errBuf, errBufLen))
+    {
         return false;
     }
 
     const char *manifestUrl = CFG_OTA_MANIFEST_URL;
     if (!manifestUrl || manifestUrl[0] == '\0')
     {
-        setErr(errBuf, errBufLen, "missing_manifest_url");
-        ota_markFailed(state, "missing_manifest_url");
+        const char *reason = "missing_manifest_url";
+        LOG_ERROR(LogDomain::OTA, "Manifest pull blocked: %s", reason);
+        setErr(errBuf, errBufLen, reason);
+        ota_markFailed(state, reason);
         return false;
     }
     if (strncasecmp(manifestUrl, "https://", 8) != 0)
     {
-        setErr(errBuf, errBufLen, "manifest_url_not_https");
-        ota_markFailed(state, "manifest_url_not_https");
+        const char *reason = "manifest_url_not_https";
+        LOG_ERROR(LogDomain::OTA, "Manifest pull blocked: %s", reason);
+        setErr(errBuf, errBufLen, reason);
+        ota_markFailed(state, reason);
         return false;
     }
 
@@ -554,8 +681,9 @@ bool ota_pullStartFromManifest(DeviceState *state,
     {
         ota_captureTlsError(client);
         ota_logTlsStatus("manifest_pull", false, 0);
-        setErr(errBuf, errBufLen, "manifest_http_begin_failed");
-        ota_markFailed(state, "manifest_http_begin_failed");
+        const char *reason = ota_tlsFailureReason(0);
+        setErr(errBuf, errBufLen, reason);
+        ota_markFailed(state, reason);
         return false;
     }
 
@@ -570,8 +698,14 @@ bool ota_pullStartFromManifest(DeviceState *state,
     if (!requestOk)
     {
         ota_captureTlsError(client);
+        ota_logTlsStatus("manifest_pull", false, code);
+        const char *reason = ota_tlsFailureReason(code);
+        http.end();
+        setErr(errBuf, errBufLen, reason);
+        ota_markFailed(state, reason);
+        return false;
     }
-    ota_logTlsStatus("manifest_pull", requestOk, code);
+    ota_logTlsStatus("manifest_pull", true, code);
     if (code != HTTP_CODE_OK)
     {
         char msg[32];
@@ -653,30 +787,46 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
     if (g_job.active)
     {
         setErr(errBuf, errBufLen, "busy");
+        ota_recordError(state, "busy");
+        ota_requestPublish();
         return false;
     }
     if (!WiFi.isConnected())
     {
-        setErr(errBuf, errBufLen, "wifi_disconnected");
+        const char *reason = "wifi_disconnected";
+        LOG_ERROR(LogDomain::OTA, "Manifest check blocked: %s", reason);
+        setErr(errBuf, errBufLen, reason);
+        ota_recordError(state, reason);
+        ota_requestPublish();
         return false;
     }
     if (!wifi_timeIsValid())
     {
-        setErr(errBuf, errBufLen, "time_not_set");
-        strncpy(state->ota_error, "time_not_set", sizeof(state->ota_error));
-        state->ota_error[sizeof(state->ota_error) - 1] = '\0';
+        const char *reason = "time_not_set";
+        LOG_ERROR(LogDomain::OTA, "Manifest check blocked: %s", reason);
+        setErr(errBuf, errBufLen, reason);
+        ota_recordError(state, reason);
+        ota_requestPublish();
         return false;
     }
 
     const char *manifestUrl = CFG_OTA_MANIFEST_URL;
     if (!manifestUrl || manifestUrl[0] == '\0')
     {
-        setErr(errBuf, errBufLen, "missing_manifest_url");
+        const char *reason = "missing_manifest_url";
+        LOG_ERROR(LogDomain::OTA, "Manifest check blocked: %s", reason);
+        setErr(errBuf, errBufLen, reason);
+        ota_recordError(state, reason);
+        ota_requestPublish();
         return false;
     }
     if (strncasecmp(manifestUrl, "https://", 8) != 0)
     {
-        setErr(errBuf, errBufLen, "manifest_url_not_https");
+        const char *reason = "manifest_url_not_https";
+        LOG_ERROR(LogDomain::OTA, "Manifest check blocked: %s", reason);
+        setErr(errBuf, errBufLen, reason);
+        ota_recordError(state, reason);
+        ota_requestPublish();
         return false;
     }
 
@@ -692,7 +842,11 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
     {
         ota_captureTlsError(client);
         ota_logTlsStatus("manifest_check", false, 0);
-        setErr(errBuf, errBufLen, "manifest_http_begin_failed");
+        const char *reason = ota_tlsFailureReason(0);
+        LOG_ERROR(LogDomain::OTA, "Manifest check failed reason=%s", reason);
+        setErr(errBuf, errBufLen, reason);
+        ota_recordError(state, reason);
+        ota_requestPublish();
         return false;
     }
 
@@ -707,14 +861,25 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
     if (!requestOk)
     {
         ota_captureTlsError(client);
+        ota_logTlsStatus("manifest_check", false, code);
+        const char *reason = ota_tlsFailureReason(code);
+        http.end();
+        LOG_ERROR(LogDomain::OTA, "Manifest check failed reason=%s", reason);
+        setErr(errBuf, errBufLen, reason);
+        ota_recordError(state, reason);
+        ota_requestPublish();
+        return false;
     }
-    ota_logTlsStatus("manifest_check", requestOk, code);
+    ota_logTlsStatus("manifest_check", true, code);
     if (code != HTTP_CODE_OK)
     {
         char msg[32];
         snprintf(msg, sizeof(msg), "manifest_http_%d", code);
         http.end();
+        LOG_ERROR(LogDomain::OTA, "Manifest check failed reason=%s", msg);
         setErr(errBuf, errBufLen, msg);
+        ota_recordError(state, msg);
+        ota_requestPublish();
         return false;
     }
 
@@ -723,7 +888,11 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
     http.end();
     if (derr)
     {
-        setErr(errBuf, errBufLen, "manifest_parse_failed");
+        const char *reason = "manifest_parse_failed";
+        LOG_ERROR(LogDomain::OTA, "Manifest check failed reason=%s", reason);
+        setErr(errBuf, errBufLen, reason);
+        ota_recordError(state, reason);
+        ota_requestPublish();
         return false;
     }
 
@@ -732,22 +901,38 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
     const char *sha256 = doc["sha256"] | "";
     if (!version || version[0] == '\0')
     {
-        setErr(errBuf, errBufLen, "manifest_missing_version");
+        const char *reason = "manifest_missing_version";
+        LOG_ERROR(LogDomain::OTA, "Manifest check failed reason=%s", reason);
+        setErr(errBuf, errBufLen, reason);
+        ota_recordError(state, reason);
+        ota_requestPublish();
         return false;
     }
     if (!url || url[0] == '\0')
     {
-        setErr(errBuf, errBufLen, "manifest_missing_url");
+        const char *reason = "manifest_missing_url";
+        LOG_ERROR(LogDomain::OTA, "Manifest check failed reason=%s", reason);
+        setErr(errBuf, errBufLen, reason);
+        ota_recordError(state, reason);
+        ota_requestPublish();
         return false;
     }
     if (!sha256 || sha256[0] == '\0')
     {
-        setErr(errBuf, errBufLen, "manifest_missing_sha256");
+        const char *reason = "manifest_missing_sha256";
+        LOG_ERROR(LogDomain::OTA, "Manifest check failed reason=%s", reason);
+        setErr(errBuf, errBufLen, reason);
+        ota_recordError(state, reason);
+        ota_requestPublish();
         return false;
     }
     if (!isHex64(sha256))
     {
-        setErr(errBuf, errBufLen, "bad_sha256_format");
+        const char *reason = "bad_sha256_format";
+        LOG_ERROR(LogDomain::OTA, "Manifest check failed reason=%s", reason);
+        setErr(errBuf, errBufLen, reason);
+        ota_recordError(state, reason);
+        ota_requestPublish();
         return false;
     }
 
@@ -841,6 +1026,12 @@ void ota_tick(DeviceState *state)
         ota_abort(state, "wifi_disconnected");
         return;
     }
+    if (!wifi_timeIsValid())
+    {
+        LOG_ERROR(LogDomain::OTA, "Firmware download blocked: time_not_set");
+        ota_abort(state, "time_not_set");
+        return;
+    }
 
     // Step A: begin HTTP if not begun
     if (!g_job.httpBegun)
@@ -872,7 +1063,7 @@ void ota_tick(DeviceState *state)
         }
         if (!ok)
         {
-            ota_abort(state, "http_begin_failed");
+            ota_abort(state, ota_tlsFailureReason(0));
             return;
         }
 
@@ -888,8 +1079,11 @@ void ota_tick(DeviceState *state)
         if (!requestOk)
         {
             ota_captureTlsError(g_job.client);
+            ota_logTlsStatus("firmware_download", false, code);
+            ota_abort(state, ota_tlsFailureReason(code));
+            return;
         }
-        ota_logTlsStatus("firmware_download", requestOk, code);
+        ota_logTlsStatus("firmware_download", true, code);
         if (code != HTTP_CODE_OK)
         {
             char msg[32];

@@ -12,6 +12,11 @@ on:
         required: false
         default: "esp32:esp32:esp32"
         type: string
+      sketch_dir:
+        description: "Sketch directory"
+        required: false
+        default: "esp32/level_sensor"
+        type: string
   push:
     tags:
       - "v*"
@@ -19,11 +24,18 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: ota-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release-ota:
     runs-on: ubuntu-latest
     env:
       REPO_TOKEN: ${{ secrets.REPO_PUSH_TOKEN != '' && secrets.REPO_PUSH_TOKEN || github.token }}
+      DEFAULT_FQBN: esp32:esp32:esp32
+      DEFAULT_SKETCH_DIR: esp32/level_sensor
+      MANIFEST_PATH: manifests/dev.json
 
     steps:
       - name: Checkout repository
@@ -41,17 +53,27 @@ jobs:
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             RAW_VERSION="${{ inputs.version }}"
             FQBN="${{ inputs.fqbn }}"
+            SKETCH_DIR="${{ inputs.sketch_dir }}"
           else
             RAW_VERSION="${GITHUB_REF_NAME}"
-            FQBN="esp32:esp32:esp32"
+            FQBN="${DEFAULT_FQBN}"
+            SKETCH_DIR="${DEFAULT_SKETCH_DIR}"
           fi
 
           VERSION="${RAW_VERSION#v}"
           TAG="v${VERSION}"
+          ASSET_NAME="firmware-${VERSION}.bin"
+
+          if [[ -z "${VERSION}" ]]; then
+            echo "Resolved version is empty" >&2
+            exit 1
+          fi
 
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
           echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
           echo "fqbn=${FQBN}" >> "${GITHUB_OUTPUT}"
+          echo "sketch_dir=${SKETCH_DIR}" >> "${GITHUB_OUTPUT}"
+          echo "asset_name=${ASSET_NAME}" >> "${GITHUB_OUTPUT}"
 
       - name: Install Arduino CLI
         uses: arduino/setup-arduino-cli@v2
@@ -63,18 +85,32 @@ jobs:
           arduino-cli core update-index
           arduino-cli core install esp32:esp32
 
+      - name: Ensure jq is available
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y jq
+          fi
+
       - name: Compile firmware
         id: build
         shell: bash
         run: |
           set -euo pipefail
 
+          if [[ ! -f "${{ steps.meta.outputs.sketch_dir }}/level_sensor.ino" ]]; then
+            echo "Sketch not found at ${{ steps.meta.outputs.sketch_dir }}/level_sensor.ino" >&2
+            exit 1
+          fi
+
           mkdir -p build
           arduino-cli compile \
             --fqbn "${{ steps.meta.outputs.fqbn }}" \
             --build-property "compiler.cpp.extra_flags=-DFW_VERSION=\\\"${{ steps.meta.outputs.version }}\\\"" \
             --output-dir build \
-            esp32/level_sensor
+            "${{ steps.meta.outputs.sketch_dir }}"
 
           APP_BIN="$(find build -maxdepth 1 -type f -name '*.bin' | grep -Ev '(bootloader|partitions)' | head -n 1 || true)"
           if [[ -z "${APP_BIN}" ]]; then
@@ -82,10 +118,11 @@ jobs:
             exit 1
           fi
 
-          cp "${APP_BIN}" build/firmware.bin
-          SHA256="$(sha256sum build/firmware.bin | awk '{print $1}')"
+          ASSET_PATH="build/${{ steps.meta.outputs.asset_name }}"
+          cp "${APP_BIN}" "${ASSET_PATH}"
+          SHA256="$(sha256sum "${ASSET_PATH}" | awk '{print $1}')"
 
-          echo "firmware_path=build/firmware.bin" >> "${GITHUB_OUTPUT}"
+          echo "firmware_path=${ASSET_PATH}" >> "${GITHUB_OUTPUT}"
           echo "sha256=${SHA256}" >> "${GITHUB_OUTPUT}"
 
       - name: Create GitHub Release and upload .bin
@@ -107,16 +144,16 @@ jobs:
           git checkout main
           git pull --ff-only origin main
 
-          mkdir -p manifests
-          RELEASE_URL="https://github.com/${{ github.repository }}/releases/download/${{ steps.meta.outputs.tag }}/firmware.bin"
+          mkdir -p "$(dirname "${MANIFEST_PATH}")"
+          RELEASE_URL="https://github.com/${{ github.repository }}/releases/download/${{ steps.meta.outputs.tag }}/${{ steps.meta.outputs.asset_name }}"
 
           jq -n \
             --arg version "${{ steps.meta.outputs.version }}" \
             --arg url "${RELEASE_URL}" \
             --arg sha256 "${{ steps.build.outputs.sha256 }}" \
-            '{version: $version, url: $url, sha256: $sha256}' > manifests/dev.json
+            '{version: $version, url: $url, sha256: $sha256}' > "${MANIFEST_PATH}"
 
-          git add manifests/dev.json
+          git add "${MANIFEST_PATH}"
           if git diff --cached --quiet; then
             echo "No manifest changes to commit."
             exit 0
