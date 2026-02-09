@@ -349,8 +349,8 @@ static bool publishUpdateEntity()
     doc["name"] = "Firmware";
     doc["uniq_id"] = String(s_cfg.deviceId) + "_firmware";
     doc["state_topic"] = String(s_cfg.baseTopic) + "/" + STATE_TOPIC_SUFFIX;
-    doc["installed_version_template"] = "{{ value_json.installed_version }}";
-    doc["latest_version_template"] = "{{ value_json.latest_version }}";
+    doc["installed_version_template"] = "{{ value_json.installed_version | default('', true) }}";
+    doc["latest_version_template"] = "{{ value_json.latest_version | default('', true) }}";
     doc["command_topic"] = String(s_cfg.baseTopic) + "/cmd";
     doc["payload_install"] = "{\"schema\":1,\"type\":\"ota_pull\",\"request_id\":\"{{ timestamp }}\",\"data\":{}}";
 
