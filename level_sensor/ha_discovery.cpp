@@ -167,6 +167,10 @@ static bool publishControlButton(const ControlDef &b)
     // not the default "PRESS".
     doc["command_topic"] = String(s_cfg.baseTopic) + "/cmd";
     doc["payload_press"] = b.payloadJson;
+    if (b.cmdType && strcmp(b.cmdType, "ota_pull") == 0)
+    {
+        doc["entity_category"] = "config";
+    }
 
     doc["availability_topic"] = String(s_cfg.baseTopic) + "/" + AVAIL_TOPIC_SUFFIX;
     doc["payload_available"] = PAYLOAD_AVAILABLE;
