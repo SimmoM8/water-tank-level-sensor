@@ -15,6 +15,7 @@
 #include "domain_strings.h"
 #include "storage_nvs.h"
 #include "mqtt_transport.h"
+#include "wifi_provisioning.h"
 
 #ifdef __has_include
 #if __has_include("config.h")
@@ -477,6 +478,12 @@ bool ota_pullStartFromManifest(DeviceState *state,
         ota_markFailed(state, "wifi_disconnected");
         return false;
     }
+    if (!wifi_timeIsValid())
+    {
+        setErr(errBuf, errBufLen, "time_not_set");
+        ota_markFailed(state, "time_not_set");
+        return false;
+    }
 
     const char *manifestUrl = CFG_OTA_MANIFEST_URL;
     if (!manifestUrl || manifestUrl[0] == '\0')
@@ -608,6 +615,13 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
     if (!WiFi.isConnected())
     {
         setErr(errBuf, errBufLen, "wifi_disconnected");
+        return false;
+    }
+    if (!wifi_timeIsValid())
+    {
+        setErr(errBuf, errBufLen, "time_not_set");
+        strncpy(state->ota_error, "time_not_set", sizeof(state->ota_error));
+        state->ota_error[sizeof(state->ota_error) - 1] = '\0';
         return false;
     }
 
