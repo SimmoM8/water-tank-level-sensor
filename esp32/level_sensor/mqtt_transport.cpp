@@ -187,6 +187,7 @@ static bool mqtt_ensureConnected()
                 .deviceName = s_cfg.deviceName,
                 .deviceModel = s_cfg.deviceModel,
                 .deviceSw = s_cfg.deviceSw,
+                .deviceHw = s_cfg.deviceHw,
                 .publish = mqtt_publishRaw};
             ha_discovery_begin(haCfg);
             s_haDiscoveryBegun = true;

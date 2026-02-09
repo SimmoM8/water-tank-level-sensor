@@ -121,9 +121,11 @@ static const char *BASE_TOPIC = "water_tank/water_tank_esp32";
 static const char *DEVICE_ID = "water_tank_esp32";
 static const char *DEVICE_NAME = "Water Tank Sensor";
 static constexpr char DEVICE_FW[] = FW_VERSION;
+static constexpr char DEVICE_HW[] = HW_VERSION;
 static_assert(sizeof(DEVICE_FW) == fw_version::kSizeWithNul, "FW_VERSION literal size mismatch");
 static_assert((sizeof(DEVICE_FW) - 1) < DEVICE_FW_VERSION_MAX,
               "FW_VERSION too long: DEVICE_FW_VERSION_MAX must include the trailing NUL");
+static_assert(sizeof(DEVICE_HW) == hw_version::kSizeWithNul, "HW_VERSION literal size mismatch");
 
 // ===== Sensor / Sampling =====
 static const int TOUCH_PIN = 14; // GPIO14 or A7
@@ -993,7 +995,8 @@ void appSetup()
       .deviceId = DEVICE_ID,
       .deviceName = DEVICE_NAME,
       .deviceModel = DEVICE_NAME,
-      .deviceSw = DEVICE_FW};
+      .deviceSw = DEVICE_FW,
+      .deviceHw = DEVICE_HW};
   mqtt_begin(mqttCfg, commands_handle);
 }
 

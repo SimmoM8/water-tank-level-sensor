@@ -10,6 +10,7 @@ struct HaDiscoveryConfig
     const char *deviceName;
     const char *deviceModel;
     const char *deviceSw;
+    const char *deviceHw;
 
     // publish(topic, payload, retained)
     bool (*publish)(const char *, const char *, bool);
