@@ -179,13 +179,33 @@ jobs:
                 fi
               fi
 
-              actual_version="$(arduino-cli lib list | awk -v n="${name}" 'BEGIN{FS="  +"} NR>1 && $1==n {print $2; exit}')"
+              lib_list="$(arduino-cli lib list)"
+
+              # Match lines like:
+              # WiFiManager          2.0.17   ...
+              # (we anchor the name and grab the first version-looking token after it)
+              actual_version="$(printf '%s\n' "${lib_list}" \
+                | awk -v n="${name}" '
+                    $0 ~ ("^" n "[[:space:]]+") {
+                      if (match($0, /[[:space:]]+v?[0-9]+\.[0-9]+(\.[0-9]+)?([-.+][0-9A-Za-z.]+)?/, m)) {
+                        v=m[0]
+                        sub(/^[[:space:]]+/, "", v)
+                        sub(/^v/, "", v)
+                        print v
+                        exit
+                      }
+                    }
+                  ')"
+
+              expected_version="${version#v}"
+
               if [[ -z "${actual_version}" ]]; then
-                echo "::error::Library '${name}' appears uninstalled after install attempts; expected version ${version}"
+                echo "::error::Library '${name}' appears uninstalled after install attempts; expected version ${expected_version}"
                 exit 1
               fi
-              if [[ "${actual_version}" != "${version}" ]]; then
-                echo "::error::Pinned library version mismatch for '${name}': expected ${version}, got ${actual_version}"
+
+              if [[ "${actual_version}" != "${expected_version}" ]]; then
+                echo "::error::Pinned library version mismatch for '${name}': expected ${expected_version}, got ${actual_version}"
                 exit 1
               fi
             fi
@@ -273,7 +293,6 @@ jobs:
 
           echo "firmware_path=${ASSET_PATH}" >> "${GITHUB_OUTPUT}"
           echo "sha256=${SHA256}" >> "${GITHUB_OUTPUT}"
-
 
       - name: Create GitHub Release and upload .bin
         uses: softprops/action-gh-release@v2
