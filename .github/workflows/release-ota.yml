@@ -76,6 +76,18 @@ jobs:
           set -euo pipefail
           arduino-cli version
 
+      - name: Configure Arduino CLI boards manager URLs
+        shell: bash
+        run: |
+          set -euo pipefail
+          ESP32_URL="https://espressif.github.io/arduino-esp32/package_esp32_index.json"
+          arduino-cli config init --overwrite
+          arduino-cli config add board_manager.additional_urls "${ESP32_URL}"
+          if ! arduino-cli config dump | grep -Fq "${ESP32_URL}"; then
+            echo "::error::Failed to configure Arduino CLI with Espressif boards manager URL"
+            exit 1
+          fi
+
       - name: Refresh Arduino indexes
         shell: bash
         run: |
