@@ -11,7 +11,14 @@ Firmware version is supplied at compile time via `FW_VERSION`.
 Local dual-build check:
 
 ```bash
+./scripts/bootstrap_arduino_cli.sh --install-cli
 ./scripts/build_fw_version_matrix.sh
+```
+
+One-liner (bootstrap + build matrix):
+
+```bash
+./scripts/build_fw_version_matrix.sh --bootstrap
 ```
 
 ## Dependency pinning (single source of truth)

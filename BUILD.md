@@ -13,24 +13,22 @@ Pinned there:
 
 ## Fresh machine bootstrap
 
-1. Install Arduino CLI.
-2. From repository root, refresh indexes:
+1. Run bootstrap from repository root:
 
 ```bash
-arduino-cli core update-index
-arduino-cli lib update-index
+./scripts/bootstrap_arduino_cli.sh --install-cli
 ```
 
-3. Compile firmware using the pinned profile:
-
-```bash
-arduino-cli compile --profile release esp32/level_sensor
-```
-
-4. Optional: run the local two-build matrix check:
+2. Run the local build matrix:
 
 ```bash
 ./scripts/build_fw_version_matrix.sh
+```
+
+Optional one-liner:
+
+```bash
+./scripts/build_fw_version_matrix.sh --bootstrap
 ```
 
 ## Release build (versioned)
