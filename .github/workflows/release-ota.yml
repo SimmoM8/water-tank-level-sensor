@@ -235,8 +235,8 @@ jobs:
           set -euo pipefail
           echo "Installed cores:"
           arduino-cli core list
-          echo "Installed libraries:"
-          arduino-cli lib list
+          echo "Installed pinned libraries:"
+          arduino-cli lib list | awk 'NR==1 || $0 ~ /^(WiFiManager|PubSubClient|ArduinoJson)[[:space:]]+/'
 
       - name: Ensure jq is available
         shell: bash
