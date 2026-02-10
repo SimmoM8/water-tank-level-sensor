@@ -281,9 +281,11 @@ jobs:
             --output-dir build \
             "${{ steps.meta.outputs.sketch_dir }}"
 
-          APP_BIN="$(find build -maxdepth 1 -type f -name '*.bin' | grep -Ev '(bootloader|partitions)' | head -n 1 || true)"
-          if [[ -z "${APP_BIN}" ]]; then
-            echo "No application .bin found in build output" >&2
+          APP_BIN="build/level_sensor.ino.bin"
+          if [[ ! -f "${APP_BIN}" ]]; then
+            echo "Expected application binary not found at ${APP_BIN}" >&2
+            echo "Build directory contents:" >&2
+            ls -la build >&2 || true
             exit 1
           fi
 
