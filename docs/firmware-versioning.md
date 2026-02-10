@@ -14,6 +14,18 @@ Local dual-build check:
 ./scripts/build_fw_version_matrix.sh
 ```
 
+## Dependency pinning (single source of truth)
+
+Pinned Arduino platform + library versions live in:
+
+- `esp32/level_sensor/sketch.yaml`
+
+Use the profile-based build:
+
+```bash
+arduino-cli compile --profile release esp32/level_sensor
+```
+
 ## Home Assistant update entity keys
 
 The MQTT state payload must expose:
@@ -61,7 +73,7 @@ Manual trigger:
 1. Open GitHub Actions.
 2. Run **Release OTA Firmware**.
 3. Provide `version` (for example `1.4.0`).
-4. Optionally override `fqbn` or `sketch_dir`.
+4. Optionally override `sketch_dir`.
 
 Tag trigger:
 
