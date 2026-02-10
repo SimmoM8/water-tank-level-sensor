@@ -170,9 +170,22 @@ jobs:
               fi
             elif [[ "${kind}" == "LIB" ]]; then
               LIB_COUNT=$((LIB_COUNT + 1))
-              echo "Installing library ${name}@${version}"
+              echo "Installing library ${name}@${version} (primary)"
               if ! arduino-cli lib install "${name}@${version}"; then
-                echo "::error::Failed to install library ${name}@${version}"
+                echo "Primary install failed for ${name}@${version}; retrying with name-only install"
+                if ! arduino-cli lib install "${name}"; then
+                  echo "::error::Failed to install library ${name} using both '${name}@${version}' and '${name}'"
+                  exit 1
+                fi
+              fi
+
+              actual_version="$(arduino-cli lib list | awk -v n="${name}" 'BEGIN{FS="  +"} NR>1 && $1==n {print $2; exit}')"
+              if [[ -z "${actual_version}" ]]; then
+                echo "::error::Library '${name}' appears uninstalled after install attempts; expected version ${version}"
+                exit 1
+              fi
+              if [[ "${actual_version}" != "${version}" ]]; then
+                echo "::error::Pinned library version mismatch for '${name}': expected ${version}, got ${actual_version}"
                 exit 1
               fi
             fi
