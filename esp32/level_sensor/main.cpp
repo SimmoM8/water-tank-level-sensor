@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <string.h>
+#include <esp_system.h>
 #include "main.h"
 #include "probe_reader.h"
 #include "wifi_provisioning.h"
@@ -198,6 +199,30 @@ static void runWindow(LoopWindow &w, uint32_t now)
 }
 
 // ----------------- Helpers -----------------
+
+static const char *mapResetReason(esp_reset_reason_t reason)
+{
+  switch (reason)
+  {
+  case ESP_RST_POWERON:
+    return "power_on";
+  case ESP_RST_SW:
+#ifdef ESP_RST_PANIC
+  case ESP_RST_PANIC:
+#endif
+    return "software_reset";
+  case ESP_RST_DEEPSLEEP:
+    return "deep_sleep";
+  case ESP_RST_INT_WDT:
+#ifdef ESP_RST_TASK_WDT
+  case ESP_RST_TASK_WDT:
+#endif
+  case ESP_RST_WDT:
+    return "watchdog";
+  default:
+    return "other";
+  }
+}
 
 static void printHelpMenu()
 {
@@ -922,12 +947,17 @@ static LoopWindow g_windows[] = {
 // Contract: call once after boot. Initializes subsystems, state, and MQTT/OTA handlers.
 void appSetup()
 {
+  const char *bootReason = mapResetReason(esp_reset_reason());
+  strncpy(g_state.reset_reason, bootReason, sizeof(g_state.reset_reason));
+  g_state.reset_reason[sizeof(g_state.reset_reason) - 1] = '\0';
+
   Serial.begin(115200);
   delay(1500);
   logger_begin(BASE_TOPIC, true, true);
   logger_setHighFreqEnabled(false);
   quality_init(probeQualityRt);
   LOG_INFO(LogDomain::SYSTEM, "BOOT water_level_sensor starting...");
+  LOG_INFO(LogDomain::SYSTEM, "Reset reason=%s", g_state.reset_reason);
   LOG_INFO(LogDomain::SYSTEM, "TOUCH_PIN=%d", TOUCH_PIN);
 
   storage_begin();
