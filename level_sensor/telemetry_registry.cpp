@@ -1,5 +1,6 @@
 #include "telemetry_registry.h"
 #include <string.h>
+#include <time.h>
 #include "domain_strings.h"
 #include "logger.h"
 
@@ -22,6 +23,26 @@ static constexpr const char *ICON_PLAYLIST = "mdi:playlist-check";
 
 using domain_strings::to_string;
 using domain_strings::c_str;
+
+static bool epochSecondsToIso8601(uint32_t epochSeconds, char *out, size_t outSize)
+{
+    // Home Assistant timestamp device_class expects ISO8601-like date-time strings.
+    if (!out || outSize < 21 || epochSeconds < 1600000000u)
+    {
+        return false;
+    }
+
+    time_t t = (time_t)epochSeconds;
+    struct tm tmUtc;
+    memset(&tmUtc, 0, sizeof(tmUtc));
+    if (!gmtime_r(&t, &tmUtc))
+    {
+        return false;
+    }
+
+    const size_t n = strftime(out, outSize, "%Y-%m-%dT%H:%M:%SZ", &tmUtc);
+    return n > 0;
+}
 
 static bool writeAtPath(JsonObject &root, const char *dottedPath, const char *value, bool allowEmpty = true)
 {
@@ -478,16 +499,22 @@ static bool write_ota_last_ts_flat(const DeviceState &s, JsonObject &root)
     {
         ts = s.ota.completed_ts ? s.ota.completed_ts : s.ota.started_ts;
     }
-    return writeAtPath(root, "ota_last_ts", ts);
+    char iso8601[25];
+    if (!epochSecondsToIso8601(ts, iso8601, sizeof(iso8601)))
+    {
+        return false;
+    }
+    return writeAtPath(root, "ota_last_ts", iso8601, true);
 }
 
 static bool write_ota_last_success_ts(const DeviceState &s, JsonObject &root)
 {
-    if (s.ota_last_success_ts == 0)
+    char iso8601[25];
+    if (!epochSecondsToIso8601(s.ota_last_success_ts, iso8601, sizeof(iso8601)))
     {
         return false;
     }
-    return writeAtPath(root, "ota_last_success_ts", s.ota_last_success_ts);
+    return writeAtPath(root, "ota_last_success_ts", iso8601, true);
 }
 
 static bool write_ota_status(const DeviceState &s, JsonObject &root)

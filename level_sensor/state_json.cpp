@@ -50,6 +50,7 @@ bool buildStateJson(const DeviceState &s, char *outBuf, size_t outSize)
     static constexpr size_t kMaxLastCmdId = 40;
     static constexpr size_t kMaxLastCmdType = 24;
     static constexpr size_t kMaxLastCmdMsg = 64;
+    static constexpr size_t kMaxIso8601Utc = 25;
 
     static constexpr size_t kJsonStringCapacity =
         JSON_STRING_SIZE(kMaxDeviceId) +
@@ -66,6 +67,8 @@ bool buildStateJson(const DeviceState &s, char *outBuf, size_t outSize)
         JSON_STRING_SIZE(OTA_STATE_MAX) +
         JSON_STRING_SIZE(OTA_ERROR_MAX) +
         JSON_STRING_SIZE(OTA_TARGET_VERSION_MAX) +
+        JSON_STRING_SIZE(kMaxIso8601Utc) +           // ota_last_ts (timestamp sensor)
+        JSON_STRING_SIZE(kMaxIso8601Utc) +           // ota_last_success_ts (timestamp sensor)
         JSON_STRING_SIZE(kMaxEnumStr) +             // ota.status
         JSON_STRING_SIZE(OTA_REQUEST_ID_MAX) +
         JSON_STRING_SIZE(OTA_VERSION_MAX) +
