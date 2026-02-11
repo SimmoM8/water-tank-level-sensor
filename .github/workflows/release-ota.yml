@@ -247,6 +247,12 @@ jobs:
             sudo apt-get install -y jq
           fi
 
+      - name: Validate manifests are populated
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/validate_manifests.sh manifests
+
       - name: Validate sketch inputs
         shell: bash
         run: |
@@ -323,6 +329,8 @@ jobs:
             --arg url "${RELEASE_URL}" \
             --arg sha256 "${{ steps.build.outputs.sha256 }}" \
             '{version: $version, url: $url, sha256: $sha256}' > "${MANIFEST_PATH}"
+
+          ./scripts/validate_manifests.sh manifests
 
           git add "${MANIFEST_PATH}"
           if git diff --cached --quiet; then
