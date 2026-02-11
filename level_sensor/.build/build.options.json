@@ -1,0 +1,9 @@
+{
+  "additionalFiles": "../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..",
+  "compiler.optimization_flags": "-Os",
+  "customBuildProperties": "",
+  "fqbn": "esp32:esp32:esp32",
+  "hardwareFolders": "/Users/benjaminsimmons/Library/Arduino15/internal/esp32_esp32_2.0.17_daf5309ff37a23df,/Users/benjaminsimmons/Library/Arduino15/internal/esp32_esp32_2.0.17_daf5309ff37a23df",
+  "otherLibrariesFolders": "/Users/benjaminsimmons/Documents/Arduino/libraries",
+  "sketchLocation": "/Users/benjaminsimmons/Documents/Dads Smart Home/esp32/level_sensor"
+}

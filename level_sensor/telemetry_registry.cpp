@@ -260,6 +260,12 @@ static bool write_ts(const DeviceState &s, JsonObject &root)
     return writeAtPath(root, "ts", s.ts);
 }
 
+static bool write_uptime_seconds(const DeviceState &s, JsonObject &root)
+{
+    // Leaf-only writer used by HA sensor + retained state JSON.
+    return writeAtPath(root, "uptime_seconds", s.uptime_seconds);
+}
+
 static bool write_boot_count(const DeviceState &s, JsonObject &root)
 {
     return writeAtPath(root, "boot_count", s.boot_count);
@@ -572,6 +578,7 @@ static const TelemetryFieldDef TELEMETRY_FIELDS[] = {
     // Core/meta
     {HaComponent::Internal, "schema", "State Schema", "schema", nullptr, nullptr, nullptr, nullptr, nullptr, write_schema},
     {HaComponent::Internal, "ts", "Timestamp", "ts", nullptr, nullptr, nullptr, nullptr, nullptr, write_ts},
+    {HaComponent::Sensor, "uptime_seconds", "Uptime", "uptime_seconds", nullptr, "s", ICON_CLOCK, nullptr, nullptr, write_uptime_seconds},
     {HaComponent::Sensor, "boot_count", "Boot Count", "boot_count", nullptr, nullptr, ICON_CHIP, nullptr, nullptr, write_boot_count},
     {HaComponent::Sensor, "reset_reason", "Reset Reason", "reset_reason", nullptr, nullptr, ICON_CHIP, nullptr, nullptr, write_reset_reason},
     {HaComponent::Internal, "device", "Device", "device", nullptr, nullptr, nullptr, nullptr, nullptr, write_device},

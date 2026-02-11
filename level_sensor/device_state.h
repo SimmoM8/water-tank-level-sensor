@@ -164,6 +164,7 @@ struct DeviceState
 {
     uint8_t schema;
     uint32_t ts; // epoch seconds if you have it; otherwise millis()/1000 is ok
+    uint32_t uptime_seconds = 0;               // derived from millis()/1000 at runtime (not persisted)
     char reset_reason[RESET_REASON_MAX] = {0}; // power_on | software_reset | panic | deep_sleep | watchdog | other
     uint32_t boot_count = 0;                   // persistent boot counter
 
