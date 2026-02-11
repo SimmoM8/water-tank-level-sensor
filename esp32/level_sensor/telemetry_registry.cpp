@@ -467,8 +467,7 @@ static bool write_ota_reboot(const DeviceState &s, JsonObject &root)
 
 static bool write_ota_state_flat(const DeviceState &s, JsonObject &root)
 {
-    const char *state = s.ota_state[0] ? s.ota_state : c_str(to_string(s.ota.status));
-    return writeAtPath(root, "ota_state", state, true);
+    return writeAtPath(root, "ota_state", c_str(to_string(s.ota.status)), true);
 }
 
 static bool write_ota_progress_flat(const DeviceState &s, JsonObject &root)

@@ -233,9 +233,37 @@ OTA progress is fully observable via MQTT:
   - `downloading`
   - `verifying`
   - `applying`
+  - `rebooting`
   - `success`
   - `failed`
-  - `rebooting`
+
+### OTA Contract (v1)
+
+Canonical OTA status enum (used across state JSON + OTA status topic):
+- `idle`
+- `downloading`
+- `verifying`
+- `applying`
+- `rebooting`
+- `success`
+- `failed`
+
+OTA fields in `{baseTopic}/state`:
+- `ota.status` — canonical OTA status enum.
+- `ota.progress` — `0..100`.
+- `ota.active.request_id` / `ota.active.version` / `ota.active.url` / `ota.active.sha256` / `ota.active.started_ts`.
+- `ota.result.status` / `ota.result.message` / `ota.result.completed_ts`.
+- `ota_state` — mirror of `ota.status` for compatibility.
+- `ota_progress` — mirror of `ota.progress` for compatibility.
+- `ota_error` — summary/fallback error text.
+- `ota_target_version` — manifest target or active target version.
+- `ota_last_ts` — ISO8601 UTC timestamp string (when time is valid).
+- `ota_last_success_ts` — ISO8601 UTC timestamp string (when time is valid).
+- `update_available` — `true|false`.
+
+Raw shadow topics:
+- `{baseTopic}/ota/status` — canonical OTA status enum (same values as `ota.status`).
+- `{baseTopic}/ota/progress` — progress integer `0..100`.
 
 - Progress percentage
 - Error reason strings
@@ -254,6 +282,7 @@ Discovery publishes these entities automatically:
 - `button.<device>_ota_pull` — triggers OTA pull from manifest
 - `sensor.<device>_ota_state` — string state
 - `sensor.<device>_ota_progress` — 0–100
+- `sensor.<device>_ota_status` — OTA status from `{baseTopic}/ota/status`
 - `sensor.<device>_ota_error` — last error string (if any)
 - `sensor.<device>_ota_target_version` — latest/target version
 - `sensor.<device>_ota_last_ts` — last OTA timestamp (ISO8601 UTC)
