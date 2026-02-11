@@ -587,8 +587,21 @@ class WaterTankCard extends HTMLElement {
     let stateLower = null;
     if (!this._isUnknownState(otaStateRaw)) {
       stateLower = String(otaStateRaw).trim().toLowerCase();
-      session.lastState = stateLower;
-      session.lastSeenAt = now;
+      const isFirmwareBusyState =
+        stateLower === "downloading" ||
+        stateLower === "verifying" ||
+        stateLower === "applying" ||
+        stateLower === "rebooting";
+
+      // OTA may be started externally (automation/MQTT) before button press.
+      if (!session.active && isFirmwareBusyState) {
+        this._startOtaUiSession(now);
+      }
+
+      if (stateLower !== "queued") {
+        session.lastState = stateLower;
+        session.lastSeenAt = now;
+      }
     }
 
     if (Number.isFinite(otaProgressVal)) {
@@ -606,15 +619,29 @@ class WaterTankCard extends HTMLElement {
     if (stateLower === "success" || stateLower === "failed") {
       session.active = false;
       session.result = stateLower;
+      if (this._toastTimer) {
+        clearTimeout(this._toastTimer);
+        this._toastTimer = null;
+      }
+      if (this._toast?.open) this._toast.open = false;
       return;
     }
 
-    if ((now - session.startedAt) > OTA_UI_TIMEOUT_MS) {
+    if (
+      session.lastState !== "success" &&
+      session.lastState !== "failed" &&
+      (now - session.startedAt) > OTA_UI_TIMEOUT_MS
+    ) {
       session.active = false;
       session.result = "failed";
       session.lastState = "failed";
       session.lastMessage = "Timed out";
       session.lastSeenAt = now;
+      if (this._toastTimer) {
+        clearTimeout(this._toastTimer);
+        this._toastTimer = null;
+      }
+      if (this._toast?.open) this._toast.open = false;
     }
   }
 
@@ -2110,7 +2137,6 @@ class WaterTankCard extends HTMLElement {
         case "verifying": return "Verifying";
         case "applying": return "Applying";
         case "rebooting": return "Rebooting";
-        case "queued": return "Queued";
         default:
           if (otaSessionActive && this._otaUi?.lastState === "queued") return "Queued";
           return this._safeText(otaState);
