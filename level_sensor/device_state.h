@@ -15,6 +15,7 @@ static constexpr size_t OTA_URL_MAX = 256;
 static constexpr size_t OTA_SHA256_MAX = 65; // 64 hex chars + NUL
 static constexpr size_t OTA_STATUS_MAX = 16;
 static constexpr size_t OTA_MESSAGE_MAX = 64;
+static constexpr size_t RESET_REASON_MAX = 24;
 
 // --- C++ enums (stronger than magic ints/strings) ---
 enum class SenseMode : uint8_t
@@ -163,6 +164,7 @@ struct DeviceState
 {
     uint8_t schema;
     uint32_t ts; // epoch seconds if you have it; otherwise millis()/1000 is ok
+    char reset_reason[RESET_REASON_MAX] = {0}; // power_on | software_reset | deep_sleep | watchdog | other
 
     DeviceInfo device;
     // Mirror of device.fw for telemetry safety (stable, null-terminated buffer).
