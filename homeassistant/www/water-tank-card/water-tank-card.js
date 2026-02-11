@@ -697,6 +697,8 @@ class WaterTankCard extends HTMLElement {
     const otaErrorRaw = this._config.ota_error_entity ? this._state(this._config.ota_error_entity) : null;
     const fwRaw = this._config.fw_version_entity ? this._state(this._config.fw_version_entity) : null;
     const targetRaw = this._config.ota_target_version_entity ? this._state(this._config.ota_target_version_entity) : null;
+    const bootCountRaw = this._config.boot_count_entity ? this._state(this._config.boot_count_entity) : null;
+    const resetReasonRaw = this._config.reset_reason_entity ? this._state(this._config.reset_reason_entity) : null;
     const detailEntityIds = [
       this._config.ota_state_entity,
       this._config.ota_progress_entity,
@@ -719,6 +721,17 @@ class WaterTankCard extends HTMLElement {
 
     if (this._config.ota_error_entity) {
       payload.ota_error = this._isUnknownState(otaErrorRaw) ? null : String(otaErrorRaw);
+    }
+    if (this._config.boot_count_entity) {
+      if (this._isUnknownState(bootCountRaw)) {
+        payload.boot_count = null;
+      } else {
+        const bootCountNum = Number(bootCountRaw);
+        payload.boot_count = Number.isFinite(bootCountNum) ? bootCountNum : String(bootCountRaw);
+      }
+    }
+    if (this._config.reset_reason_entity) {
+      payload.reset_reason = this._isUnknownState(resetReasonRaw) ? null : String(resetReasonRaw);
     }
     if (Number.isFinite(lastUpdatedSeconds)) {
       payload.ota_last_updated_seconds_ago = lastUpdatedSeconds;
