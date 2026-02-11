@@ -150,6 +150,9 @@ static uint32_t s_lastManifestAttemptMs = 0;
 
 // ===== Network timeouts =====
 static const uint32_t WIFI_TIMEOUT_MS = 20000;
+static const uint32_t CRASH_WINDOW_BOOTS = 6u;
+static const uint32_t CRASH_BAD_BOOTS_THRESHOLD = 3u;
+static const uint32_t CRASH_STABLE_UPTIME_S = 120u;
 
 // ===== Runtime state (owned by this module) =====
 static bool calibrationInProgress = false;
@@ -167,6 +170,7 @@ static bool calInverted = false;
 static float lastLiters = NAN; // Derived caches for change detection
 static float lastCentimeters = NAN;
 static char s_emptyStr[1] = {0};
+static bool s_crashClearedThisBoot = false;
 
 static void applyConfigFromCache(bool logValues);
 static bool reloadConfigIfDirty(bool logValues);
@@ -223,6 +227,39 @@ static const char *mapResetReason(esp_reset_reason_t reason)
   default:
     return "other";
   }
+}
+
+static bool isBadCrashResetReason(const char *resetReason)
+{
+  if (!resetReason || resetReason[0] == '\0')
+  {
+    return false;
+  }
+  return strcmp(resetReason, "watchdog") == 0 ||
+         strcmp(resetReason, "panic") == 0 ||
+         strcmp(resetReason, "software_reset") == 0 ||
+         strcmp(resetReason, "other") == 0;
+}
+
+static const char *mapCrashLoopReason(bool latched, bool badBoot, const char *resetReason)
+{
+  if (latched)
+  {
+    return "threshold_exceeded";
+  }
+  if (resetReason && strcmp(resetReason, "deep_sleep") == 0)
+  {
+    return "deep_sleep_neutral";
+  }
+  if (resetReason && strcmp(resetReason, "power_on") == 0)
+  {
+    return "power_on_neutral";
+  }
+  if (badBoot)
+  {
+    return "bad_boot_observed";
+  }
+  return "neutral_boot";
 }
 
 static void printHelpMenu()
@@ -948,7 +985,8 @@ static LoopWindow g_windows[] = {
 // Contract: call once after boot. Initializes subsystems, state, and MQTT/OTA handlers.
 void appSetup()
 {
-  const char *bootReason = mapResetReason(esp_reset_reason());
+  const esp_reset_reason_t resetReasonCode = esp_reset_reason();
+  const char *bootReason = mapResetReason(resetReasonCode);
   strncpy(g_state.reset_reason, bootReason, sizeof(g_state.reset_reason));
   g_state.reset_reason[sizeof(g_state.reset_reason) - 1] = '\0';
 
@@ -967,6 +1005,50 @@ void appSetup()
     storage_loadBootCount(persistedBootCount);
     g_state.boot_count = persistedBootCount + 1u;
     storage_saveBootCount(g_state.boot_count);
+
+    uint32_t winBoots = 0u;
+    uint32_t winBad = 0u;
+    uint32_t lastBoot = 0u;
+    bool latched = false;
+    uint32_t lastStable = 0u;
+    uint32_t lastReason = 0u;
+    storage_loadCrashLoop(winBoots, winBad, lastBoot, latched, lastStable, lastReason);
+
+    if (lastBoot == 0u || (uint32_t)(g_state.boot_count - lastBoot) > CRASH_WINDOW_BOOTS)
+    {
+      winBoots = 0u;
+      winBad = 0u;
+      lastBoot = g_state.boot_count;
+    }
+
+    winBoots++;
+    const bool badBoot = isBadCrashResetReason(g_state.reset_reason);
+    if (badBoot)
+    {
+      winBad++;
+    }
+
+    if (winBad >= CRASH_BAD_BOOTS_THRESHOLD && winBoots <= CRASH_WINDOW_BOOTS)
+    {
+      latched = true;
+    }
+    lastReason = (uint32_t)resetReasonCode;
+    storage_saveCrashLoop(winBoots, winBad, lastBoot, latched, lastStable, lastReason);
+
+    g_state.crash_loop = latched;
+    g_state.crash_window_boots = winBoots;
+    g_state.crash_window_bad = winBad;
+    g_state.last_stable_boot = lastStable;
+    const char *crashReason = mapCrashLoopReason(latched, badBoot, g_state.reset_reason);
+    strncpy(g_state.crash_loop_reason, crashReason, sizeof(g_state.crash_loop_reason));
+    g_state.crash_loop_reason[sizeof(g_state.crash_loop_reason) - 1] = '\0';
+    s_crashClearedThisBoot = false;
+    LOG_INFO(LogDomain::SYSTEM,
+             "Crash loop state latched=%s boots=%lu bad=%lu reason=%s",
+             g_state.crash_loop ? "true" : "false",
+             (unsigned long)g_state.crash_window_boots,
+             (unsigned long)g_state.crash_window_bad,
+             g_state.crash_loop_reason);
   }
   wifi_begin();
   config_begin();
@@ -1060,5 +1142,31 @@ void appLoop()
   for (LoopWindow &w : g_windows)
   {
     runWindow(w, now);
+  }
+
+  if (!s_crashClearedThisBoot && g_state.uptime_seconds >= CRASH_STABLE_UPTIME_S)
+  {
+    uint32_t winBoots = 0u;
+    uint32_t winBad = 0u;
+    uint32_t lastBoot = 0u;
+    bool latched = false;
+    uint32_t lastStable = 0u;
+    uint32_t lastReason = 0u;
+    storage_loadCrashLoop(winBoots, winBad, lastBoot, latched, lastStable, lastReason);
+    winBoots = 0u;
+    winBad = 0u;
+    latched = false;
+    lastStable = g_state.boot_count;
+    lastBoot = g_state.boot_count;
+    storage_saveCrashLoop(winBoots, winBad, lastBoot, latched, lastStable, lastReason);
+
+    g_state.crash_loop = false;
+    g_state.crash_window_boots = 0u;
+    g_state.crash_window_bad = 0u;
+    g_state.last_stable_boot = lastStable;
+    strncpy(g_state.crash_loop_reason, "stable_runtime", sizeof(g_state.crash_loop_reason));
+    g_state.crash_loop_reason[sizeof(g_state.crash_loop_reason) - 1] = '\0';
+    s_crashClearedThisBoot = true;
+    mqtt_requestStatePublish();
   }
 }
