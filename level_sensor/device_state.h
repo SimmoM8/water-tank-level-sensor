@@ -131,7 +131,8 @@ enum class OtaStatus : uint8_t
     APPLYING = 3,
     REBOOTING = 4,
     SUCCESS = 5,
-    ERROR = 6
+    ERROR = 6,
+    RETRYING = 7
 };
 
 struct OtaState
