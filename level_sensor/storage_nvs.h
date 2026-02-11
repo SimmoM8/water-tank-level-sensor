@@ -3,6 +3,15 @@
 #include <stdint.h>
 #include "device_state.h"
 
+enum class RebootIntent : uint8_t
+{
+    NONE = 0,
+    OTA = 1,
+    WIFI_WIPE = 2,
+    USER_CMD = 3,
+    OTHER = 4
+};
+
 /* ---------------- Boot Lifecycle ---------------- */
 bool storage_begin();
 void storage_end(); // optional cleanup on shutdown/restart
@@ -36,6 +45,11 @@ void storage_saveBootCount(uint32_t count);
 /* ---------------- Crash Loop State ---------------- */
 bool storage_loadCrashLoop(uint32_t &winBoots, uint32_t &winBad, uint32_t &lastBoot, bool &latched, uint32_t &lastStable, uint32_t &lastReason);
 void storage_saveCrashLoop(uint32_t winBoots, uint32_t winBad, uint32_t lastBoot, bool latched, uint32_t lastStable, uint32_t lastReason);
+
+/* ---------------- Reboot Intent ---------------- */
+bool storage_loadRebootIntent(uint8_t &intent);
+void storage_saveRebootIntent(uint8_t intent);
+void storage_clearRebootIntent();
 
 /* ---------------- Debug ---------------- */
 void storage_dump();

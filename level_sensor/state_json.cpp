@@ -10,9 +10,9 @@ bool buildStateJson(const DeviceState &s, char *outBuf, size_t outSize)
 {
     // Capacity rationale (ArduinoJson v6):
     // - Objects created by dotted paths: root + device + wifi + time + mqtt + probe + calibration + level + config + ota + ota.active + ota.result + last_cmd = 13
-    // - Leaf keys (worst case): 68 (schema/ts/uptime_seconds/boot_count/crash_*/reset_reason/device/.../last_cmd.* + time.* + ota.force + ota.reboot + ota_last_success_ts)
+    // - Leaf keys (worst case): 70 (schema/ts/uptime_seconds/boot_count/reboot_intent*/crash_*/reset_reason/device/.../last_cmd.* + time.* + ota.force + ota.reboot + ota_last_success_ts)
     // - String pool: conservative sum of max field sizes + enum labels + key bytes headroom.
-    static constexpr size_t kRootMembers = 33;
+    static constexpr size_t kRootMembers = 35;
     static constexpr size_t kDeviceMembers = 3;
     static constexpr size_t kWifiMembers = 2;
     static constexpr size_t kTimeMembers = 5;
@@ -60,6 +60,7 @@ bool buildStateJson(const DeviceState &s, char *outBuf, size_t outSize)
         JSON_STRING_SIZE(DEVICE_FW_VERSION_MAX) +   // installed_version
         JSON_STRING_SIZE(OTA_TARGET_VERSION_MAX) +  // latest_version / ota_target_version
         JSON_STRING_SIZE(RESET_REASON_MAX) +        // reset_reason
+        JSON_STRING_SIZE(REBOOT_INTENT_LABEL_MAX) + // reboot_intent_label
         JSON_STRING_SIZE(CRASH_LOOP_REASON_MAX) +   // crash_loop_reason
         JSON_STRING_SIZE(kMaxWifiIp) +
         JSON_STRING_SIZE(TIME_STATUS_MAX) +

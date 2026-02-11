@@ -17,6 +17,7 @@ static constexpr size_t OTA_STATUS_MAX = 16;
 static constexpr size_t OTA_MESSAGE_MAX = 64;
 static constexpr size_t RESET_REASON_MAX = 24;
 static constexpr size_t CRASH_LOOP_REASON_MAX = 24;
+static constexpr size_t REBOOT_INTENT_LABEL_MAX = 16;
 
 // --- C++ enums (stronger than magic ints/strings) ---
 enum class SenseMode : uint8_t
@@ -169,6 +170,8 @@ struct DeviceState
     uint32_t uptime_seconds = 0;               // derived from millis()/1000 at runtime (not persisted)
     char reset_reason[RESET_REASON_MAX] = {0}; // power_on | software_reset | panic | deep_sleep | watchdog | other
     uint32_t boot_count = 0;                   // persistent boot counter
+    uint8_t reboot_intent = 0;                 // RebootIntent enum value consumed at boot
+    char reboot_intent_label[REBOOT_INTENT_LABEL_MAX] = {0};
     bool crash_loop = false;
     char crash_loop_reason[CRASH_LOOP_REASON_MAX] = {0};
     uint32_t crash_window_boots = 0;

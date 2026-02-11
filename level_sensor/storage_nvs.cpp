@@ -1,3 +1,4 @@
+#include <Arduino.h>
 #include <Preferences.h>
 #include <limits>
 #include "storage_nvs.h"
@@ -39,6 +40,8 @@ static constexpr const char kKeyCrashLastBoot[] = "cr_last_boot";
 static constexpr const char kKeyCrashLatched[] = "cr_latched";
 static constexpr const char kKeyCrashLastStable[] = "cr_last_stable";
 static constexpr const char kKeyCrashLastReason[] = "cr_last_reason";
+static constexpr const char kKeyRebootIntent[] = "reboot_intent";
+static constexpr const char kKeyRebootIntentTs[] = "reboot_intent_ts";
 
 static constexpr uint32_t kWarnThrottleMs = 5000;
 } // namespace nvs
@@ -227,6 +230,13 @@ bool storage_loadCrashLoop(uint32_t &winBoots, uint32_t &winBad, uint32_t &lastB
     return hasAny;
 }
 
+bool storage_loadRebootIntent(uint8_t &intent)
+{
+    const bool hasIntent = prefs.isKey(storage::nvs::kKeyRebootIntent);
+    intent = prefs.getUChar(storage::nvs::kKeyRebootIntent, (uint8_t)RebootIntent::NONE);
+    return hasIntent;
+}
+
 void storage_saveCalibrationDry(int32_t dry)
 {
     prefs.putInt(storage::nvs::kKeyDry, dry);
@@ -315,6 +325,30 @@ void storage_saveCrashLoop(uint32_t winBoots, uint32_t winBad, uint32_t lastBoot
     putUIntIfChanged(storage::nvs::kKeyCrashLastReason, lastReason);
 }
 
+void storage_saveRebootIntent(uint8_t intent)
+{
+    const uint8_t current = prefs.getUChar(storage::nvs::kKeyRebootIntent, (uint8_t)RebootIntent::NONE);
+    const bool changed = !prefs.isKey(storage::nvs::kKeyRebootIntent) || current != intent;
+    if (changed)
+    {
+        prefs.putUChar(storage::nvs::kKeyRebootIntent, intent);
+        // Debug breadcrumb for post-boot diagnostics.
+        prefs.putUInt(storage::nvs::kKeyRebootIntentTs, millis());
+    }
+}
+
+void storage_clearRebootIntent()
+{
+    if (prefs.isKey(storage::nvs::kKeyRebootIntent))
+    {
+        prefs.remove(storage::nvs::kKeyRebootIntent);
+    }
+    if (prefs.isKey(storage::nvs::kKeyRebootIntentTs))
+    {
+        prefs.remove(storage::nvs::kKeyRebootIntentTs);
+    }
+}
+
 static inline void fnv1aMixByte(uint32_t &h, uint8_t b)
 {
     h ^= (uint32_t)b;
@@ -388,6 +422,8 @@ void storage_dump()
     const bool hasCrashLatched = prefs.isKey(storage::nvs::kKeyCrashLatched);
     const bool hasCrashLastStable = prefs.isKey(storage::nvs::kKeyCrashLastStable);
     const bool hasCrashLastReason = prefs.isKey(storage::nvs::kKeyCrashLastReason);
+    const bool hasRebootIntent = prefs.isKey(storage::nvs::kKeyRebootIntent);
+    const bool hasRebootIntentTs = prefs.isKey(storage::nvs::kKeyRebootIntentTs);
     bool otaForce = prefs.getBool(storage::nvs::kKeyOtaForce, false);
     bool otaReboot = prefs.getBool(storage::nvs::kKeyOtaReboot, true);
     uint32_t otaLastOk = prefs.getUInt(storage::nvs::kKeyOtaLastSuccess, 0);
@@ -398,6 +434,8 @@ void storage_dump()
     bool crashLatched = prefs.getBool(storage::nvs::kKeyCrashLatched, false);
     uint32_t crashLastStable = prefs.getUInt(storage::nvs::kKeyCrashLastStable, 0u);
     uint32_t crashLastReason = prefs.getUInt(storage::nvs::kKeyCrashLastReason, 0u);
+    uint8_t rebootIntent = prefs.getUChar(storage::nvs::kKeyRebootIntent, (uint8_t)RebootIntent::NONE);
+    uint32_t rebootIntentTs = prefs.getUInt(storage::nvs::kKeyRebootIntentTs, 0u);
 
     // Deterministic marker over presence + values to detect unexpected NVS drift.
     uint32_t marker = 2166136261u; // FNV-1a 32-bit offset basis
@@ -437,6 +475,10 @@ void storage_dump()
     fnv1aMixU32(marker, crashLastStable);
     fnv1aMixBool(marker, hasCrashLastReason);
     fnv1aMixU32(marker, crashLastReason);
+    fnv1aMixBool(marker, hasRebootIntent);
+    fnv1aMixByte(marker, rebootIntent);
+    fnv1aMixBool(marker, hasRebootIntentTs);
+    fnv1aMixU32(marker, rebootIntentTs);
 
     LOG_INFO(LogDomain::CONFIG,
              "NVS dump v2 schema=%lu expected=%lu marker=0x%08lX",
@@ -491,4 +533,10 @@ void storage_dump()
              crashLatched ? "true" : "false",
              (unsigned long)crashLastStable,
              (unsigned long)crashLastReason);
+    LOG_INFO(LogDomain::CONFIG,
+             "NVS reboot_intent has[intent=%s ts=%s] intent=%u intent_ts=%lu",
+             hasRebootIntent ? "y" : "n",
+             hasRebootIntentTs ? "y" : "n",
+             (unsigned int)rebootIntent,
+             (unsigned long)rebootIntentTs);
 }

@@ -229,15 +229,45 @@ static const char *mapResetReason(esp_reset_reason_t reason)
   }
 }
 
-static bool isBadCrashResetReason(const char *resetReason)
+static const char *rebootIntentLabel(uint8_t intent)
+{
+  switch ((RebootIntent)intent)
+  {
+  case RebootIntent::NONE:
+    return "none";
+  case RebootIntent::OTA:
+    return "ota";
+  case RebootIntent::WIFI_WIPE:
+    return "wifi_wipe";
+  case RebootIntent::USER_CMD:
+    return "user_cmd";
+  case RebootIntent::OTHER:
+    return "other";
+  }
+  return "other";
+}
+
+static uint8_t normalizeRebootIntent(uint8_t intent)
+{
+  if (intent > (uint8_t)RebootIntent::OTHER)
+  {
+    return (uint8_t)RebootIntent::OTHER;
+  }
+  return intent;
+}
+
+static bool isBadCrashResetReason(const char *resetReason, uint8_t rebootIntent)
 {
   if (!resetReason || resetReason[0] == '\0')
   {
     return false;
   }
+  if (strcmp(resetReason, "software_reset") == 0)
+  {
+    return rebootIntent == (uint8_t)RebootIntent::NONE;
+  }
   return strcmp(resetReason, "watchdog") == 0 ||
          strcmp(resetReason, "panic") == 0 ||
-         strcmp(resetReason, "software_reset") == 0 ||
          strcmp(resetReason, "other") == 0;
 }
 
@@ -562,6 +592,7 @@ static void clearCalibration()
 static void wipeWifiCredentials()
 {
   LOG_WARN(LogDomain::WIFI, "Wipe WiFi credentials requested via command");
+  storage_saveRebootIntent((uint8_t)RebootIntent::WIFI_WIPE);
   wifi_wipeCredentialsAndReboot();
 }
 
@@ -929,7 +960,7 @@ static void handleSerialCommands()
   }
   if (strcmp(cmd, "wipewifi") == 0)
   {
-    wifi_wipeCredentialsAndReboot();
+    wipeWifiCredentials();
     return;
   }
   if (strcmp(cmd, "help") == 0)
@@ -1006,6 +1037,18 @@ void appSetup()
     g_state.boot_count = persistedBootCount + 1u;
     storage_saveBootCount(g_state.boot_count);
 
+    uint8_t rebootIntent = (uint8_t)RebootIntent::NONE;
+    storage_loadRebootIntent(rebootIntent);
+    rebootIntent = normalizeRebootIntent(rebootIntent);
+    if (rebootIntent != (uint8_t)RebootIntent::NONE)
+    {
+      storage_clearRebootIntent();
+    }
+    g_state.reboot_intent = rebootIntent;
+    const char *intentLabel = rebootIntentLabel(rebootIntent);
+    strncpy(g_state.reboot_intent_label, intentLabel, sizeof(g_state.reboot_intent_label));
+    g_state.reboot_intent_label[sizeof(g_state.reboot_intent_label) - 1] = '\0';
+
     uint32_t winBoots = 0u;
     uint32_t winBad = 0u;
     uint32_t lastBoot = 0u;
@@ -1022,7 +1065,12 @@ void appSetup()
     }
 
     winBoots++;
-    const bool badBoot = isBadCrashResetReason(g_state.reset_reason);
+    const bool badBoot = isBadCrashResetReason(g_state.reset_reason, rebootIntent);
+    LOG_INFO(LogDomain::SYSTEM,
+             "Crash classification reset_reason=%s reboot_intent=%s bad_boot=%s",
+             g_state.reset_reason,
+             g_state.reboot_intent_label,
+             badBoot ? "true" : "false");
     if (badBoot)
     {
       winBad++;

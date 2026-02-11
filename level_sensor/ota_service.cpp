@@ -1411,6 +1411,7 @@ static void ota_finishSuccess(DeviceState *state)
         {
             ota_setStatus(state, OtaStatus::REBOOTING);
         }
+        storage_saveRebootIntent((uint8_t)RebootIntent::OTA);
         delay(250);
         ESP.restart();
     }
