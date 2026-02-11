@@ -635,6 +635,97 @@ class WaterTankCard extends HTMLElement {
     return min > 0 ? `${min}m ${sec}s` : `${sec}s`;
   }
 
+  _entityUpdatedMs(entityId) {
+    if (!entityId || !this._hass?.states) return NaN;
+    const stateObj = this._hass.states[entityId];
+    if (!stateObj) return NaN;
+    const raw = stateObj.last_updated || stateObj.last_changed;
+    if (!raw) return NaN;
+    const ms = Date.parse(raw);
+    return Number.isFinite(ms) ? ms : NaN;
+  }
+
+  _latestEntityAgeSeconds(entityIds, nowMs = Date.now()) {
+    if (!Array.isArray(entityIds) || !entityIds.length) return NaN;
+    let latestMs = NaN;
+    entityIds.forEach((entityId) => {
+      const ms = this._entityUpdatedMs(entityId);
+      if (!Number.isFinite(ms)) return;
+      if (!Number.isFinite(latestMs) || ms > latestMs) latestMs = ms;
+    });
+    if (!Number.isFinite(latestMs)) return NaN;
+    return Math.max(0, Math.floor((nowMs - latestMs) / 1000));
+  }
+
+  async _copyTextToClipboard(text) {
+    if (!text) return false;
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (_err) {
+      // fallback below
+    }
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      ta.style.pointerEvents = "none";
+      ta.style.top = "-1000px";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const copied = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return !!copied;
+    } catch (_err) {
+      return false;
+    }
+  }
+
+  _buildOtaDiagnosticsPayload() {
+    const otaStateRaw = this._config.ota_state_entity ? this._state(this._config.ota_state_entity) : null;
+    const otaState = this._isUnknownState(otaStateRaw) ? (this._otaUi?.lastState || null) : String(otaStateRaw);
+    const otaProgressRaw = this._config.ota_progress_entity ? this._num(this._config.ota_progress_entity) : null;
+    const otaProgress = otaProgressRaw === null ? this._otaUi?.lastProgress : otaProgressRaw;
+    const otaLastStatusRaw = this._config.ota_last_status_entity ? this._state(this._config.ota_last_status_entity) : null;
+    const otaLastMessageRaw = this._config.ota_last_message_entity ? this._state(this._config.ota_last_message_entity) : null;
+    const otaLastMessage = this._isUnknownState(otaLastMessageRaw) ? this._otaUi?.lastMessage : otaLastMessageRaw;
+    const otaErrorRaw = this._config.ota_error_entity ? this._state(this._config.ota_error_entity) : null;
+    const fwRaw = this._config.fw_version_entity ? this._state(this._config.fw_version_entity) : null;
+    const targetRaw = this._config.ota_target_version_entity ? this._state(this._config.ota_target_version_entity) : null;
+    const detailEntityIds = [
+      this._config.ota_state_entity,
+      this._config.ota_progress_entity,
+      this._config.ota_last_status_entity,
+      this._config.ota_last_message_entity,
+      this._config.ota_error_entity,
+    ].filter(Boolean);
+    const lastUpdatedSeconds = this._latestEntityAgeSeconds(detailEntityIds, Date.now());
+
+    const payload = {
+      title: this._config?.title || null,
+      fw_version: this._isUnknownState(fwRaw) ? null : String(fwRaw),
+      target_version: this._isUnknownState(targetRaw) ? null : String(targetRaw),
+      ota_state: this._isUnknownState(otaState) ? null : String(otaState),
+      ota_progress: Number.isFinite(otaProgress) ? Number(otaProgress) : null,
+      ota_last_status: this._isUnknownState(otaLastStatusRaw) ? null : String(otaLastStatusRaw),
+      ota_last_message: this._isUnknownState(otaLastMessage) ? null : String(otaLastMessage),
+      current_time_iso: new Date().toISOString(),
+    };
+
+    if (this._config.ota_error_entity) {
+      payload.ota_error = this._isUnknownState(otaErrorRaw) ? null : String(otaErrorRaw);
+    }
+    if (Number.isFinite(lastUpdatedSeconds)) {
+      payload.ota_last_updated_seconds_ago = lastUpdatedSeconds;
+    }
+    return payload;
+  }
+
   _updateOtaUiSession(otaStateRaw, otaProgressVal, otaLastMessageRaw, now = Date.now()) {
     const session = this._otaUi;
     if (!session) return;
@@ -1449,6 +1540,7 @@ class WaterTankCard extends HTMLElement {
     const otaLastStatus = this._config.ota_last_status_entity ? this._state(this._config.ota_last_status_entity) : null;
     const otaLastMessageRaw = this._config.ota_last_message_entity ? this._state(this._config.ota_last_message_entity) : null;
     const otaLastMessage = this._isUnknownState(otaLastMessageRaw) ? this._otaUi?.lastMessage : otaLastMessageRaw;
+    const otaError = this._config.ota_error_entity ? this._state(this._config.ota_error_entity) : null;
     const updateAvailableState = this._config.update_available_entity ? this._state(this._config.update_available_entity) : null;
     const updateAvailableLabel = this._boolLabelFromState(updateAvailableState, "Yes", "No");
     const otaStateKnown = !this._isUnknownState(otaState);
@@ -1456,6 +1548,18 @@ class WaterTankCard extends HTMLElement {
     const otaStateDisplay = otaReconnectState
       ? "Rebooting / reconnecting…"
       : (otaStateKnown ? otaState : (this._otaUi?.lastState || otaState));
+    const otaStateDiag = otaStateKnown ? otaState : (this._otaUi?.lastState || otaState);
+    const fwVersionRaw = this._config.fw_version_entity ? this._state(this._config.fw_version_entity) : null;
+    const targetVersionRaw = this._config.ota_target_version_entity ? this._state(this._config.ota_target_version_entity) : null;
+    const otaDiagEntityIds = [
+      this._config.ota_state_entity,
+      this._config.ota_progress_entity,
+      this._config.ota_last_status_entity,
+      this._config.ota_last_message_entity,
+      this._config.ota_error_entity,
+    ].filter(Boolean);
+    const otaLastUpdatedSeconds = this._latestEntityAgeSeconds(otaDiagEntityIds, Date.now());
+    const otaLastUpdatedLabel = Number.isFinite(otaLastUpdatedSeconds) ? `${otaLastUpdatedSeconds} seconds ago` : "—";
     const otaButtonDisabled = !online || otaBusy || !this._config.ota_pull_entity;
     const hasOtaSection =
       !!(this._config.ota_pull_entity ||
@@ -1463,6 +1567,7 @@ class WaterTankCard extends HTMLElement {
         this._config.ota_progress_entity ||
         this._config.ota_last_status_entity ||
         this._config.ota_last_message_entity ||
+        this._config.ota_error_entity ||
         this._config.update_available_entity);
     const otaSection = hasOtaSection ? `
       <div class="wt-section" id="ota-section">
@@ -1474,6 +1579,22 @@ class WaterTankCard extends HTMLElement {
           <div class="wt-diag-row"><span>Last status</span><b>${this._safeText(otaLastStatus)}</b></div>
           <div class="wt-diag-row"><span>Last message</span><b>${this._safeText(otaLastMessage)}</b></div>
         </div>
+        <details class="wt-ota-details">
+          <summary>OTA details</summary>
+          <div class="wt-diag-list">
+            <div class="wt-diag-row"><span>ota_state</span><b>${this._safeText(otaStateDiag)}</b></div>
+            <div class="wt-diag-row"><span>ota_progress</span><b>${otaProgressLabel}</b></div>
+            <div class="wt-diag-row"><span>ota_last_status</span><b>${this._safeText(otaLastStatus)}</b></div>
+            <div class="wt-diag-row"><span>ota_last_message</span><b>${this._safeText(otaLastMessage)}</b></div>
+            ${this._config.ota_error_entity ? `<div class="wt-diag-row"><span>ota_error</span><b>${this._safeText(otaError)}</b></div>` : ``}
+            <div class="wt-diag-row"><span>fw_version</span><b>${this._safeText(fwVersionRaw)}</b></div>
+            <div class="wt-diag-row"><span>target_version</span><b>${this._safeText(targetVersionRaw)}</b></div>
+            <div class="wt-diag-row"><span>Last updated</span><b>${this._safeText(otaLastUpdatedLabel)}</b></div>
+          </div>
+          <div class="wt-setup-input" style="margin-top:8px;">
+            <button class="wt-btn" id="btnOtaCopyDiag" type="button">Copy diagnostics</button>
+          </div>
+        </details>
         <div class="wt-setup-input" style="margin-top:10px;">
           <button class="wt-btn" id="btnOtaUpdate" data-entity="${this._config.ota_pull_entity || ""}" ${otaButtonDisabled ? "disabled" : ""}>
             Update now
@@ -1703,6 +1824,17 @@ class WaterTankCard extends HTMLElement {
         this._startOtaUiSession(Date.now());
         this._showToast("OTA started…", "info", 0, { sticky: true });
         pressButton(entityId);
+      };
+    }
+    const otaCopyDiagBtn = sr.getElementById("btnOtaCopyDiag");
+    if (otaCopyDiagBtn) {
+      otaCopyDiagBtn.onclick = async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const payload = this._buildOtaDiagnosticsPayload();
+        const text = JSON.stringify(payload, null, 2);
+        const copied = await this._copyTextToClipboard(text);
+        this._showToast(copied ? "Diagnostics copied" : "Failed to copy diagnostics", copied ? "success" : "error", TOAST_RESULT_MS);
       };
     }
 
