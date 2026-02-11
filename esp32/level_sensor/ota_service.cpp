@@ -130,6 +130,7 @@ static inline bool ota_isSystemTimeValid()
 static void setErr(char *buf, size_t len, const char *msg);
 static inline void ota_requestPublish();
 static void ota_abort(DeviceState *state, const char *reason);
+static uint32_t ota_epochNow();
 
 static inline bool ota_timeReached(uint32_t now, uint32_t target)
 {
@@ -516,7 +517,8 @@ static void ota_setResult(DeviceState *state, const char *status, const char *me
     strncpy(state->ota.last_message, message ? message : "", sizeof(state->ota.last_message));
     state->ota.last_message[sizeof(state->ota.last_message) - 1] = '\0';
 
-    state->ota.completed_ts = (uint32_t)(millis() / 1000);
+    const uint32_t epochNow = ota_epochNow();
+    state->ota.completed_ts = epochNow;
 }
 
 static inline void ota_requestPublish()
@@ -621,7 +623,11 @@ static void ota_setFlat(DeviceState *state,
     }
     if (stamp)
     {
-        state->ota_last_ts = (uint32_t)(millis() / 1000);
+        const uint32_t epochNow = ota_epochNow();
+        if (epochNow > 0)
+        {
+            state->ota_last_ts = epochNow;
+        }
     }
 }
 
@@ -878,7 +884,7 @@ bool ota_pullStart(DeviceState *state,
     state->ota.version[sizeof(state->ota.version) - 1] = '\0';
     state->ota.url[sizeof(state->ota.url) - 1] = '\0';
     state->ota.sha256[sizeof(state->ota.sha256) - 1] = '\0';
-    state->ota.started_ts = (uint32_t)(millis() / 1000);
+    state->ota.started_ts = ota_epochNow();
 
     // Clear last result fields for new attempt
     state->ota.last_status[0] = '\0';
@@ -1239,7 +1245,11 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
 
     strncpy(state->ota_target_version, version, sizeof(state->ota_target_version));
     state->ota_target_version[sizeof(state->ota_target_version) - 1] = '\0';
-    state->ota_last_ts = (uint32_t)(millis() / 1000);
+    const uint32_t manifestEpoch = ota_epochNow();
+    if (manifestEpoch > 0)
+    {
+        state->ota_last_ts = manifestEpoch;
+    }
     int manifestCmp = 0;
     bool manifestCmpValid = false;
     if (state->device.fw && state->device.fw[0] != '\0')

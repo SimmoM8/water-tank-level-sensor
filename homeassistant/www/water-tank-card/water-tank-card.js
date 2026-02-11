@@ -575,6 +575,27 @@ class WaterTankCard extends HTMLElement {
     return `${diffDays} days ago`;
   }
 
+  _timestampStateToEpochSeconds(raw) {
+    if (this._isUnknownState(raw)) return NaN;
+
+    if (typeof raw === "number") {
+      if (!Number.isFinite(raw) || raw <= 0) return NaN;
+      return raw > 1e12 ? raw / 1000 : raw;
+    }
+
+    const s = String(raw).trim();
+    if (!s.length) return NaN;
+
+    const numeric = Number(s);
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return numeric > 1e12 ? numeric / 1000 : numeric;
+    }
+
+    const parsedMs = Date.parse(s);
+    if (!Number.isFinite(parsedMs) || parsedMs <= 0) return NaN;
+    return parsedMs / 1000;
+  }
+
   _formatNumber(value, decimals) {
     const n = typeof value === "number" ? value : Number(value);
     if (!Number.isFinite(n)) return "—";
@@ -1245,7 +1266,7 @@ class WaterTankCard extends HTMLElement {
     }
     if (this._config.ota_last_success_ts_entity) {
       const tsRaw = this._state(this._config.ota_last_success_ts_entity);
-      const tsValue = this._isUnknownState(tsRaw) ? NaN : Number(tsRaw);
+      const tsValue = this._timestampStateToEpochSeconds(tsRaw);
       diagnosticsLines.push({ label: "Last update", value: this._humanizeAgeFromEpochSeconds(tsValue) });
     }
     if (this._config.percent_entity) diagnosticsLines.push({ label: "Percent", value: this._formatNumber(this._num(this._config.percent_entity), DIAGNOSTICS_DECIMALS) });

@@ -143,12 +143,12 @@ struct OtaState
     char version[OTA_VERSION_MAX] = {0};
     char url[OTA_URL_MAX] = {0};
     char sha256[OTA_SHA256_MAX] = {0};
-    uint32_t started_ts = 0;
+    uint32_t started_ts = 0; // epoch seconds (0 if time not set)
 
     // last result
     char last_status[OTA_STATUS_MAX] = {0};
     char last_message[OTA_MESSAGE_MAX] = {0};
-    uint32_t completed_ts = 0;
+    uint32_t completed_ts = 0; // epoch seconds (0 if time not set)
 };
 
 struct LastCmdInfo
@@ -183,7 +183,7 @@ struct DeviceState
     uint8_t ota_progress = 0;                         // mirror of ota.progress
     char ota_error[OTA_ERROR_MAX] = {0};              // mirror/summary of ota.result.message
     char ota_target_version[OTA_TARGET_VERSION_MAX] = {0}; // mirror of ota.version or manifest
-    uint32_t ota_last_ts = 0;                         // mirror of ota.started_ts/completed_ts
+    uint32_t ota_last_ts = 0;                         // epoch seconds mirror of ota.started_ts/completed_ts
     uint32_t ota_last_success_ts = 0;                 // epoch seconds of last successful OTA
     bool update_available = false;
     bool ota_force = false;                           // default force behavior for ota_pull

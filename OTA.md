@@ -253,7 +253,8 @@ Discovery publishes these entities automatically:
 - `sensor.<device>_ota_progress` — 0–100
 - `sensor.<device>_ota_error` — last error string (if any)
 - `sensor.<device>_ota_target_version` — latest/target version
-- `sensor.<device>_ota_last_ts` — last OTA timestamp
+- `sensor.<device>_ota_last_ts` — last OTA timestamp (ISO8601 UTC)
+- `sensor.<device>_ota_last_success_ts` — last successful OTA timestamp (ISO8601 UTC)
 - `sensor.<device>_ota_last_status` / `sensor.<device>_ota_last_message` — last result info
 - `binary_sensor.<device>_update_available` — update availability
 - `update.<device>_firmware` — HA Update entity (Install triggers `ota_pull`)
@@ -305,11 +306,15 @@ End of document.
 
 ## Troubleshooting (Common Failures)
 
-- `http_handshake_timeout` / `http_begin_failed`: TLS handshake or URL failed. Check Wi‑Fi, clock/time, and CA cert (`ota_ca_cert.h`).
-- `http_<code>`: HTTP error code from host (404, 403, 429, etc). Confirm release URL and access.
+- `dns_fail` / `tls_fail` / `http_timeout`: network/TLS stage failed. Check DNS, Wi‑Fi stability, clock/time, and CA cert (`ota_ca_cert.h`).
+- `http_code_<code>`: HTTP error code from host (404, 403, 429, etc). Confirm release URL and access.
 - `bad_content_type` / `content_too_small`: host returned HTML/JSON or tiny body (often rate-limit or error page).
-- `sha256_mismatch`: manifest SHA does not match firmware.bin (bad upload or wrong hash).
+- `sha_mismatch`: manifest SHA does not match firmware.bin (bad upload or wrong hash).
 - `download_timeout`: no download progress for 60s.
 - `update_end_failed_<code>`: flash write failed; check partition size and free space.
+
+Timestamp format note:
+- Sensors with HA `device_class: timestamp` publish ISO8601 UTC strings.
+- Numeric `*_s` fields (for example `time.last_attempt_s`) remain epoch seconds.
 
 The device continues running the previous firmware on any failure.
