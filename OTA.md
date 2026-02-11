@@ -169,6 +169,9 @@ HA sends a command (typically via MQTT Discovery button or Update entity):
 }
 ```
 
+`request_id` is optional for `ota_pull`: if omitted, firmware generates an internal unique ID (`auto_<millis>_<rand>`).  
+For non-OTA command types, `request_id` is still required and missing values are rejected with `missing_request_id`.
+
 If `url`/`sha256` are missing, the device uses the manifest URL from config.  
 Optional flags can be provided (or stored as defaults): `force`, `reboot`.
 
@@ -257,7 +260,7 @@ Discovery publishes these entities automatically:
 - `sensor.<device>_ota_last_success_ts` — last successful OTA timestamp (ISO8601 UTC)
 - `sensor.<device>_ota_last_status` / `sensor.<device>_ota_last_message` — last result info
 - `binary_sensor.<device>_update_available` — update availability
-- `update.<device>_firmware` — HA Update entity (Install triggers `ota_pull`)
+- `update.<device>_firmware` — HA Update entity (Install triggers `ota_pull`, firmware auto-generates `request_id`)
 - `switch.<device>_ota_force` — default force flag
 - `switch.<device>_ota_reboot` — default reboot flag
 
