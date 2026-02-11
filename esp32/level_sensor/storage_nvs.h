@@ -33,5 +33,9 @@ void storage_saveOtaLastSuccess(uint32_t ts);
 bool storage_loadBootCount(uint32_t &count);
 void storage_saveBootCount(uint32_t count);
 
+/* ---------------- Crash Loop State ---------------- */
+bool storage_loadCrashLoop(uint32_t &winBoots, uint32_t &winBad, uint32_t &lastBoot, bool &latched, uint32_t &lastStable, uint32_t &lastReason);
+void storage_saveCrashLoop(uint32_t winBoots, uint32_t winBad, uint32_t lastBoot, bool latched, uint32_t lastStable, uint32_t lastReason);
+
 /* ---------------- Debug ---------------- */
 void storage_dump();

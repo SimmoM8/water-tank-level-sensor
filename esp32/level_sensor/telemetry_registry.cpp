@@ -271,6 +271,31 @@ static bool write_boot_count(const DeviceState &s, JsonObject &root)
     return writeAtPath(root, "boot_count", s.boot_count);
 }
 
+static bool write_crash_loop(const DeviceState &s, JsonObject &root)
+{
+    return writeAtPath(root, "crash_loop", s.crash_loop);
+}
+
+static bool write_crash_loop_reason(const DeviceState &s, JsonObject &root)
+{
+    return writeAtPath(root, "crash_loop_reason", s.crash_loop_reason, true);
+}
+
+static bool write_crash_window_boots(const DeviceState &s, JsonObject &root)
+{
+    return writeAtPath(root, "crash_window_boots", s.crash_window_boots);
+}
+
+static bool write_crash_window_bad(const DeviceState &s, JsonObject &root)
+{
+    return writeAtPath(root, "crash_window_bad", s.crash_window_bad);
+}
+
+static bool write_last_stable_boot(const DeviceState &s, JsonObject &root)
+{
+    return writeAtPath(root, "last_stable_boot", s.last_stable_boot);
+}
+
 static bool write_reset_reason(const DeviceState &s, JsonObject &root)
 {
     return writeAtPath(root, "reset_reason", s.reset_reason, true);
@@ -580,6 +605,11 @@ static const TelemetryFieldDef TELEMETRY_FIELDS[] = {
     {HaComponent::Internal, "ts", "Timestamp", "ts", nullptr, nullptr, nullptr, nullptr, nullptr, write_ts},
     {HaComponent::Sensor, "uptime_seconds", "Uptime", "uptime_seconds", nullptr, "s", ICON_CLOCK, nullptr, nullptr, write_uptime_seconds},
     {HaComponent::Sensor, "boot_count", "Boot Count", "boot_count", nullptr, nullptr, ICON_CHIP, nullptr, nullptr, write_boot_count},
+    {HaComponent::BinarySensor, "crash_loop", "Crash Loop Latched", "crash_loop", nullptr, nullptr, ICON_ALERT, nullptr, nullptr, write_crash_loop},
+    {HaComponent::Sensor, "crash_loop_reason", "Crash Loop Reason", "crash_loop_reason", nullptr, nullptr, ICON_ALERT, nullptr, nullptr, write_crash_loop_reason},
+    {HaComponent::Sensor, "crash_window_boots", "Crash Window Boots", "crash_window_boots", nullptr, nullptr, ICON_ALERT, nullptr, nullptr, write_crash_window_boots},
+    {HaComponent::Sensor, "crash_window_bad", "Crash Window Bad Boots", "crash_window_bad", nullptr, nullptr, ICON_ALERT, nullptr, nullptr, write_crash_window_bad},
+    {HaComponent::Sensor, "last_stable_boot", "Last Stable Boot", "last_stable_boot", nullptr, nullptr, ICON_CHIP, nullptr, nullptr, write_last_stable_boot},
     {HaComponent::Sensor, "reset_reason", "Reset Reason", "reset_reason", nullptr, nullptr, ICON_CHIP, nullptr, nullptr, write_reset_reason},
     {HaComponent::Internal, "device", "Device", "device", nullptr, nullptr, nullptr, nullptr, nullptr, write_device},
     {HaComponent::Sensor, "fw_version", "Firmware Version", "fw_version", nullptr, nullptr, ICON_CHIP, nullptr, nullptr, write_fw_version},

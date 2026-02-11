@@ -13,7 +13,7 @@ namespace nvs
 {
 static constexpr const char kNamespace[] = "level_sensor";
 static constexpr const char kSchemaKey[] = "schema";
-static constexpr uint32_t kSchemaVersion = 1;
+static constexpr uint32_t kSchemaVersion = 2;
 
 // ---------------- Calibration ----------------
 static constexpr const char kKeyDry[] = "dry";
@@ -33,6 +33,12 @@ static constexpr const char kKeyOtaForce[] = "ota_force";
 static constexpr const char kKeyOtaReboot[] = "ota_reboot";
 static constexpr const char kKeyOtaLastSuccess[] = "ota_last_ok";
 static constexpr const char kKeyBootCount[] = "boot_count";
+static constexpr const char kKeyCrashWindowBoots[] = "cr_win_boots";
+static constexpr const char kKeyCrashWindowBad[] = "cr_win_bad";
+static constexpr const char kKeyCrashLastBoot[] = "cr_last_boot";
+static constexpr const char kKeyCrashLatched[] = "cr_latched";
+static constexpr const char kKeyCrashLastStable[] = "cr_last_stable";
+static constexpr const char kKeyCrashLastReason[] = "cr_last_reason";
 
 static constexpr uint32_t kWarnThrottleMs = 5000;
 } // namespace nvs
@@ -202,6 +208,25 @@ bool storage_loadBootCount(uint32_t &count)
     return hasCount;
 }
 
+bool storage_loadCrashLoop(uint32_t &winBoots, uint32_t &winBad, uint32_t &lastBoot, bool &latched, uint32_t &lastStable, uint32_t &lastReason)
+{
+    const bool hasAny =
+        prefs.isKey(storage::nvs::kKeyCrashWindowBoots) ||
+        prefs.isKey(storage::nvs::kKeyCrashWindowBad) ||
+        prefs.isKey(storage::nvs::kKeyCrashLastBoot) ||
+        prefs.isKey(storage::nvs::kKeyCrashLatched) ||
+        prefs.isKey(storage::nvs::kKeyCrashLastStable) ||
+        prefs.isKey(storage::nvs::kKeyCrashLastReason);
+
+    winBoots = prefs.getUInt(storage::nvs::kKeyCrashWindowBoots, 0u);
+    winBad = prefs.getUInt(storage::nvs::kKeyCrashWindowBad, 0u);
+    lastBoot = prefs.getUInt(storage::nvs::kKeyCrashLastBoot, 0u);
+    latched = prefs.getBool(storage::nvs::kKeyCrashLatched, false);
+    lastStable = prefs.getUInt(storage::nvs::kKeyCrashLastStable, 0u);
+    lastReason = prefs.getUInt(storage::nvs::kKeyCrashLastReason, 0u);
+    return hasAny;
+}
+
 void storage_saveCalibrationDry(int32_t dry)
 {
     prefs.putInt(storage::nvs::kKeyDry, dry);
@@ -262,6 +287,32 @@ void storage_saveOtaLastSuccess(uint32_t ts)
 void storage_saveBootCount(uint32_t count)
 {
     prefs.putUInt(storage::nvs::kKeyBootCount, count);
+}
+
+static void putUIntIfChanged(const char *key, uint32_t value)
+{
+    if (!prefs.isKey(key) || prefs.getUInt(key, 0u) != value)
+    {
+        prefs.putUInt(key, value);
+    }
+}
+
+static void putBoolIfChanged(const char *key, bool value)
+{
+    if (!prefs.isKey(key) || prefs.getBool(key, false) != value)
+    {
+        prefs.putBool(key, value);
+    }
+}
+
+void storage_saveCrashLoop(uint32_t winBoots, uint32_t winBad, uint32_t lastBoot, bool latched, uint32_t lastStable, uint32_t lastReason)
+{
+    putUIntIfChanged(storage::nvs::kKeyCrashWindowBoots, winBoots);
+    putUIntIfChanged(storage::nvs::kKeyCrashWindowBad, winBad);
+    putUIntIfChanged(storage::nvs::kKeyCrashLastBoot, lastBoot);
+    putBoolIfChanged(storage::nvs::kKeyCrashLatched, latched);
+    putUIntIfChanged(storage::nvs::kKeyCrashLastStable, lastStable);
+    putUIntIfChanged(storage::nvs::kKeyCrashLastReason, lastReason);
 }
 
 static inline void fnv1aMixByte(uint32_t &h, uint8_t b)
@@ -331,10 +382,22 @@ void storage_dump()
     const bool hasOtaReboot = prefs.isKey(storage::nvs::kKeyOtaReboot);
     const bool hasOtaLastOk = prefs.isKey(storage::nvs::kKeyOtaLastSuccess);
     const bool hasBootCount = prefs.isKey(storage::nvs::kKeyBootCount);
+    const bool hasCrashWindowBoots = prefs.isKey(storage::nvs::kKeyCrashWindowBoots);
+    const bool hasCrashWindowBad = prefs.isKey(storage::nvs::kKeyCrashWindowBad);
+    const bool hasCrashLastBoot = prefs.isKey(storage::nvs::kKeyCrashLastBoot);
+    const bool hasCrashLatched = prefs.isKey(storage::nvs::kKeyCrashLatched);
+    const bool hasCrashLastStable = prefs.isKey(storage::nvs::kKeyCrashLastStable);
+    const bool hasCrashLastReason = prefs.isKey(storage::nvs::kKeyCrashLastReason);
     bool otaForce = prefs.getBool(storage::nvs::kKeyOtaForce, false);
     bool otaReboot = prefs.getBool(storage::nvs::kKeyOtaReboot, true);
     uint32_t otaLastOk = prefs.getUInt(storage::nvs::kKeyOtaLastSuccess, 0);
     uint32_t bootCount = prefs.getUInt(storage::nvs::kKeyBootCount, 0u);
+    uint32_t crashWindowBoots = prefs.getUInt(storage::nvs::kKeyCrashWindowBoots, 0u);
+    uint32_t crashWindowBad = prefs.getUInt(storage::nvs::kKeyCrashWindowBad, 0u);
+    uint32_t crashLastBoot = prefs.getUInt(storage::nvs::kKeyCrashLastBoot, 0u);
+    bool crashLatched = prefs.getBool(storage::nvs::kKeyCrashLatched, false);
+    uint32_t crashLastStable = prefs.getUInt(storage::nvs::kKeyCrashLastStable, 0u);
+    uint32_t crashLastReason = prefs.getUInt(storage::nvs::kKeyCrashLastReason, 0u);
 
     // Deterministic marker over presence + values to detect unexpected NVS drift.
     uint32_t marker = 2166136261u; // FNV-1a 32-bit offset basis
@@ -362,9 +425,21 @@ void storage_dump()
     fnv1aMixU32(marker, otaLastOk);
     fnv1aMixBool(marker, hasBootCount);
     fnv1aMixU32(marker, bootCount);
+    fnv1aMixBool(marker, hasCrashWindowBoots);
+    fnv1aMixU32(marker, crashWindowBoots);
+    fnv1aMixBool(marker, hasCrashWindowBad);
+    fnv1aMixU32(marker, crashWindowBad);
+    fnv1aMixBool(marker, hasCrashLastBoot);
+    fnv1aMixU32(marker, crashLastBoot);
+    fnv1aMixBool(marker, hasCrashLatched);
+    fnv1aMixBool(marker, crashLatched);
+    fnv1aMixBool(marker, hasCrashLastStable);
+    fnv1aMixU32(marker, crashLastStable);
+    fnv1aMixBool(marker, hasCrashLastReason);
+    fnv1aMixU32(marker, crashLastReason);
 
     LOG_INFO(LogDomain::CONFIG,
-             "NVS dump v1 schema=%lu expected=%lu marker=0x%08lX",
+             "NVS dump v2 schema=%lu expected=%lu marker=0x%08lX",
              (unsigned long)schema,
              (unsigned long)storage::nvs::kSchemaVersion,
              (unsigned long)marker);
@@ -401,4 +476,19 @@ void storage_dump()
              "NVS boot has[count=%s] boot_count=%lu",
              hasBootCount ? "y" : "n",
              (unsigned long)bootCount);
+    LOG_INFO(LogDomain::CONFIG,
+             "NVS crash has[boots=%s bad=%s last_boot=%s latched=%s last_stable=%s last_reason=%s] "
+             "win_boots=%lu win_bad=%lu last_boot=%lu crash_latched=%s last_stable=%lu last_reason=%lu",
+             hasCrashWindowBoots ? "y" : "n",
+             hasCrashWindowBad ? "y" : "n",
+             hasCrashLastBoot ? "y" : "n",
+             hasCrashLatched ? "y" : "n",
+             hasCrashLastStable ? "y" : "n",
+             hasCrashLastReason ? "y" : "n",
+             (unsigned long)crashWindowBoots,
+             (unsigned long)crashWindowBad,
+             (unsigned long)crashLastBoot,
+             crashLatched ? "true" : "false",
+             (unsigned long)crashLastStable,
+             (unsigned long)crashLastReason);
 }
