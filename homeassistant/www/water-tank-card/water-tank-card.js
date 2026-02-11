@@ -2183,7 +2183,6 @@ class WaterTankCard extends HTMLElement {
     const otaProgressVal = this._config.ota_progress_entity ? this._num(this._config.ota_progress_entity) : null;
     const otaLastMessage = this._config.ota_last_message_entity ? this._state(this._config.ota_last_message_entity) : null;
     const otaErrorState = this._config.ota_error_entity ? this._state(this._config.ota_error_entity) : null;
-    this._updateOtaUiSession(otaState, otaProgressVal, otaLastMessage, now);
     const otaStateKnown = this._config.ota_state_entity && !this._isUnknownState(otaState);
     const otaStateLower = otaStateKnown ? String(otaState).trim().toLowerCase() : "";
     const otaBusyFromDevice = otaStateKnown && (
@@ -2201,6 +2200,7 @@ class WaterTankCard extends HTMLElement {
       this._otaUi.lastState = otaStateLower;
       if (!this._isUnknownState(otaLastMessage)) this._otaUi.lastMessage = String(otaLastMessage);
     }
+    this._updateOtaUiSession(otaState, otaProgressVal, otaLastMessage, now);
     const otaSessionActive = !!this._otaUi?.active;
     const otaPanelActive = otaSessionActive || otaBusyFromDevice;
     const otaSessionResult = this._otaUi?.result || null;
