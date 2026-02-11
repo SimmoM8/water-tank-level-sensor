@@ -203,6 +203,7 @@ class WaterTankCard extends HTMLElement {
     this._deferredRender = false;
     this._deferTimer = null;
     this._scrollToOta = false;
+    this._flashOtaSectionUntil = 0;
     this._renderDeferMs = 350;
     this._lastInteractionAt = 0;
     this._otaUi = {
@@ -1574,6 +1575,7 @@ class WaterTankCard extends HTMLElement {
     const otaLastUpdatedSeconds = this._latestEntityAgeSeconds(otaDiagEntityIds, Date.now());
     const otaLastUpdatedLabel = Number.isFinite(otaLastUpdatedSeconds) ? `${otaLastUpdatedSeconds} seconds ago` : "—";
     const otaButtonDisabled = !online || otaBusy || !this._config.ota_pull_entity;
+    const otaSectionFlash = this._flashOtaSectionUntil > Date.now();
     const hasOtaSection =
       !!(this._config.ota_pull_entity ||
         this._config.ota_state_entity ||
@@ -1583,7 +1585,7 @@ class WaterTankCard extends HTMLElement {
         this._config.ota_error_entity ||
         this._config.update_available_entity);
     const otaSection = hasOtaSection ? `
-      <div class="wt-section" id="ota-section">
+      <div class="wt-section${otaSectionFlash ? " wt-section--flash" : ""}" id="ota-section">
         <div class="wt-section-sub" style="margin-bottom:8px;">OTA Update</div>
         <div class="wt-diag-list">
           <div class="wt-diag-row"><span>Update available</span><b>${this._safeText(updateAvailableLabel)}</b></div>
@@ -1613,6 +1615,8 @@ class WaterTankCard extends HTMLElement {
             Update now
           </button>
         </div>
+        ${otaBusy ? `<div class="wt-note">Do not power off. Device may reboot.</div>` : ``}
+        ${!online ? `<div class="wt-note wt-note-error">Device offline — cannot start OTA</div>` : ``}
       </div>` : "";
 
     const advancedPage = `
@@ -2916,6 +2920,23 @@ class WaterTankCard extends HTMLElement {
         font-size: 12px;
         opacity: 0.75;
       }
+      .wt-note-error {
+        color: var(--error-color, #c00);
+        opacity: 0.95;
+      }
+      .wt-section--flash {
+        animation: wtOtaSectionFlash 1.5s ease-out;
+      }
+      @keyframes wtOtaSectionFlash {
+        0% {
+          background: rgba(255, 170, 0, 0.24);
+          box-shadow: 0 0 0 2px rgba(255, 170, 0, 0.35) inset;
+        }
+        100% {
+          background: transparent;
+          box-shadow: 0 0 0 0 rgba(255, 170, 0, 0) inset;
+        }
+      }
       .wt-cal-values {
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -3248,12 +3269,14 @@ class WaterTankCard extends HTMLElement {
         e.preventDefault();
         e.stopPropagation();
         this._scrollToOta = true;
+        this._flashOtaSectionUntil = Date.now() + 1500;
         this._openModal("advanced");
       };
       otaBanner.onkeydown = (e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           this._scrollToOta = true;
+          this._flashOtaSectionUntil = Date.now() + 1500;
           this._openModal("advanced");
         }
       };
