@@ -389,7 +389,7 @@ static bool publishUpdateEntity()
     doc["installed_version_template"] = "{{ value_json.installed_version | default('', true) }}";
     doc["latest_version_template"] = "{{ value_json.latest_version | default('', true) }}";
     doc["command_topic"] = String(s_cfg.baseTopic) + "/cmd";
-    doc["payload_install"] = "{\"schema\":1,\"type\":\"ota_pull\",\"request_id\":\"{{ timestamp }}\",\"data\":{}}";
+    doc["payload_install"] = "{\"schema\":1,\"type\":\"ota_pull\",\"data\":{}}";
 
     doc["availability_topic"] = String(s_cfg.baseTopic) + "/" + AVAIL_TOPIC_SUFFIX;
     doc["payload_available"] = PAYLOAD_AVAILABLE;
