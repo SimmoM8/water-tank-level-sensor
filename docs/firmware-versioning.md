@@ -52,6 +52,9 @@ Workflow file: `.github/workflows/release-ota.yml`
 What it does:
 
 1. Builds firmware `.bin` with `arduino-cli` and `FW_VERSION`.
+   - Base board from profile: `esp32:esp32:esp32`
+   - CI pins board options: `PartitionScheme=default`, `FlashSize=4M`, `FlashMode=qio`, `FlashFreq=80`, `PSRAM=disabled`
+   - CI enforces OTA app-slot limit: max firmware size `1,310,720` bytes (`0x140000`)
 2. Computes SHA256 of the release binary.
 3. Creates/updates a GitHub release tagged `v<version>`.
 4. Uploads the firmware `.bin` release asset.

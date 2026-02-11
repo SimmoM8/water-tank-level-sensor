@@ -267,12 +267,53 @@ jobs:
             exit 1
           fi
 
+      - name: Pin board options for OTA-safe build
+        id: boardcfg
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE_FQBN="${{ steps.deps.outputs.fqbn }}"
+          PINNED_FLASH_SIZE="4M"
+          PINNED_FLASH_MODE="qio"
+          PINNED_FLASH_FREQ="80"
+          PINNED_PARTITION_SCHEME="default"
+          PINNED_PSRAM="disabled"
+
+          if [[ -z "${BASE_FQBN}" ]]; then
+            echo "::error::Base FQBN is empty; cannot pin board options"
+            exit 1
+          fi
+
+          case "${PINNED_PARTITION_SCHEME}" in
+            default)
+              # esp32 default partition table is dual OTA app slots (ota_0/ota_1), each 0x140000.
+              OTA_SLOT_MAX_BYTES=1310720
+              ;;
+            *)
+              echo "::error::Partition scheme '${PINNED_PARTITION_SCHEME}' is not approved as OTA-capable dual-app layout"
+              exit 1
+              ;;
+          esac
+
+          COMPILE_FQBN="${BASE_FQBN}:FlashMode=${PINNED_FLASH_MODE},FlashFreq=${PINNED_FLASH_FREQ},FlashSize=${PINNED_FLASH_SIZE},PartitionScheme=${PINNED_PARTITION_SCHEME},PSRAM=${PINNED_PSRAM}"
+
+          echo "Pinned compile FQBN: ${COMPILE_FQBN}"
+          echo "Pinned partition scheme: ${PINNED_PARTITION_SCHEME}"
+          echo "Pinned flash size: ${PINNED_FLASH_SIZE}"
+          echo "OTA app slot max bytes: ${OTA_SLOT_MAX_BYTES}"
+
+          echo "compile_fqbn=${COMPILE_FQBN}" >> "${GITHUB_OUTPUT}"
+          echo "partition_scheme=${PINNED_PARTITION_SCHEME}" >> "${GITHUB_OUTPUT}"
+          echo "flash_size=${PINNED_FLASH_SIZE}" >> "${GITHUB_OUTPUT}"
+          echo "ota_slot_max_bytes=${OTA_SLOT_MAX_BYTES}" >> "${GITHUB_OUTPUT}"
+
       - name: Dry-run compile (pinned profile)
         shell: bash
         run: |
           set -euo pipefail
-          echo "Dry-run target FQBN: ${{ steps.deps.outputs.fqbn }}"
-          arduino-cli compile --clean --fqbn "${{ steps.deps.outputs.fqbn }}" "${{ steps.meta.outputs.sketch_dir }}"
+          echo "Dry-run target FQBN: ${{ steps.boardcfg.outputs.compile_fqbn }}"
+          arduino-cli compile --clean --fqbn "${{ steps.boardcfg.outputs.compile_fqbn }}" "${{ steps.meta.outputs.sketch_dir }}"
 
       - name: Compile firmware
         id: build
@@ -283,15 +324,35 @@ jobs:
           BUILD_DIR="build"
           EXPORT_DIR="${BUILD_DIR}/exported"
           SKETCH_DIR="${{ steps.meta.outputs.sketch_dir }}"
-          SKETCH_FILE="${SKETCH_DIR}/level_sensor.ino"
+          COMPILE_FQBN="${{ steps.boardcfg.outputs.compile_fqbn }}"
+          PINNED_PARTITION_SCHEME="${{ steps.boardcfg.outputs.partition_scheme }}"
+          PINNED_FLASH_SIZE="${{ steps.boardcfg.outputs.flash_size }}"
+          OTA_SLOT_MAX_BYTES="${{ steps.boardcfg.outputs.ota_slot_max_bytes }}"
           EXPECTED_APP_BASENAME="level_sensor.ino.bin"
           EXPORTED_APP_BIN="${SKETCH_DIR}/${EXPECTED_APP_BASENAME}"
 
           mkdir -p "${BUILD_DIR}" "${EXPORT_DIR}"
           rm -f "${SKETCH_DIR}/level_sensor.ino.bin" "${SKETCH_DIR}/level_sensor.ino.bootloader.bin" "${SKETCH_DIR}/level_sensor.ino.partitions.bin"
 
+          if [[ -z "${COMPILE_FQBN}" ]]; then
+            echo "::error::Pinned compile FQBN is empty"
+            exit 1
+          fi
+          if [[ "${PINNED_PARTITION_SCHEME}" != "default" ]]; then
+            echo "::error::Partition scheme check failed: expected OTA-capable 'default', got '${PINNED_PARTITION_SCHEME}'"
+            exit 1
+          fi
+          if [[ ! "${OTA_SLOT_MAX_BYTES}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid OTA slot max bytes value: ${OTA_SLOT_MAX_BYTES}"
+            exit 1
+          fi
+          if (( OTA_SLOT_MAX_BYTES <= 0 )); then
+            echo "::error::Invalid OTA slot max bytes value: ${OTA_SLOT_MAX_BYTES}"
+            exit 1
+          fi
+
           arduino-cli compile \
-            --fqbn "${{ steps.deps.outputs.fqbn }}" \
+            --fqbn "${COMPILE_FQBN}" \
             --build-property "compiler.cpp.extra_flags=-DFW_VERSION=\\\"${{ steps.meta.outputs.version }}\\\"" \
             --output-dir "${BUILD_DIR}" \
             --export-binaries \
@@ -320,7 +381,6 @@ jobs:
             exit 1
           fi
           MIN_RELEASE_ASSET_BYTES=131072
-          MAX_RELEASE_ASSET_BYTES=4194304
           RELEASE_ASSET_SIZE="$(wc -c < "${RELEASE_ASSET_PATH}" | tr -d '[:space:]')"
           if [[ ! "${RELEASE_ASSET_SIZE}" =~ ^[0-9]+$ ]]; then
             echo "::error::Failed to determine release asset size for ${RELEASE_ASSET_PATH}" >&2
@@ -330,8 +390,8 @@ jobs:
             echo "::error::Release asset is suspiciously small (${RELEASE_ASSET_SIZE} bytes, minimum ${MIN_RELEASE_ASSET_BYTES})" >&2
             exit 1
           fi
-          if (( RELEASE_ASSET_SIZE > MAX_RELEASE_ASSET_BYTES )); then
-            echo "::error::Release asset is suspiciously large (${RELEASE_ASSET_SIZE} bytes, maximum ${MAX_RELEASE_ASSET_BYTES})" >&2
+          if (( RELEASE_ASSET_SIZE > OTA_SLOT_MAX_BYTES )); then
+            echo "::error::Firmware does not fit OTA app slot: size=${RELEASE_ASSET_SIZE} bytes slot_max=${OTA_SLOT_MAX_BYTES} partition_scheme=${PINNED_PARTITION_SCHEME} flash_size=${PINNED_FLASH_SIZE}" >&2
             exit 1
           fi
 
