@@ -32,6 +32,7 @@ static constexpr const char kKeySimMode[] = "sim_mode";
 static constexpr const char kKeyOtaForce[] = "ota_force";
 static constexpr const char kKeyOtaReboot[] = "ota_reboot";
 static constexpr const char kKeyOtaLastSuccess[] = "ota_last_ok";
+static constexpr const char kKeyBootCount[] = "boot_count";
 
 static constexpr uint32_t kWarnThrottleMs = 5000;
 } // namespace nvs
@@ -194,6 +195,13 @@ bool storage_loadOtaLastSuccess(uint32_t &ts)
     return hasTs;
 }
 
+bool storage_loadBootCount(uint32_t &count)
+{
+    const bool hasCount = prefs.isKey(storage::nvs::kKeyBootCount);
+    count = prefs.getUInt(storage::nvs::kKeyBootCount, 0u);
+    return hasCount;
+}
+
 void storage_saveCalibrationDry(int32_t dry)
 {
     prefs.putInt(storage::nvs::kKeyDry, dry);
@@ -249,6 +257,11 @@ void storage_saveOtaReboot(bool reboot)
 void storage_saveOtaLastSuccess(uint32_t ts)
 {
     prefs.putUInt(storage::nvs::kKeyOtaLastSuccess, ts);
+}
+
+void storage_saveBootCount(uint32_t count)
+{
+    prefs.putUInt(storage::nvs::kKeyBootCount, count);
 }
 
 static inline void fnv1aMixByte(uint32_t &h, uint8_t b)
@@ -317,9 +330,11 @@ void storage_dump()
     const bool hasOtaForce = prefs.isKey(storage::nvs::kKeyOtaForce);
     const bool hasOtaReboot = prefs.isKey(storage::nvs::kKeyOtaReboot);
     const bool hasOtaLastOk = prefs.isKey(storage::nvs::kKeyOtaLastSuccess);
+    const bool hasBootCount = prefs.isKey(storage::nvs::kKeyBootCount);
     bool otaForce = prefs.getBool(storage::nvs::kKeyOtaForce, false);
     bool otaReboot = prefs.getBool(storage::nvs::kKeyOtaReboot, true);
     uint32_t otaLastOk = prefs.getUInt(storage::nvs::kKeyOtaLastSuccess, 0);
+    uint32_t bootCount = prefs.getUInt(storage::nvs::kKeyBootCount, 0u);
 
     // Deterministic marker over presence + values to detect unexpected NVS drift.
     uint32_t marker = 2166136261u; // FNV-1a 32-bit offset basis
@@ -345,6 +360,8 @@ void storage_dump()
     fnv1aMixBool(marker, otaReboot);
     fnv1aMixBool(marker, hasOtaLastOk);
     fnv1aMixU32(marker, otaLastOk);
+    fnv1aMixBool(marker, hasBootCount);
+    fnv1aMixU32(marker, bootCount);
 
     LOG_INFO(LogDomain::CONFIG,
              "NVS dump v1 schema=%lu expected=%lu marker=0x%08lX",
@@ -380,4 +397,8 @@ void storage_dump()
              otaForce ? "true" : "false",
              otaReboot ? "true" : "false",
              (unsigned long)otaLastOk);
+    LOG_INFO(LogDomain::CONFIG,
+             "NVS boot has[count=%s] boot_count=%lu",
+             hasBootCount ? "y" : "n",
+             (unsigned long)bootCount);
 }

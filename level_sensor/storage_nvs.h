@@ -30,6 +30,8 @@ void storage_saveOtaForce(bool force);
 void storage_saveOtaReboot(bool reboot);
 bool storage_loadOtaLastSuccess(uint32_t &ts);
 void storage_saveOtaLastSuccess(uint32_t ts);
+bool storage_loadBootCount(uint32_t &count);
+void storage_saveBootCount(uint32_t count);
 
 /* ---------------- Debug ---------------- */
 void storage_dump();
