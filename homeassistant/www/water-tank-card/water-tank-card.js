@@ -1452,7 +1452,8 @@ class WaterTankCard extends HTMLElement {
     const updateAvailableState = this._config.update_available_entity ? this._state(this._config.update_available_entity) : null;
     const updateAvailableLabel = this._boolLabelFromState(updateAvailableState, "Yes", "No");
     const otaStateKnown = !this._isUnknownState(otaState);
-    const otaStateDisplay = this._otaSessionIsStale(Date.now())
+    const otaReconnectState = (!!this._otaUi?.active && !otaStateKnown) || this._otaSessionIsStale(Date.now());
+    const otaStateDisplay = otaReconnectState
       ? "Rebooting / reconnecting…"
       : (otaStateKnown ? otaState : (this._otaUi?.lastState || otaState));
     const otaButtonDisabled = !online || otaBusy || !this._config.ota_pull_entity;
@@ -2211,7 +2212,8 @@ class WaterTankCard extends HTMLElement {
       : null;
     const otaProgressText = otaProgressPct !== null ? `${otaProgressPct}%` : "…";
     const otaStale = this._otaSessionIsStale(now);
-    const otaStepState = otaStale
+    const otaReconnectState = (otaSessionActive && !otaStateKnown) || otaStale;
+    const otaStepState = otaReconnectState
       ? "reconnecting"
       : (otaStateKnown ? otaStateLower : (this._otaUi?.lastState || null));
     const otaStepLabel = this._otaStepLabel(otaStepState);
