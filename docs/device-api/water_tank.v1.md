@@ -15,6 +15,8 @@ Top-level keys currently emitted:
 
 - `schema`
 - `ts`
+- `boot_count`
+- `reset_reason`
 - `device`
 - `fw_version`
 - `installed_version`
@@ -47,6 +49,8 @@ Notes:
 {
   "schema": 1,
   "ts": 1730000000,
+  "boot_count": 42,
+  "reset_reason": "panic",
   "device": {
     "id": "water_tank_esp32",
     "name": "Water Tank Sensor",
@@ -148,3 +152,12 @@ Shadow topic values:
 
 - `{baseTopic}/ota/status`: same canonical OTA states as `ota.status`.
 - `{baseTopic}/ota/progress`: integer `0..100`.
+
+Reset reason values:
+
+- `power_on`
+- `software_reset`
+- `panic`
+- `deep_sleep`
+- `watchdog`
+- `other`

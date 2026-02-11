@@ -260,6 +260,11 @@ static bool write_ts(const DeviceState &s, JsonObject &root)
     return writeAtPath(root, "ts", s.ts);
 }
 
+static bool write_boot_count(const DeviceState &s, JsonObject &root)
+{
+    return writeAtPath(root, "boot_count", s.boot_count);
+}
+
 static bool write_reset_reason(const DeviceState &s, JsonObject &root)
 {
     return writeAtPath(root, "reset_reason", s.reset_reason, true);
@@ -567,7 +572,8 @@ static const TelemetryFieldDef TELEMETRY_FIELDS[] = {
     // Core/meta
     {HaComponent::Internal, "schema", "State Schema", "schema", nullptr, nullptr, nullptr, nullptr, nullptr, write_schema},
     {HaComponent::Internal, "ts", "Timestamp", "ts", nullptr, nullptr, nullptr, nullptr, nullptr, write_ts},
-    {HaComponent::Internal, "reset_reason", "Reset Reason", "reset_reason", nullptr, nullptr, nullptr, nullptr, nullptr, write_reset_reason},
+    {HaComponent::Sensor, "boot_count", "Boot Count", "boot_count", nullptr, nullptr, ICON_CHIP, nullptr, nullptr, write_boot_count},
+    {HaComponent::Sensor, "reset_reason", "Reset Reason", "reset_reason", nullptr, nullptr, ICON_CHIP, nullptr, nullptr, write_reset_reason},
     {HaComponent::Internal, "device", "Device", "device", nullptr, nullptr, nullptr, nullptr, nullptr, write_device},
     {HaComponent::Sensor, "fw_version", "Firmware Version", "fw_version", nullptr, nullptr, ICON_CHIP, nullptr, nullptr, write_fw_version},
     {HaComponent::Internal, "installed_version", "Installed Version", "installed_version", nullptr, nullptr, nullptr, nullptr, nullptr, write_installed_version},

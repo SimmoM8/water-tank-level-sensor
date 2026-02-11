@@ -207,10 +207,11 @@ static const char *mapResetReason(esp_reset_reason_t reason)
   case ESP_RST_POWERON:
     return "power_on";
   case ESP_RST_SW:
+    return "software_reset";
 #ifdef ESP_RST_PANIC
   case ESP_RST_PANIC:
+    return "panic";
 #endif
-    return "software_reset";
   case ESP_RST_DEEPSLEEP:
     return "deep_sleep";
   case ESP_RST_INT_WDT:
@@ -961,6 +962,12 @@ void appSetup()
   LOG_INFO(LogDomain::SYSTEM, "TOUCH_PIN=%d", TOUCH_PIN);
 
   storage_begin();
+  {
+    uint32_t persistedBootCount = 0u;
+    storage_loadBootCount(persistedBootCount);
+    g_state.boot_count = persistedBootCount + 1u;
+    storage_saveBootCount(g_state.boot_count);
+  }
   wifi_begin();
   config_begin();
 
