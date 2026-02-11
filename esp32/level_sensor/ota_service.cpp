@@ -11,6 +11,7 @@
 #include <Update.h>
 #include <ArduinoJson.h>
 #include <string.h>
+#include <ctype.h>
 #include <time.h>
 #include "domain_strings.h"
 #include "storage_nvs.h"
@@ -36,6 +37,21 @@
 #ifndef CFG_OTA_GUARD_MIN_WIFI_RSSI
 #define CFG_OTA_GUARD_MIN_WIFI_RSSI -127
 #endif
+#ifndef CFG_OTA_HTTP_CONNECT_TIMEOUT_MS
+#define CFG_OTA_HTTP_CONNECT_TIMEOUT_MS 8000u
+#endif
+#ifndef CFG_OTA_HTTP_READ_TIMEOUT_MS
+#define CFG_OTA_HTTP_READ_TIMEOUT_MS 10000u
+#endif
+#ifndef CFG_OTA_HTTP_MAX_RETRIES
+#define CFG_OTA_HTTP_MAX_RETRIES 3u
+#endif
+#ifndef CFG_OTA_HTTP_RETRY_BASE_MS
+#define CFG_OTA_HTTP_RETRY_BASE_MS 1500u
+#endif
+#ifndef CFG_OTA_HTTP_RETRY_MAX_BACKOFF_MS
+#define CFG_OTA_HTTP_RETRY_MAX_BACKOFF_MS 10000u
+#endif
 
 static const char *s_hostName = nullptr;
 static const char *s_password = nullptr;
@@ -59,6 +75,8 @@ struct PullOtaJob
     uint32_t bytesWritten = 0;
     uint32_t noDataSinceMs = 0;
     uint8_t zeroReadStreak = 0;
+    uint8_t netRetryCount = 0;
+    uint32_t retryAtMs = 0;
 
     // Streaming objects
     HTTPClient http;
@@ -111,6 +129,35 @@ static inline bool ota_isSystemTimeValid()
 
 static void setErr(char *buf, size_t len, const char *msg);
 static inline void ota_requestPublish();
+static void ota_abort(DeviceState *state, const char *reason);
+
+static inline bool ota_timeReached(uint32_t now, uint32_t target)
+{
+    return (int32_t)(now - target) >= 0;
+}
+
+static bool ota_msgContainsNoCase(const char *haystack, const char *needle)
+{
+    if (!haystack || !needle || needle[0] == '\0')
+    {
+        return false;
+    }
+    const size_t needleLen = strlen(needle);
+    for (const char *p = haystack; *p != '\0'; ++p)
+    {
+        size_t i = 0;
+        while (i < needleLen && p[i] != '\0' &&
+               tolower((unsigned char)p[i]) == tolower((unsigned char)needle[i]))
+        {
+            ++i;
+        }
+        if (i == needleLen)
+        {
+            return true;
+        }
+    }
+    return false;
+}
 
 static inline void ota_resetTlsError()
 {
@@ -164,6 +211,101 @@ static const char *ota_tlsFailureReason(int httpCode)
         return "http_request_failed";
     }
     return "http_error";
+}
+
+static bool ota_tlsLikeFailure()
+{
+    if (ota_tlsCertVerifyFailed())
+    {
+        return true;
+    }
+    if (s_lastTlsErrMsg[0] == '\0')
+    {
+        return false;
+    }
+    return ota_msgContainsNoCase(s_lastTlsErrMsg, "tls") ||
+           ota_msgContainsNoCase(s_lastTlsErrMsg, "ssl") ||
+           ota_msgContainsNoCase(s_lastTlsErrMsg, "x509") ||
+           ota_msgContainsNoCase(s_lastTlsErrMsg, "certificate") ||
+           ota_msgContainsNoCase(s_lastTlsErrMsg, "handshake") ||
+           ota_msgContainsNoCase(s_lastTlsErrMsg, "verify");
+}
+
+static bool ota_dnsLikeFailure()
+{
+    if (s_lastTlsErrMsg[0] == '\0')
+    {
+        return false;
+    }
+    return ota_msgContainsNoCase(s_lastTlsErrMsg, "dns") ||
+           ota_msgContainsNoCase(s_lastTlsErrMsg, "getaddrinfo") ||
+           ota_msgContainsNoCase(s_lastTlsErrMsg, "name not known") ||
+           ota_msgContainsNoCase(s_lastTlsErrMsg, "resolve");
+}
+
+static bool ota_httpTimeoutCode(int code)
+{
+#if defined(HTTPC_ERROR_READ_TIMEOUT)
+    if (code == HTTPC_ERROR_READ_TIMEOUT)
+    {
+        return true;
+    }
+#endif
+#if defined(HTTPC_ERROR_CONNECTION_TIMEOUT)
+    if (code == HTTPC_ERROR_CONNECTION_TIMEOUT)
+    {
+        return true;
+    }
+#endif
+    return false;
+}
+
+static const char *ota_classifyBeginFailure(uint32_t elapsedMs)
+{
+    if (elapsedMs >= (uint32_t)CFG_OTA_HTTP_CONNECT_TIMEOUT_MS)
+    {
+        return "http_timeout";
+    }
+    if (ota_dnsLikeFailure())
+    {
+        return "dns_fail";
+    }
+    if (ota_tlsLikeFailure())
+    {
+        return "tls_fail";
+    }
+    return "tls_fail";
+}
+
+static const char *ota_classifyRequestFailure(int httpCode)
+{
+    if (ota_httpTimeoutCode(httpCode))
+    {
+        return "http_timeout";
+    }
+    if (ota_dnsLikeFailure())
+    {
+        return "dns_fail";
+    }
+    if (ota_tlsLikeFailure())
+    {
+        return "tls_fail";
+    }
+    if (httpCode < 0)
+    {
+        return "tls_fail";
+    }
+    return "tls_fail";
+}
+
+static void ota_formatHttpCodeReason(int httpCode, char *buf, size_t len)
+{
+    if (!buf || len == 0)
+    {
+        return;
+    }
+    snprintf(buf, len, "http_code_%d", httpCode);
+    buf[len - 1] = '\0';
 }
 
 static inline void ota_recordError(DeviceState *state, const char *reason)
@@ -483,6 +625,47 @@ static void ota_setFlat(DeviceState *state,
     }
 }
 
+static bool ota_scheduleRetry(DeviceState *state, const char *reason)
+{
+    const char *msg = (reason && reason[0] != '\0') ? reason : "retry";
+
+    if (g_job.httpBegun)
+    {
+        g_job.http.end();
+        g_job.httpBegun = false;
+    }
+
+    if (g_job.netRetryCount >= (uint8_t)CFG_OTA_HTTP_MAX_RETRIES)
+    {
+        ota_abort(state, msg);
+        return false;
+    }
+
+    g_job.netRetryCount++;
+    uint32_t backoffMs = (uint32_t)CFG_OTA_HTTP_RETRY_BASE_MS * (uint32_t)g_job.netRetryCount;
+    if (backoffMs > (uint32_t)CFG_OTA_HTTP_RETRY_MAX_BACKOFF_MS)
+    {
+        backoffMs = (uint32_t)CFG_OTA_HTTP_RETRY_MAX_BACKOFF_MS;
+    }
+    g_job.retryAtMs = millis() + backoffMs;
+
+    LOG_WARN(LogDomain::OTA,
+             "OTA network retry scheduled reason=%s attempt=%u/%u backoff_ms=%lu",
+             msg,
+             (unsigned int)g_job.netRetryCount,
+             (unsigned int)CFG_OTA_HTTP_MAX_RETRIES,
+             (unsigned long)backoffMs);
+
+    if (state)
+    {
+        ota_recordError(state, msg);
+        ota_setFlat(state, "downloading", state->ota.progress, msg, state->ota.version, true);
+        ota_requestPublish();
+    }
+
+    return true;
+}
+
 static void ota_markFailed(DeviceState *state, const char *reason)
 {
     if (!state)
@@ -665,6 +848,8 @@ bool ota_pullStart(DeviceState *state,
     g_job.bytesWritten = 0;
     g_job.noDataSinceMs = 0;
     g_job.zeroReadStreak = 0;
+    g_job.netRetryCount = 0;
+    g_job.retryAtMs = 0;
     g_job.request_id[0] = '\0';
     g_job.version[0] = '\0';
     g_job.url[0] = '\0';
@@ -1179,39 +1364,45 @@ void ota_tick(DeviceState *state)
         return;
     }
 
+    const uint32_t nowMs = millis();
+
+    if (!g_job.httpBegun && g_job.retryAtMs != 0 && !ota_timeReached(nowMs, g_job.retryAtMs))
+    {
+        return;
+    }
+    if (!g_job.httpBegun && g_job.retryAtMs != 0 && ota_timeReached(nowMs, g_job.retryAtMs))
+    {
+        g_job.retryAtMs = 0;
+    }
+
     // Step A: begin HTTP if not begun
     if (!g_job.httpBegun)
     {
-        static constexpr uint32_t kHandshakeTimeoutMs = 20000;
+        const uint32_t connectTimeoutMs = (uint32_t)CFG_OTA_HTTP_CONNECT_TIMEOUT_MS;
+        const uint32_t readTimeoutMs = (uint32_t)CFG_OTA_HTTP_READ_TIMEOUT_MS;
+        const uint16_t readTimeoutMsClamped = (readTimeoutMs > 65535u) ? 65535u : (uint16_t)readTimeoutMs;
+
         ota_prepareTlsClient(g_job.client, "firmware_download");
 
         // Follow GitHub redirects (releases/download -> objects.githubusercontent.com)
         g_job.http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
         g_job.http.setRedirectLimit(5);
+        g_job.http.setConnectTimeout((int32_t)connectTimeoutMs);
+        g_job.http.setTimeout(readTimeoutMsClamped);
 
         // HTTPS: WiFiClientSecure + trusted CA (bundle-preferred) + redirect-following.
         const uint32_t hsStartMs = millis();
         bool ok = g_job.http.begin(g_job.client, g_job.url);
         const uint32_t hsElapsedMs = millis() - hsStartMs;
-        if (ok)
-        {
-            g_job.httpBegun = true;
-        }
-        else
+        if (!ok)
         {
             ota_captureTlsError(g_job.client);
             ota_logTlsStatus("firmware_download", false, 0);
-        }
-        if (hsElapsedMs > kHandshakeTimeoutMs)
-        {
-            ota_abort(state, "http_handshake_timeout");
+            const char *reason = ota_classifyBeginFailure(hsElapsedMs);
+            ota_scheduleRetry(state, reason);
             return;
         }
-        if (!ok)
-        {
-            ota_abort(state, ota_tlsFailureReason(0));
-            return;
-        }
+        g_job.httpBegun = true;
 
         static const char *kHeaders[] = {"Content-Type", "Content-Length", "Location"};
         g_job.http.collectHeaders(kHeaders, 3);
@@ -1220,23 +1411,32 @@ void ota_tick(DeviceState *state)
         g_job.http.addHeader("Accept", "application/octet-stream");
         g_job.http.useHTTP10(false);
 
+        const uint32_t getStartMs = millis();
         int code = g_job.http.GET();
+        const uint32_t getElapsedMs = millis() - getStartMs;
         const bool requestOk = (code > 0);
         if (!requestOk)
         {
             ota_captureTlsError(g_job.client);
             ota_logTlsStatus("firmware_download", false, code);
-            ota_abort(state, ota_tlsFailureReason(code));
+            const char *reason = ota_classifyRequestFailure(code);
+            if (getElapsedMs >= readTimeoutMs)
+            {
+                reason = "http_timeout";
+            }
+            ota_scheduleRetry(state, reason);
             return;
         }
         ota_logTlsStatus("firmware_download", true, code);
         if (code != HTTP_CODE_OK)
         {
             char msg[32];
-            snprintf(msg, sizeof(msg), "http_%d", code);
-            ota_abort(state, msg);
+            ota_formatHttpCodeReason(code, msg, sizeof(msg));
+            ota_scheduleRetry(state, msg);
             return;
         }
+        g_job.netRetryCount = 0;
+        g_job.retryAtMs = 0;
 
         String ctype = g_job.http.header("Content-Type");
         if (ctype.length() > 0)
@@ -1454,7 +1654,7 @@ void ota_tick(DeviceState *state)
             {
                 LOG_WARN(LogDomain::OTA, "Pull OTA SHA256 mismatch exp_prefix=%.12s got_prefix=%.12s",
                          g_job.sha256, hex);
-                ota_abort(state, "sha256_mismatch");
+                ota_abort(state, "sha_mismatch");
                 return;
             }
         }
