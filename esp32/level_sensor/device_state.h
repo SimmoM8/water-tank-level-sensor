@@ -8,6 +8,7 @@ static constexpr size_t DEVICE_FW_VERSION_MAX = 16;
 static constexpr size_t OTA_STATE_MAX = 16;
 static constexpr size_t OTA_ERROR_MAX = 64;
 static constexpr size_t OTA_TARGET_VERSION_MAX = 16;
+static constexpr size_t TIME_STATUS_MAX = 16;
 static constexpr size_t OTA_REQUEST_ID_MAX = 48;
 static constexpr size_t OTA_VERSION_MAX = 16;
 static constexpr size_t OTA_URL_MAX = 256;
@@ -112,6 +113,15 @@ struct ConfigInfo
     uint8_t simulationMode;
 };
 
+struct TimeInfo
+{
+    bool valid = false;
+    char status[TIME_STATUS_MAX] = {0}; // valid | syncing | time_not_set
+    uint32_t last_attempt_s = 0;
+    uint32_t last_success_s = 0;
+    uint32_t next_retry_s = 0;
+};
+
 enum class OtaStatus : uint8_t
 {
     IDLE = 0,
@@ -165,6 +175,7 @@ struct DeviceState
     CalibrationInfo calibration;
     LevelInfo level;
     ConfigInfo config;
+    TimeInfo time;
 
     OtaState ota;
     // Flat OTA fields for telemetry/HA compatibility (derived or legacy mirrors of ota.*).

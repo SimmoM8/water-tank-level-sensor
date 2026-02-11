@@ -9,12 +9,13 @@
 bool buildStateJson(const DeviceState &s, char *outBuf, size_t outSize)
 {
     // Capacity rationale (ArduinoJson v6):
-    // - Objects created by dotted paths: root + device + wifi + mqtt + probe + calibration + level + config + ota + ota.active + ota.result + last_cmd = 12
-    // - Leaf keys (worst case): 54 (schema/ts/device/.../last_cmd.* + ota.force + ota.reboot + ota_last_success_ts)
+    // - Objects created by dotted paths: root + device + wifi + time + mqtt + probe + calibration + level + config + ota + ota.active + ota.result + last_cmd = 13
+    // - Leaf keys (worst case): 60 (schema/ts/device/.../last_cmd.* + time.* + ota.force + ota.reboot + ota_last_success_ts)
     // - String pool: conservative sum of max field sizes + enum labels + key bytes headroom.
-    static constexpr size_t kRootMembers = 21;
+    static constexpr size_t kRootMembers = 22;
     static constexpr size_t kDeviceMembers = 3;
     static constexpr size_t kWifiMembers = 2;
+    static constexpr size_t kTimeMembers = 5;
     static constexpr size_t kMqttMembers = 1;
     static constexpr size_t kProbeMembers = 4;
     static constexpr size_t kCalibrationMembers = 5;
@@ -29,6 +30,7 @@ bool buildStateJson(const DeviceState &s, char *outBuf, size_t outSize)
         JSON_OBJECT_SIZE(kRootMembers) +
         JSON_OBJECT_SIZE(kDeviceMembers) +
         JSON_OBJECT_SIZE(kWifiMembers) +
+        JSON_OBJECT_SIZE(kTimeMembers) +
         JSON_OBJECT_SIZE(kMqttMembers) +
         JSON_OBJECT_SIZE(kProbeMembers) +
         JSON_OBJECT_SIZE(kCalibrationMembers) +
@@ -57,6 +59,7 @@ bool buildStateJson(const DeviceState &s, char *outBuf, size_t outSize)
         JSON_STRING_SIZE(DEVICE_FW_VERSION_MAX) +   // installed_version
         JSON_STRING_SIZE(OTA_TARGET_VERSION_MAX) +  // latest_version / ota_target_version
         JSON_STRING_SIZE(kMaxWifiIp) +
+        JSON_STRING_SIZE(TIME_STATUS_MAX) +
         JSON_STRING_SIZE(kMaxEnumStr) +             // probe.quality
         JSON_STRING_SIZE(kMaxEnumStr) +             // calibration.state
         JSON_STRING_SIZE(kMaxEnumStr) +             // config.sense_mode
@@ -75,7 +78,7 @@ bool buildStateJson(const DeviceState &s, char *outBuf, size_t outSize)
         JSON_STRING_SIZE(kMaxEnumStr) +             // last_cmd.status
         JSON_STRING_SIZE(kMaxLastCmdMsg);
 
-    static constexpr size_t kJsonKeyBytes = 512; // ~51 keys * avg 10 bytes + headroom
+    static constexpr size_t kJsonKeyBytes = 640; // ~60 keys * avg 10 bytes + headroom
     static constexpr size_t kStateJsonCapacity = kJsonObjectCapacity + kJsonStringCapacity + kJsonKeyBytes;
     static constexpr size_t kMinJsonSize = 4; // "{}" + NUL
     static constexpr uint32_t kWarnThrottleMs = 5000;

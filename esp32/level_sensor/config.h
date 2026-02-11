@@ -36,6 +36,10 @@
 
 // — OTA —
 #define CFG_OTA_MANIFEST_URL "https://raw.githubusercontent.com/SimmoM8/water-tank-level-sensor/main/manifests/dev.json"
+// — Time sync (non-blocking NTP) —
+// #define CFG_TIME_SYNC_TIMEOUT_MS 20000u
+// #define CFG_TIME_SYNC_RETRY_MIN_MS 5000u
+// #define CFG_TIME_SYNC_RETRY_MAX_MS 300000u
 // Optional OTA safety guardrails (disabled by default):
 // #define CFG_OTA_GUARD_REQUIRE_MQTT_CONNECTED 1   // reject OTA if MQTT is not connected
 // #define CFG_OTA_GUARD_MIN_WIFI_RSSI -80          // reject OTA if RSSI is below threshold (dBm)
