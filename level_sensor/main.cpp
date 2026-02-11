@@ -442,6 +442,15 @@ static void refreshDeviceMeta()
 
   g_state.mqtt.connected = mqtt_isConnected();
 
+  WifiTimeSyncStatus timeStatus{};
+  wifi_getTimeSyncStatus(timeStatus);
+  g_state.time.valid = timeStatus.valid;
+  strncpy(g_state.time.status, timeStatus.status ? timeStatus.status : "time_not_set", sizeof(g_state.time.status));
+  g_state.time.status[sizeof(g_state.time.status) - 1] = '\0';
+  g_state.time.last_attempt_s = timeStatus.lastAttemptMs / 1000u;
+  g_state.time.last_success_s = timeStatus.lastSuccessMs / 1000u;
+  g_state.time.next_retry_s = timeStatus.nextRetryMs / 1000u;
+
   const AppliedConfig &cfg = config_get();
   g_state.config.tankVolumeLiters = cfg.tankVolumeLiters;
   g_state.config.rodLengthCm = cfg.rodLengthCm;
@@ -949,6 +958,12 @@ void appSetup()
   g_state.ota_last_ts = 0;
   g_state.ota_last_success_ts = 0;
   g_state.update_available = false;
+  g_state.time.valid = false;
+  strncpy(g_state.time.status, "time_not_set", sizeof(g_state.time.status));
+  g_state.time.status[sizeof(g_state.time.status) - 1] = '\0';
+  g_state.time.last_attempt_s = 0;
+  g_state.time.last_success_s = 0;
+  g_state.time.next_retry_s = 0;
   {
     bool otaForce = false;
     bool otaReboot = true;

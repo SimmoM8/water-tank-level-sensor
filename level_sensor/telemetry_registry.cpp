@@ -257,6 +257,17 @@ static bool write_wifi(const DeviceState &s, JsonObject &root)
     return wrote;
 }
 
+static bool write_time(const DeviceState &s, JsonObject &root)
+{
+    bool wrote = false;
+    wrote |= writeAtPath(root, "time.valid", s.time.valid);
+    wrote |= writeAtPath(root, "time.status", s.time.status, true);
+    wrote |= writeAtPath(root, "time.last_attempt_s", s.time.last_attempt_s);
+    wrote |= writeAtPath(root, "time.last_success_s", s.time.last_success_s);
+    wrote |= writeAtPath(root, "time.next_retry_s", s.time.next_retry_s);
+    return wrote;
+}
+
 static bool write_wifi_rssi(const DeviceState &s, JsonObject &root)
 {
     return writeAtPath(root, "wifi.rssi", s.wifi.rssi);
@@ -265,6 +276,31 @@ static bool write_wifi_rssi(const DeviceState &s, JsonObject &root)
 static bool write_wifi_ip(const DeviceState &s, JsonObject &root)
 {
     return writeAtPath(root, "wifi.ip", s.wifi.ip, true);
+}
+
+static bool write_time_valid(const DeviceState &s, JsonObject &root)
+{
+    return writeAtPath(root, "time.valid", s.time.valid);
+}
+
+static bool write_time_status(const DeviceState &s, JsonObject &root)
+{
+    return writeAtPath(root, "time.status", s.time.status, true);
+}
+
+static bool write_time_last_attempt(const DeviceState &s, JsonObject &root)
+{
+    return writeAtPath(root, "time.last_attempt_s", s.time.last_attempt_s);
+}
+
+static bool write_time_last_success(const DeviceState &s, JsonObject &root)
+{
+    return writeAtPath(root, "time.last_success_s", s.time.last_success_s);
+}
+
+static bool write_time_next_retry(const DeviceState &s, JsonObject &root)
+{
+    return writeAtPath(root, "time.next_retry_s", s.time.next_retry_s);
 }
 
 static bool write_mqtt(const DeviceState &s, JsonObject &root)
@@ -506,6 +542,7 @@ static const TelemetryFieldDef TELEMETRY_FIELDS[] = {
     {HaComponent::Internal, "latest_version", "Latest Version", "latest_version", nullptr, nullptr, nullptr, nullptr, nullptr, write_latest_version},
     {HaComponent::Internal, "update_available", "Update Available", "update_available", nullptr, nullptr, nullptr, nullptr, nullptr, write_update_available},
     {HaComponent::Internal, "wifi", "WiFi", "wifi", nullptr, nullptr, nullptr, nullptr, nullptr, write_wifi},
+    {HaComponent::Internal, "time", "Time", "time", nullptr, nullptr, nullptr, nullptr, nullptr, write_time},
     {HaComponent::Internal, "mqtt", "MQTT", "mqtt", nullptr, nullptr, nullptr, nullptr, nullptr, write_mqtt},
 
     // Probe
@@ -532,6 +569,11 @@ static const TelemetryFieldDef TELEMETRY_FIELDS[] = {
     // WiFi telemetry exposed as sensor
     {HaComponent::Sensor, "wifi_rssi", "WiFi RSSI", "wifi.rssi", "signal_strength", "dBm", ICON_WIFI, nullptr, nullptr, write_wifi_rssi},
     {HaComponent::Sensor, "ip", "IP Address", "wifi.ip", nullptr, nullptr, ICON_IP, nullptr, nullptr, write_wifi_ip},
+    {HaComponent::BinarySensor, "time_valid", "Time Valid", "time.valid", nullptr, nullptr, ICON_CLOCK, nullptr, nullptr, write_time_valid},
+    {HaComponent::Sensor, "time_status", "Time Status", "time.status", nullptr, nullptr, ICON_CLOCK, nullptr, nullptr, write_time_status},
+    {HaComponent::Sensor, "time_last_attempt_s", "Time Last Attempt (s)", "time.last_attempt_s", nullptr, "s", ICON_CLOCK, nullptr, nullptr, write_time_last_attempt},
+    {HaComponent::Sensor, "time_last_success_s", "Time Last Success (s)", "time.last_success_s", nullptr, "s", ICON_CLOCK, nullptr, nullptr, write_time_last_success},
+    {HaComponent::Sensor, "time_next_retry_s", "Time Next Retry (s)", "time.next_retry_s", nullptr, "s", ICON_CLOCK, nullptr, nullptr, write_time_next_retry},
 
     // Config (internal only)
     {HaComponent::Internal, "tank_volume_l", "Tank Volume", "config.tank_volume_l", nullptr, nullptr, nullptr, nullptr, nullptr, write_config_volume},

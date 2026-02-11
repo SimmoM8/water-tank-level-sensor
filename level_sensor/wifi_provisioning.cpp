@@ -1,4 +1,5 @@
 #include "wifi_provisioning.h"
+#include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiManager.h>
 #include <Preferences.h>
@@ -8,29 +9,143 @@
 static const char *PREF_KEY_FORCE_PORTAL = "force_portal";
 static const time_t VALID_TIME_EPOCH = 1600000000;
 
+#ifdef __has_include
+#if __has_include("config.h")
+#include "config.h"
+#endif
+#endif
+
+#ifndef CFG_TIME_SYNC_TIMEOUT_MS
+#define CFG_TIME_SYNC_TIMEOUT_MS 20000u
+#endif
+#ifndef CFG_TIME_SYNC_RETRY_MIN_MS
+#define CFG_TIME_SYNC_RETRY_MIN_MS 5000u
+#endif
+#ifndef CFG_TIME_SYNC_RETRY_MAX_MS
+#define CFG_TIME_SYNC_RETRY_MAX_MS 300000u
+#endif
+
 static Preferences wifiPrefs; // WiFi-related preferences
+
+static const char *TIME_STATUS_VALID = "valid";
+static const char *TIME_STATUS_SYNCING = "syncing";
+static const char *TIME_STATUS_NOT_SET = "time_not_set";
+
+static bool s_timeSyncInFlight = false;
+static uint32_t s_timeSyncStartMs = 0;
+static uint32_t s_lastTimeSyncAttemptMs = 0;
+static uint32_t s_lastTimeSyncSuccessMs = 0;
+static uint32_t s_nextTimeSyncRetryMs = 0;
+static uint32_t s_timeSyncBackoffMs = CFG_TIME_SYNC_RETRY_MIN_MS;
+static bool s_timeWasValid = false;
 
 bool wifi_timeIsValid()
 {
     return time(nullptr) > VALID_TIME_EPOCH;
 }
 
-static void wifi_syncTime()
+static uint32_t wifi_clampBackoff(uint32_t valueMs)
 {
-    if (wifi_timeIsValid())
+    if (valueMs < CFG_TIME_SYNC_RETRY_MIN_MS)
+    {
+        return CFG_TIME_SYNC_RETRY_MIN_MS;
+    }
+    if (valueMs > CFG_TIME_SYNC_RETRY_MAX_MS)
+    {
+        return CFG_TIME_SYNC_RETRY_MAX_MS;
+    }
+    return valueMs;
+}
+
+static void wifi_startTimeSyncAttempt()
+{
+    if (WiFi.status() != WL_CONNECTED)
     {
         return;
     }
 
-    LOG_INFO(LogDomain::WIFI, "Starting NTP sync (pool.ntp.org, time.google.com)");
-    configTime(0, 0, "pool.ntp.org", "time.google.com");
+    const uint32_t now = millis();
+    s_timeSyncInFlight = true;
+    s_timeSyncStartMs = now;
+    s_lastTimeSyncAttemptMs = now;
 
-    while (!wifi_timeIsValid())
+    LOG_INFO(LogDomain::WIFI,
+             "Starting NTP sync (pool.ntp.org, time.google.com) timeout_ms=%lu backoff_ms=%lu",
+             (unsigned long)CFG_TIME_SYNC_TIMEOUT_MS,
+             (unsigned long)s_timeSyncBackoffMs);
+    configTime(0, 0, "pool.ntp.org", "time.google.com");
+}
+
+void wifi_timeSyncTick()
+{
+    const uint32_t now = millis();
+    const bool timeValid = wifi_timeIsValid();
+
+    if (timeValid)
     {
-        delay(250);
+        const bool gainedValidity = !s_timeWasValid || s_timeSyncInFlight;
+        if (!s_timeWasValid || s_timeSyncInFlight)
+        {
+            LOG_INFO(LogDomain::WIFI, "System time valid epoch=%lu", (unsigned long)time(nullptr));
+        }
+
+        s_timeWasValid = true;
+        s_timeSyncInFlight = false;
+        s_timeSyncBackoffMs = CFG_TIME_SYNC_RETRY_MIN_MS;
+        s_nextTimeSyncRetryMs = 0;
+        if (gainedValidity || s_lastTimeSyncSuccessMs == 0)
+        {
+            s_lastTimeSyncSuccessMs = now;
+        }
+        return;
     }
 
-    LOG_INFO(LogDomain::WIFI, "System time valid epoch=%lu", (unsigned long)time(nullptr));
+    s_timeWasValid = false;
+
+    if (WiFi.status() != WL_CONNECTED)
+    {
+        if (s_timeSyncInFlight)
+        {
+            LOG_WARN(LogDomain::WIFI, "NTP sync interrupted: wifi_disconnected");
+            s_timeSyncInFlight = false;
+        }
+        return;
+    }
+
+    if (s_timeSyncInFlight)
+    {
+        const uint32_t elapsed = now - s_timeSyncStartMs;
+        if (elapsed < CFG_TIME_SYNC_TIMEOUT_MS)
+        {
+            return;
+        }
+
+        s_timeSyncInFlight = false;
+        s_nextTimeSyncRetryMs = now + s_timeSyncBackoffMs;
+        LOG_WARN(LogDomain::WIFI, "NTP sync timeout after %lums, retry_in_ms=%lu",
+                 (unsigned long)elapsed,
+                 (unsigned long)s_timeSyncBackoffMs);
+        if (s_timeSyncBackoffMs >= (CFG_TIME_SYNC_RETRY_MAX_MS / 2u))
+        {
+            s_timeSyncBackoffMs = CFG_TIME_SYNC_RETRY_MAX_MS;
+        }
+        else
+        {
+            s_timeSyncBackoffMs = wifi_clampBackoff(s_timeSyncBackoffMs * 2u);
+        }
+        return;
+    }
+
+    if (s_nextTimeSyncRetryMs != 0 && (int32_t)(now - s_nextTimeSyncRetryMs) < 0)
+    {
+        logger_logEvery("ntp_wait_retry", 15000, LogLevel::DEBUG, LogDomain::WIFI,
+                        "Waiting for next NTP retry now_ms=%lu next_retry_ms=%lu",
+                        (unsigned long)now,
+                        (unsigned long)s_nextTimeSyncRetryMs);
+        return;
+    }
+
+    wifi_startTimeSyncAttempt();
 }
 
 // Initialize WiFi provisioning module
@@ -63,7 +178,8 @@ static void startPortal()
     }
 
     LOG_INFO(LogDomain::WIFI, "WiFi configured and connected ip=%s", WiFi.localIP().toString().c_str());
-    wifi_syncTime();
+    s_nextTimeSyncRetryMs = 0;
+    wifi_timeSyncTick();
 
     wifiPrefs.putBool(PREF_KEY_FORCE_PORTAL, false);
 }
@@ -71,10 +187,10 @@ static void startPortal()
 // Ensure WiFi is connected, otherwise start captive portal
 void wifi_ensureConnected(uint32_t wifiTimeoutMs)
 {
-    // If already connected, ensure time has been synchronized once.
+    // If already connected, run non-blocking time sync tick.
     if (WiFi.status() == WL_CONNECTED)
     {
-        wifi_syncTime();
+        wifi_timeSyncTick();
         return;
     }
 
@@ -109,7 +225,18 @@ void wifi_ensureConnected(uint32_t wifiTimeoutMs)
     }
 
     LOG_INFO(LogDomain::WIFI, "Connected ip=%s", WiFi.localIP().toString().c_str());
-    wifi_syncTime();
+    s_nextTimeSyncRetryMs = 0;
+    wifi_timeSyncTick();
+}
+
+void wifi_getTimeSyncStatus(WifiTimeSyncStatus &out)
+{
+    out.valid = wifi_timeIsValid();
+    out.syncing = s_timeSyncInFlight;
+    out.lastAttemptMs = s_lastTimeSyncAttemptMs;
+    out.lastSuccessMs = s_lastTimeSyncSuccessMs;
+    out.nextRetryMs = s_nextTimeSyncRetryMs;
+    out.status = out.valid ? TIME_STATUS_VALID : (out.syncing ? TIME_STATUS_SYNCING : TIME_STATUS_NOT_SET);
 }
 
 void wifi_requestPortal()
