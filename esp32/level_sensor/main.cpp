@@ -1056,6 +1056,7 @@ void appSetup()
 void appLoop()
 {
   const uint32_t now = millis();
+  g_state.uptime_seconds = now / 1000u;
   for (LoopWindow &w : g_windows)
   {
     runWindow(w, now);

@@ -26,6 +26,16 @@ static const char *buildUniqId(const char *objectId, const char *overrideId)
     return overrideId ? overrideId : objectId;
 }
 
+static const char *stateClassForSensor(const TelemetryFieldDef &s)
+{
+    // Keep schema stable: only telemetry that is a continuously sampled scalar should be "measurement".
+    if (s.objectId && strcmp(s.objectId, "uptime_seconds") == 0)
+    {
+        return "measurement";
+    }
+    return nullptr;
+}
+
 static void addDeviceShort(JsonObject dev)
 {
     dev["name"] = s_cfg.deviceName;
@@ -85,6 +95,8 @@ static bool publishSensor(const TelemetryFieldDef &s)
         doc["dev_cla"] = s.deviceClass;
     if (s.unit)
         doc["unit_of_meas"] = s.unit;
+    if (const char *stateClass = stateClassForSensor(s))
+        doc["stat_cla"] = stateClass;
     if (s.icon)
         doc["icon"] = s.icon;
     if (s.attrTemplate)
