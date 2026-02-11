@@ -280,28 +280,47 @@ jobs:
         run: |
           set -euo pipefail
 
-          mkdir -p build
+          BUILD_DIR="build"
+          EXPORT_DIR="${BUILD_DIR}/exported"
+          SKETCH_DIR="${{ steps.meta.outputs.sketch_dir }}"
+          SKETCH_FILE="${SKETCH_DIR}/level_sensor.ino"
+          EXPECTED_APP_BASENAME="level_sensor.ino.bin"
+          EXPORTED_APP_BIN="${SKETCH_DIR}/${EXPECTED_APP_BASENAME}"
+
+          mkdir -p "${BUILD_DIR}" "${EXPORT_DIR}"
+          rm -f "${SKETCH_DIR}/level_sensor.ino.bin" "${SKETCH_DIR}/level_sensor.ino.bootloader.bin" "${SKETCH_DIR}/level_sensor.ino.partitions.bin"
+
           arduino-cli compile \
             --fqbn "${{ steps.deps.outputs.fqbn }}" \
             --build-property "compiler.cpp.extra_flags=-DFW_VERSION=\\\"${{ steps.meta.outputs.version }}\\\"" \
-            --output-dir build \
-            "${{ steps.meta.outputs.sketch_dir }}"
+            --output-dir "${BUILD_DIR}" \
+            --export-binaries \
+            "${SKETCH_DIR}"
 
-          APP_BIN="build/level_sensor.ino.bin"
-          if [[ ! -f "${APP_BIN}" ]]; then
-            echo "Expected application binary not found at ${APP_BIN}" >&2
-            echo "Build directory contents:" >&2
-            ls -la build >&2 || true
+          if [[ ! -f "${EXPORTED_APP_BIN}" ]]; then
+            echo "::error::Expected exported app binary not found at ${EXPORTED_APP_BIN}" >&2
+            echo "Sketch directory contents:" >&2
+            ls -la "${SKETCH_DIR}" >&2 || true
+            exit 1
+          fi
+          APP_BIN_BASENAME="$(basename "${EXPORTED_APP_BIN}")"
+          if [[ "${APP_BIN_BASENAME}" != "${EXPECTED_APP_BASENAME}" ]]; then
+            echo "::error::Unexpected exported app binary name: ${APP_BIN_BASENAME} (expected ${EXPECTED_APP_BASENAME})" >&2
+            exit 1
+          fi
+          if [[ "${APP_BIN_BASENAME}" == *bootloader* || "${APP_BIN_BASENAME}" == *partitions* ]]; then
+            echo "::error::Refusing non-application firmware artifact: ${APP_BIN_BASENAME}" >&2
             exit 1
           fi
 
-          RELEASE_ASSET_PATH="build/${{ steps.meta.outputs.asset_name }}"
-          cp "${APP_BIN}" "${RELEASE_ASSET_PATH}"
+          RELEASE_ASSET_PATH="${EXPORT_DIR}/${{ steps.meta.outputs.asset_name }}"
+          cp "${EXPORTED_APP_BIN}" "${RELEASE_ASSET_PATH}"
           if [[ ! -s "${RELEASE_ASSET_PATH}" ]]; then
             echo "::error::Release asset is missing or empty at ${RELEASE_ASSET_PATH}" >&2
             exit 1
           fi
           MIN_RELEASE_ASSET_BYTES=131072
+          MAX_RELEASE_ASSET_BYTES=4194304
           RELEASE_ASSET_SIZE="$(wc -c < "${RELEASE_ASSET_PATH}" | tr -d '[:space:]')"
           if [[ ! "${RELEASE_ASSET_SIZE}" =~ ^[0-9]+$ ]]; then
             echo "::error::Failed to determine release asset size for ${RELEASE_ASSET_PATH}" >&2
@@ -309,6 +328,10 @@ jobs:
           fi
           if (( RELEASE_ASSET_SIZE < MIN_RELEASE_ASSET_BYTES )); then
             echo "::error::Release asset is suspiciously small (${RELEASE_ASSET_SIZE} bytes, minimum ${MIN_RELEASE_ASSET_BYTES})" >&2
+            exit 1
+          fi
+          if (( RELEASE_ASSET_SIZE > MAX_RELEASE_ASSET_BYTES )); then
+            echo "::error::Release asset is suspiciously large (${RELEASE_ASSET_SIZE} bytes, maximum ${MAX_RELEASE_ASSET_BYTES})" >&2
             exit 1
           fi
 
