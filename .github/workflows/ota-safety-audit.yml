@@ -1,0 +1,366 @@
+name: OTA Safety Audit
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  ota-safety-audit:
+    runs-on: ubuntu-latest
+    env:
+      SKETCH_DIR: esp32/level_sensor
+      SKETCH_FILE: esp32/level_sensor/sketch.yaml
+      PROFILE: release
+      OTA_SLOT_SIZE_BYTES: "1310720" # 0x140000 (PartitionScheme=default app slot)
+      OTA_SLOT_LIMIT_PERCENT: "90"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Print Arduino CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          arduino-cli version
+
+      - name: Configure Arduino CLI (Espressif index)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ESP32_URL="https://espressif.github.io/arduino-esp32/package_esp32_index.json"
+          arduino-cli config init --overwrite
+          arduino-cli config add board_manager.additional_urls "${ESP32_URL}"
+          arduino-cli config dump
+          if ! arduino-cli config dump | grep -Fq "${ESP32_URL}"; then
+            echo "::error::Failed to configure Espressif Boards Manager URL"
+            exit 1
+          fi
+
+      - name: Refresh indexes
+        shell: bash
+        run: |
+          set -euo pipefail
+          arduino-cli core update-index
+          arduino-cli lib update-index
+
+      - name: Install pinned core/libraries from sketch.yaml
+        id: deps
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f "${SKETCH_FILE}" ]]; then
+            echo "::error::Missing dependency manifest ${SKETCH_FILE}"
+            exit 1
+          fi
+
+          mapfile -t DEP_LINES < <(awk -v profile="${PROFILE}" '
+            $0 ~ "^  " profile ":" {in_profile=1; section=""; next}
+            in_profile && $0 ~ "^  [^[:space:]][^:]*:" {in_profile=0; section=""; next}
+            in_profile && $0 ~ "^    fqbn:" {
+              v=$0; sub("^    fqbn: ", "", v); print "FQBN|" v
+            }
+            in_profile && $0 ~ "^    platforms:" {section="platforms"; next}
+            in_profile && $0 ~ "^    libraries:" {section="libraries"; next}
+            in_profile && section=="platforms" && $0 ~ "^      - platform: " {
+              v=$0; sub("^      - platform: ", "", v); print "PLATFORM|" v
+            }
+            in_profile && section=="libraries" && $0 ~ "^      - " {
+              v=$0; sub("^      - ", "", v); print "LIB|" v
+            }
+          ' "${SKETCH_FILE}")
+
+          if [[ ${#DEP_LINES[@]} -eq 0 ]]; then
+            echo "::error::No dependencies found in ${SKETCH_FILE} for profile ${PROFILE}"
+            exit 1
+          fi
+
+          FQBN=""
+          PLATFORM_COUNT=0
+          LIB_COUNT=0
+          ESP32_CORE_VERSION=""
+          declare -a LIB_NAMES=()
+
+          for line in "${DEP_LINES[@]}"; do
+            kind="${line%%|*}"
+            spec="${line#*|}"
+
+            if [[ "${kind}" == "FQBN" ]]; then
+              FQBN="${spec}"
+              continue
+            fi
+
+            if [[ ! "${spec}" =~ ^(.+)\ \(([^)]+)\)$ ]]; then
+              echo "::error::Dependency '${spec}' must be pinned as 'Name (version)'"
+              exit 1
+            fi
+
+            name="${BASH_REMATCH[1]}"
+            version="${BASH_REMATCH[2]}"
+            version_nov="${version#v}"
+
+            if [[ "${kind}" == "PLATFORM" ]]; then
+              PLATFORM_COUNT=$((PLATFORM_COUNT + 1))
+              echo "Installing platform ${name}@${version}"
+              arduino-cli core install "${name}@${version}"
+              if [[ "${name}" == "esp32:esp32" ]]; then
+                ESP32_CORE_VERSION="${version_nov}"
+              fi
+            elif [[ "${kind}" == "LIB" ]]; then
+              LIB_COUNT=$((LIB_COUNT + 1))
+              LIB_NAMES+=("${name}")
+              echo "Installing library ${name}@${version}"
+              if ! arduino-cli lib install "${name}@${version}"; then
+                echo "Primary install failed for ${name}@${version}; retrying with ${name}"
+                arduino-cli lib install "${name}"
+              fi
+              actual="$(arduino-cli lib list | awk -v n="${name}" '$0 ~ ("^" n "[[:space:]]+"){print $2; exit}')"
+              actual="${actual#v}"
+              if [[ -z "${actual}" ]]; then
+                echo "::error::Library ${name} missing after install"
+                exit 1
+              fi
+              if [[ "${actual}" != "${version_nov}" ]]; then
+                echo "::error::Pinned library mismatch for ${name}: expected ${version_nov}, got ${actual}"
+                exit 1
+              fi
+            fi
+          done
+
+          if [[ -z "${FQBN}" ]]; then
+            echo "::error::Missing fqbn in sketch.yaml profile ${PROFILE}"
+            exit 1
+          fi
+          if [[ ${PLATFORM_COUNT} -eq 0 ]]; then
+            echo "::error::No pinned platforms found"
+            exit 1
+          fi
+          if [[ -z "${ESP32_CORE_VERSION}" ]]; then
+            echo "::error::Expected pinned esp32:esp32 core entry not found"
+            exit 1
+          fi
+
+          # Required libs for this project
+          for required in WiFiManager PubSubClient ArduinoJson; do
+            found=0
+            for n in "${LIB_NAMES[@]}"; do
+              if [[ "${n}" == "${required}" ]]; then
+                found=1
+                break
+              fi
+            done
+            if [[ ${found} -ne 1 ]]; then
+              echo "::error::Required library missing in ${SKETCH_FILE}: ${required}"
+              exit 1
+            fi
+          done
+
+          # Explicit board + explicit OTA-safe board options (no drifting defaults).
+          if [[ "${FQBN}" != "esp32:esp32:esp32" ]]; then
+            echo "::error::Unexpected base FQBN '${FQBN}'. Expected esp32:esp32:esp32 for deterministic OTA audit."
+            exit 1
+          fi
+          COMPILE_FQBN="${FQBN}:FlashMode=qio,FlashFreq=80,FlashSize=4M,PartitionScheme=default,PSRAM=disabled"
+
+          echo "fqbn=${FQBN}" >> "${GITHUB_OUTPUT}"
+          echo "compile_fqbn=${COMPILE_FQBN}" >> "${GITHUB_OUTPUT}"
+          echo "esp32_core_version=${ESP32_CORE_VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Compile firmware (verbose + export binary + map)
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          MAP_FILE="${GITHUB_WORKSPACE}/build/firmware.map"
+          COMPILE_LOG="${GITHUB_WORKSPACE}/build/compile.log"
+
+          echo "Compile FQBN: ${{ steps.deps.outputs.compile_fqbn }}"
+          arduino-cli compile \
+            --verbose \
+            --fqbn "${{ steps.deps.outputs.compile_fqbn }}" \
+            --build-property "compiler.c.elf.extra_flags=-Wl,-Map,${MAP_FILE}" \
+            --output-dir build \
+            --export-binaries \
+            "${SKETCH_DIR}" 2>&1 | tee "${COMPILE_LOG}"
+
+          APP_BIN="build/level_sensor.ino.bin"
+          ELF_FILE="build/level_sensor.ino.elf"
+
+          if [[ ! -f "${APP_BIN}" ]]; then
+            echo "::error::Expected application binary not found: ${APP_BIN}"
+            ls -la build || true
+            exit 1
+          fi
+          if [[ ! -f "${ELF_FILE}" ]]; then
+            echo "::error::Expected ELF not found: ${ELF_FILE}"
+            ls -la build || true
+            exit 1
+          fi
+
+          # Save the toolchain properties to find nm/size binaries deterministically.
+          arduino-cli compile \
+            --fqbn "${{ steps.deps.outputs.compile_fqbn }}" \
+            --show-properties \
+            "${SKETCH_DIR}" > build/properties.txt
+
+          echo "app_bin=${APP_BIN}" >> "${GITHUB_OUTPUT}"
+          echo "elf_file=${ELF_FILE}" >> "${GITHUB_OUTPUT}"
+          echo "map_file=${MAP_FILE}" >> "${GITHUB_OUTPUT}"
+          echo "compile_log=${COMPILE_LOG}" >> "${GITHUB_OUTPUT}"
+
+      - name: OTA safety validation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP_BIN="${{ steps.build.outputs.app_bin }}"
+          ELF_FILE="${{ steps.build.outputs.elf_file }}"
+          MAP_FILE="${{ steps.build.outputs.map_file }}"
+          COMPILE_LOG="${{ steps.build.outputs.compile_log }}"
+
+          TOOLCHAIN_PATH="$(sed -n 's/^runtime.tools.xtensa-esp32-elf-gcc.path=//p' build/properties.txt | head -n1)"
+          NM_BIN="${TOOLCHAIN_PATH}/bin/xtensa-esp32-elf-nm"
+          SIZE_BIN="${TOOLCHAIN_PATH}/bin/xtensa-esp32-elf-size"
+
+          if [[ ! -x "${NM_BIN}" ]]; then
+            NM_BIN="xtensa-esp32-elf-nm"
+          fi
+          if [[ ! -x "${SIZE_BIN}" ]]; then
+            SIZE_BIN="xtensa-esp32-elf-size"
+          fi
+
+          # Extract binary/symbol reports.
+          "${NM_BIN}" -C -S --size-sort "${ELF_FILE}" > build/symbols_nm.txt
+          "${SIZE_BIN}" "${ELF_FILE}" > build/elf_size.txt
+          "${SIZE_BIN}" -A -d "${ELF_FILE}" > build/elf_size_sections.txt
+
+          if [[ ! -f "${MAP_FILE}" ]]; then
+            echo "::warning::Linker map file not found at ${MAP_FILE}"
+          fi
+
+          # Parse usage reported by arduino-cli.
+          FLASH_USAGE_BYTES="$(grep -Eo 'Sketch uses[[:space:]]+[0-9,]+' "${COMPILE_LOG}" | tail -n1 | awk '{gsub(/,/,"",$3); print $3}')"
+          RAM_USAGE_BYTES="$(grep -Eo 'Global variables use[[:space:]]+[0-9,]+' "${COMPILE_LOG}" | tail -n1 | awk '{gsub(/,/,"",$4); print $4}')"
+
+          if [[ -z "${FLASH_USAGE_BYTES:-}" || -z "${RAM_USAGE_BYTES:-}" ]]; then
+            echo "::error::Failed to parse flash/RAM usage from compile log"
+            exit 1
+          fi
+
+          FIRMWARE_SIZE_BYTES="$(stat -c%s "${APP_BIN}")"
+          OTA_SLOT_SIZE="${OTA_SLOT_SIZE_BYTES}"
+          OTA_SLOT_LIMIT_PERCENT_LOCAL="${OTA_SLOT_LIMIT_PERCENT}"
+          OTA_LIMIT_BYTES=$(( OTA_SLOT_SIZE * OTA_SLOT_LIMIT_PERCENT_LOCAL / 100 ))
+
+          # A) OTA slot safety
+          ota_size_fail=0
+          if (( FLASH_USAGE_BYTES > OTA_LIMIT_BYTES )); then
+            ota_size_fail=1
+            echo "::error::Firmware exceeds OTA safety threshold: ${FLASH_USAGE_BYTES} > ${OTA_LIMIT_BYTES} bytes (${OTA_SLOT_LIMIT_PERCENT_LOCAL}% of slot)"
+          fi
+
+          # B) Dangerous libc pulls
+          dangerous_regex='printf|vprintf|std::basic_string|std::string|std::basic_iostream|std::iostream|malloc|free|operator new|operator delete'
+          DANGEROUS_SYMBOLS="$(grep -E "${dangerous_regex}" build/symbols_nm.txt || true)"
+          dangerous_fail=0
+          if [[ -n "${DANGEROUS_SYMBOLS}" ]]; then
+            dangerous_fail=1
+            echo "::error::Dangerous libc/libstdc++ symbols detected"
+          fi
+
+          # C) Dynamic memory detection
+          dynamic_regex='malloc|free|operator new|operator delete'
+          DYNAMIC_SYMBOLS="$(grep -E "${dynamic_regex}" build/symbols_nm.txt || true)"
+          dynamic_fail=0
+          if [[ -n "${DYNAMIC_SYMBOLS}" ]]; then
+            dynamic_fail=1
+            echo "::error::Dynamic memory symbols detected"
+          fi
+
+          # D) Format-string risk scan
+          FORMAT_ANY="$(grep -RInE --include='*.ino' --include='*.c' --include='*.cc' --include='*.cpp' --include='*.h' '\b(sprintf|vsprintf|printf)\s*\(' esp32/level_sensor || true)"
+          FORMAT_UNBOUNDED="$(grep -RInE --include='*.ino' --include='*.c' --include='*.cc' --include='*.cpp' --include='*.h' '\b(sprintf|vsprintf)\s*\(' esp32/level_sensor || true)"
+          format_fail=0
+          if [[ -n "${FORMAT_ANY}" ]]; then
+            echo "::warning::Format API usage detected:"
+            printf '%s\n' "${FORMAT_ANY}"
+          fi
+          if [[ -n "${FORMAT_UNBOUNDED}" ]]; then
+            format_fail=1
+            echo "::error::Non-bounded format functions detected (sprintf/vsprintf)"
+          fi
+
+          # E) JSON capacity sanity
+          JSON_CAP_LINES="$(grep -RInE --include='*.cpp' --include='*.h' 'StaticJsonDocument<[^>]+>' esp32/level_sensor || true)"
+          JSON_CAP_LIST="none"
+          json_warn=0
+          if [[ -n "${JSON_CAP_LINES}" ]]; then
+            JSON_CAP_LIST="${JSON_CAP_LINES}"
+            while IFS= read -r line; do
+              cap="$(echo "${line}" | sed -n 's/.*StaticJsonDocument<\([^>]*\)>.*/\1/p')"
+              if [[ "${cap}" =~ ^[0-9]+$ ]] && (( cap > 4096 )); then
+                json_warn=1
+                echo "::warning::Large StaticJsonDocument detected (>4096): ${line}"
+              fi
+            done <<< "${JSON_CAP_LINES}"
+          fi
+
+          dangerous_summary="none"
+          if [[ -n "${DANGEROUS_SYMBOLS}" ]]; then
+            dangerous_summary="list"
+          fi
+
+          dynamic_summary="OK"
+          if (( dynamic_fail == 1 )); then
+            dynamic_summary="FAIL"
+          fi
+
+          echo "=== OTA SAFETY REPORT ==="
+          echo "Firmware size: ${FIRMWARE_SIZE_BYTES} bytes"
+          echo "Flash usage: ${FLASH_USAGE_BYTES} bytes"
+          echo "RAM usage: ${RAM_USAGE_BYTES} bytes"
+          echo "OTA slot size: ${OTA_SLOT_SIZE} bytes"
+          echo "OTA threshold (${OTA_SLOT_LIMIT_PERCENT_LOCAL}%): ${OTA_LIMIT_BYTES} bytes"
+          echo "Dynamic memory usage: ${dynamic_summary}"
+          echo "Dangerous libc symbols: ${dangerous_summary}"
+          if [[ "${dangerous_summary}" == "list" ]]; then
+            printf '%s\n' "${DANGEROUS_SYMBOLS}" | sed 's/^/  - /'
+          fi
+          echo "JSON capacity sizes:"
+          if [[ "${JSON_CAP_LIST}" == "none" ]]; then
+            echo "  - none found"
+          else
+            printf '%s\n' "${JSON_CAP_LIST}" | sed 's/^/  - /'
+          fi
+          echo "=========================="
+
+          # Mandatory CI failure conditions.
+          if (( ota_size_fail == 1 || dangerous_fail == 1 || dynamic_fail == 1 || format_fail == 1 )); then
+            exit 1
+          fi
+
+      - name: Upload audit artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ota-safety-audit
+          path: |
+            build/compile.log
+            build/properties.txt
+            build/elf_size.txt
+            build/elf_size_sections.txt
+            build/symbols_nm.txt
+            build/firmware.map
