@@ -2378,6 +2378,34 @@ class WaterTankCard extends HTMLElement {
         ? String(this._otaUi.lastMessage)
         : (!this._isUnknownState(otaLastMessage) ? String(otaLastMessage) : "Update failed"));
     const otaFailureMsg = otaFailureSource.length > 128 ? `${otaFailureSource.slice(0, 125)}...` : otaFailureSource;
+    const currentFw = this._config.fw_version_entity ? this._state(this._config.fw_version_entity) : null;
+    const targetFw = this._config.ota_target_version_entity ? this._state(this._config.ota_target_version_entity) : null;
+    const currentFwKnown = !this._isUnknownState(currentFw);
+    const targetFwKnown = !this._isUnknownState(targetFw);
+    const fwMatchesTarget = currentFwKnown && targetFwKnown && String(currentFw).trim() === String(targetFw).trim();
+    const successAgeMs = (otaSessionResult === "success" && this._otaUi?.resultAt > 0) ? (now - this._otaUi.resultAt) : 0;
+    const successVersionMismatchStale = otaSessionResult === "success" && currentFwKnown && targetFwKnown && !fwMatchesTarget && successAgeMs > 120000;
+    if (otaSessionResult === "success" && currentFwKnown && targetFwKnown && !fwMatchesTarget) {
+      // Keep success diagnostics visible until version confirmation or stale warning condition.
+      if (this._otaUi?.resultTimer) {
+        clearTimeout(this._otaUi.resultTimer);
+        this._otaUi.resultTimer = null;
+      }
+    } else if (otaSessionResult === "success" && fwMatchesTarget && !this._otaUi?.resultTimer) {
+      const resultAt = this._otaUi?.resultAt || now;
+      this._otaUi.resultTimer = setTimeout(() => {
+        if (this._otaUi?.result === "success" && this._otaUi?.resultAt === resultAt) {
+          this._resetOtaUiSession();
+          this._render();
+        }
+      }, 15000);
+    }
+    const successBannerMsg = (() => {
+      if (otaSessionResult !== "success") return "";
+      if (fwMatchesTarget && targetFwKnown) return `Updated to ${String(targetFw).trim()}`;
+      if (successVersionMismatchStale) return "Update reported success, but version has not changed yet.";
+      return this._safeText(this._otaUi?.lastMessage || "Update completed successfully");
+    })();
     const otaInline = (() => {
       if (otaPanelActive) {
         return `
@@ -2405,7 +2433,7 @@ class WaterTankCard extends HTMLElement {
             <ha-icon icon="mdi:check-circle"></ha-icon>
             <div class="otaBannerBody">
               <div class="otaBannerTitle">Firmware updated</div>
-              <div class="otaBannerMsg">${this._safeText(this._otaUi?.lastMessage || "Update completed successfully")}</div>
+              <div class="otaBannerMsg">${this._safeText(successBannerMsg)}</div>
             </div>
           </div>
         `;
@@ -2424,8 +2452,6 @@ class WaterTankCard extends HTMLElement {
       }
       return "";
     })();
-    const currentFw = this._config.fw_version_entity ? this._state(this._config.fw_version_entity) : null;
-    const targetFw = this._config.ota_target_version_entity ? this._state(this._config.ota_target_version_entity) : null;
     const showUpdateBanner = updateAvailable && !otaInProgress;
     const showVersionLine = !this._isUnknownState(currentFw) && !this._isUnknownState(targetFw);
     const versionLine = showVersionLine ? `${this._safeText(currentFw, "")} → ${this._safeText(targetFw, "")}` : "";
