@@ -16,6 +16,7 @@
 #include "storage_nvs.h"
 #include "mqtt_transport.h"
 #include "wifi_provisioning.h"
+#include "semver.h"
 
 #ifdef __has_include
 #if __has_include("config.h")
@@ -78,294 +79,29 @@ static char s_lastTlsErrMsg[128] = {0};
 static const char *OTA_PROGRESS_TOPIC_SUFFIX = "ota/progress";
 static const char *OTA_STATUS_TOPIC_SUFFIX = "ota/status";
 
-struct Version
+static bool ota_isStrictUpgrade(const char *currentVersion,
+                                const char *targetVersion,
+                                int *cmpOut)
 {
-    uint16_t major = 0;
-    uint16_t minor = 0;
-    uint16_t patch = 0;
-    bool hasPrerelease = false;
-    char prerelease[16] = {0};
-};
-
-static inline bool isDecDigit(char c)
-{
-    return c >= '0' && c <= '9';
-}
-
-static inline bool isPrereleaseChar(char c)
-{
-    return (c >= '0' && c <= '9') ||
-           (c >= 'A' && c <= 'Z') ||
-           (c >= 'a' && c <= 'z') ||
-           c == '-' ||
-           c == '.';
-}
-
-static bool parseUint16Part(const char *&p, uint16_t &out)
-{
-    if (!p || !isDecDigit(*p))
+    if (cmpOut)
+    {
+        *cmpOut = 0;
+    }
+    if (!currentVersion || !targetVersion || currentVersion[0] == '\0' || targetVersion[0] == '\0')
     {
         return false;
     }
 
-    const char *start = p;
-    uint32_t value = 0;
-    size_t digits = 0;
-    while (isDecDigit(*p))
-    {
-        value = (value * 10u) + (uint32_t)(*p - '0');
-        if (value > 65535u)
-        {
-            return false;
-        }
-        ++p;
-        ++digits;
-    }
-
-    // SemVer numeric identifiers must not contain leading zeroes.
-    if (digits > 1 && start[0] == '0')
+    int cmp = 0;
+    if (!compareVersionStrings(targetVersion, currentVersion, &cmp))
     {
         return false;
     }
-
-    out = (uint16_t)value;
-    return true;
-}
-
-static bool validatePrereleaseIdentifiers(const char *s)
-{
-    if (!s || s[0] == '\0')
+    if (cmpOut)
     {
-        return false;
+        *cmpOut = cmp;
     }
-
-    const char *idStart = s;
-    while (*idStart != '\0')
-    {
-        const char *idEnd = idStart;
-        bool allDigits = true;
-        while (*idEnd != '\0' && *idEnd != '.')
-        {
-            if (!isDecDigit(*idEnd))
-            {
-                allDigits = false;
-            }
-            ++idEnd;
-        }
-
-        const size_t len = (size_t)(idEnd - idStart);
-        if (len == 0)
-        {
-            return false;
-        }
-        if (allDigits && len > 1 && idStart[0] == '0')
-        {
-            return false;
-        }
-        if (*idEnd == '\0')
-        {
-            break;
-        }
-        idStart = idEnd + 1;
-    }
-    return true;
-}
-
-bool parseVersion(const char *str, Version *out)
-{
-    if (!str || !out)
-    {
-        return false;
-    }
-
-    Version parsed;
-    const char *p = str;
-    if (!parseUint16Part(p, parsed.major))
-    {
-        return false;
-    }
-    if (*p != '.')
-    {
-        return false;
-    }
-    ++p;
-    if (!parseUint16Part(p, parsed.minor))
-    {
-        return false;
-    }
-    if (*p != '.')
-    {
-        return false;
-    }
-    ++p;
-    if (!parseUint16Part(p, parsed.patch))
-    {
-        return false;
-    }
-
-    if (*p == '\0')
-    {
-        *out = parsed;
-        return true;
-    }
-    if (*p != '-')
-    {
-        return false;
-    }
-    ++p;
-
-    size_t n = 0;
-    while (*p != '\0')
-    {
-        const char c = *p;
-        if (!isPrereleaseChar(c))
-        {
-            return false;
-        }
-        if (n + 1 >= sizeof(parsed.prerelease))
-        {
-            return false;
-        }
-        parsed.prerelease[n++] = c;
-        ++p;
-    }
-
-    if (n == 0)
-    {
-        return false;
-    }
-    parsed.prerelease[n] = '\0';
-    if (!validatePrereleaseIdentifiers(parsed.prerelease))
-    {
-        return false;
-    }
-
-    parsed.hasPrerelease = true;
-    *out = parsed;
-    return true;
-}
-
-static bool prereleaseIdIsNumeric(const char *start, size_t len)
-{
-    if (!start || len == 0)
-    {
-        return false;
-    }
-    for (size_t i = 0; i < len; ++i)
-    {
-        if (!isDecDigit(start[i]))
-        {
-            return false;
-        }
-    }
-    return true;
-}
-
-static int comparePrerelease(const char *a, const char *b)
-{
-    const char *pa = a;
-    const char *pb = b;
-
-    while (true)
-    {
-        const char *ea = pa;
-        const char *eb = pb;
-        while (*ea != '\0' && *ea != '.')
-            ++ea;
-        while (*eb != '\0' && *eb != '.')
-            ++eb;
-
-        const size_t la = (size_t)(ea - pa);
-        const size_t lb = (size_t)(eb - pb);
-        const bool na = prereleaseIdIsNumeric(pa, la);
-        const bool nb = prereleaseIdIsNumeric(pb, lb);
-
-        int cmp = 0;
-        if (na && nb)
-        {
-            if (la < lb)
-                cmp = -1;
-            else if (la > lb)
-                cmp = 1;
-            else
-            {
-                const int raw = strncmp(pa, pb, la);
-                if (raw < 0)
-                    cmp = -1;
-                else if (raw > 0)
-                    cmp = 1;
-            }
-        }
-        else if (na != nb)
-        {
-            cmp = na ? -1 : 1;
-        }
-        else
-        {
-            const size_t minLen = (la < lb) ? la : lb;
-            const int raw = strncmp(pa, pb, minLen);
-            if (raw < 0)
-                cmp = -1;
-            else if (raw > 0)
-                cmp = 1;
-            else if (la < lb)
-                cmp = -1;
-            else if (la > lb)
-                cmp = 1;
-        }
-
-        if (cmp != 0)
-        {
-            return cmp;
-        }
-
-        const bool aDone = (*ea == '\0');
-        const bool bDone = (*eb == '\0');
-        if (aDone && bDone)
-        {
-            return 0;
-        }
-        if (aDone)
-        {
-            return -1;
-        }
-        if (bDone)
-        {
-            return 1;
-        }
-
-        pa = ea + 1;
-        pb = eb + 1;
-    }
-}
-
-int compareVersion(const Version &a, const Version &b)
-{
-    if (a.major < b.major)
-        return -1;
-    if (a.major > b.major)
-        return 1;
-
-    if (a.minor < b.minor)
-        return -1;
-    if (a.minor > b.minor)
-        return 1;
-
-    if (a.patch < b.patch)
-        return -1;
-    if (a.patch > b.patch)
-        return 1;
-
-    if (a.hasPrerelease != b.hasPrerelease)
-    {
-        // Release > prerelease
-        return a.hasPrerelease ? -1 : 1;
-    }
-    if (!a.hasPrerelease)
-    {
-        return 0;
-    }
-    return comparePrerelease(a.prerelease, b.prerelease);
+    return cmp > 0;
 }
 
 static inline bool ota_isSystemTimeValid()
@@ -887,6 +623,18 @@ bool ota_pullStart(DeviceState *state,
                 setErr(errBuf, errBufLen, "noop");
                 return true;
             }
+            if (!force)
+            {
+                const char *reason = "current_version_invalid";
+                LOG_ERROR(LogDomain::OTA, "Pull OTA blocked: %s current=%s target=%s",
+                          reason,
+                          currentFw[0] ? currentFw : "<empty>",
+                          version);
+                setErr(errBuf, errBufLen, reason);
+                ota_recordError(state, reason);
+                ota_requestPublish();
+                return false;
+            }
         }
     }
 
@@ -952,7 +700,14 @@ bool ota_pullStart(DeviceState *state,
     state->ota.last_message[0] = '\0';
     state->ota.completed_ts = 0;
     ota_setFlat(state, "downloading", 0, "", g_job.version, true);
-    state->update_available = (g_job.version[0] != '\0' && state->device.fw && strcmp(g_job.version, state->device.fw) != 0);
+    int queuedCmp = 0;
+    state->update_available = ota_isStrictUpgrade(state->device.fw, g_job.version, &queuedCmp);
+    LOG_INFO(LogDomain::OTA,
+             "OTA queued version relation current=%s target=%s cmp=%d update_available=%s",
+             (state->device.fw && state->device.fw[0]) ? state->device.fw : "<empty>",
+             g_job.version[0] ? g_job.version : "<empty>",
+             queuedCmp,
+             state->update_available ? "true" : "false");
 
     setErr(errBuf, errBufLen, "");
     LOG_INFO(LogDomain::OTA, "Pull OTA queued url=%s version=%s", g_job.url, g_job.version);
@@ -1286,11 +1041,51 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
         ota_requestPublish();
         return false;
     }
+    Version parsedManifestVersion;
+    if (!parseVersion(version, &parsedManifestVersion))
+    {
+        const char *reason = "manifest_invalid_version";
+        LOG_ERROR(LogDomain::OTA, "Manifest check failed reason=%s version=%s", reason, version);
+        setErr(errBuf, errBufLen, reason);
+        ota_recordError(state, reason);
+        ota_requestPublish();
+        return false;
+    }
 
     strncpy(state->ota_target_version, version, sizeof(state->ota_target_version));
     state->ota_target_version[sizeof(state->ota_target_version) - 1] = '\0';
     state->ota_last_ts = (uint32_t)(millis() / 1000);
-    state->update_available = (state->device.fw && strcmp(version, state->device.fw) != 0);
+    int manifestCmp = 0;
+    bool manifestCmpValid = false;
+    if (state->device.fw && state->device.fw[0] != '\0')
+    {
+        Version parsedCurrentVersion;
+        if (parseVersion(state->device.fw, &parsedCurrentVersion))
+        {
+            manifestCmp = compareVersion(parsedManifestVersion, parsedCurrentVersion);
+            state->update_available = (manifestCmp > 0);
+            manifestCmpValid = true;
+        }
+        else
+        {
+            state->update_available = false;
+        }
+    }
+    else
+    {
+        state->update_available = false;
+    }
+    char manifestCmpBuf[8] = "na";
+    if (manifestCmpValid)
+    {
+        snprintf(manifestCmpBuf, sizeof(manifestCmpBuf), "%d", manifestCmp);
+    }
+    LOG_INFO(LogDomain::OTA,
+             "Manifest version relation current=%s target=%s cmp=%s update_available=%s",
+             (state->device.fw && state->device.fw[0]) ? state->device.fw : "<empty>",
+             version,
+             manifestCmpBuf,
+             state->update_available ? "true" : "false");
     state->ota_error[0] = '\0';
 
     setErr(errBuf, errBufLen, "");
