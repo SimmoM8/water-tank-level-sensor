@@ -342,6 +342,56 @@ jobs:
           files: ${{ steps.build.outputs.release_asset_path }}
           generate_release_notes: true
 
+      - name: Verify uploaded release asset SHA256
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RELEASE_ASSET_NAME="${{ steps.build.outputs.release_asset_name }}"
+          EXPECTED_SHA256="${{ steps.build.outputs.sha256 }}"
+          RELEASE_URL="https://github.com/${{ github.repository }}/releases/download/${{ steps.meta.outputs.tag }}/${RELEASE_ASSET_NAME}"
+
+          if [[ -z "${RELEASE_ASSET_NAME}" ]]; then
+            echo "::error::Build output 'release_asset_name' is empty; cannot verify uploaded asset" >&2
+            exit 1
+          fi
+          if [[ -z "${EXPECTED_SHA256}" ]]; then
+            echo "::error::Build output 'sha256' is empty; cannot verify uploaded asset" >&2
+            exit 1
+          fi
+          if [[ -z "${RELEASE_URL}" ]]; then
+            echo "::error::Release URL is empty; cannot verify uploaded asset" >&2
+            exit 1
+          fi
+
+          TMP_ASSET="$(mktemp)"
+          cleanup() {
+            rm -f "${TMP_ASSET}"
+          }
+          trap cleanup EXIT
+
+          # Follow GitHub release redirects to fetch the exact uploaded asset bytes.
+          if ! curl -fL --retry 5 --retry-delay 2 --retry-connrefused -o "${TMP_ASSET}" "${RELEASE_URL}"; then
+            echo "::error::Failed to download uploaded asset from ${RELEASE_URL}" >&2
+            exit 1
+          fi
+          if [[ ! -s "${TMP_ASSET}" ]]; then
+            echo "::error::Downloaded uploaded asset is empty: ${RELEASE_URL}" >&2
+            exit 1
+          fi
+
+          DOWNLOADED_SHA256="$(sha256sum "${TMP_ASSET}" | awk '{print $1}')"
+          if [[ -z "${DOWNLOADED_SHA256}" ]]; then
+            echo "::error::Failed to compute SHA256 for downloaded uploaded asset" >&2
+            exit 1
+          fi
+          if [[ "${DOWNLOADED_SHA256}" != "${EXPECTED_SHA256}" ]]; then
+            echo "::error::Uploaded asset SHA256 mismatch for ${RELEASE_URL}. expected=${EXPECTED_SHA256} actual=${DOWNLOADED_SHA256}" >&2
+            exit 1
+          fi
+
+          echo "Uploaded asset SHA256 verified (${DOWNLOADED_SHA256})."
+
       - name: Update manifests/dev.json
         shell: bash
         run: |
