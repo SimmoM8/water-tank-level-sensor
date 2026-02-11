@@ -271,6 +271,16 @@ static bool write_boot_count(const DeviceState &s, JsonObject &root)
     return writeAtPath(root, "boot_count", s.boot_count);
 }
 
+static bool write_reboot_intent(const DeviceState &s, JsonObject &root)
+{
+    return writeAtPath(root, "reboot_intent", (uint32_t)s.reboot_intent);
+}
+
+static bool write_reboot_intent_label(const DeviceState &s, JsonObject &root)
+{
+    return writeAtPath(root, "reboot_intent_label", s.reboot_intent_label, true);
+}
+
 static bool write_crash_loop(const DeviceState &s, JsonObject &root)
 {
     return writeAtPath(root, "crash_loop", s.crash_loop);
@@ -605,6 +615,8 @@ static const TelemetryFieldDef TELEMETRY_FIELDS[] = {
     {HaComponent::Internal, "ts", "Timestamp", "ts", nullptr, nullptr, nullptr, nullptr, nullptr, write_ts},
     {HaComponent::Sensor, "uptime_seconds", "Uptime", "uptime_seconds", nullptr, "s", ICON_CLOCK, nullptr, nullptr, write_uptime_seconds},
     {HaComponent::Sensor, "boot_count", "Boot Count", "boot_count", nullptr, nullptr, ICON_CHIP, nullptr, nullptr, write_boot_count},
+    {HaComponent::Sensor, "reboot_intent", "Reboot Intent", "reboot_intent", nullptr, nullptr, ICON_CHIP, nullptr, nullptr, write_reboot_intent},
+    {HaComponent::Sensor, "reboot_intent_label", "Reboot Intent Label", "reboot_intent_label", nullptr, nullptr, ICON_CHIP, nullptr, nullptr, write_reboot_intent_label},
     {HaComponent::BinarySensor, "crash_loop", "Crash Loop Latched", "crash_loop", nullptr, nullptr, ICON_ALERT, nullptr, nullptr, write_crash_loop},
     {HaComponent::Sensor, "crash_loop_reason", "Crash Loop Reason", "crash_loop_reason", nullptr, nullptr, ICON_ALERT, nullptr, nullptr, write_crash_loop_reason},
     {HaComponent::Sensor, "crash_window_boots", "Crash Window Boots", "crash_window_boots", nullptr, nullptr, ICON_ALERT, nullptr, nullptr, write_crash_window_boots},
