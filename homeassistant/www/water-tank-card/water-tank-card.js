@@ -213,6 +213,8 @@ class WaterTankCard extends HTMLElement {
       lastProgress: null,
       lastMessage: null,
       result: null,
+      resultAt: 0,
+      resultTimer: null,
     };
     this._draft = {
       tankVolume: "",
@@ -571,6 +573,10 @@ class WaterTankCard extends HTMLElement {
   }
 
   _startOtaUiSession(now = Date.now()) {
+    if (this._otaUi.resultTimer) {
+      clearTimeout(this._otaUi.resultTimer);
+      this._otaUi.resultTimer = null;
+    }
     this._otaUi.active = true;
     this._otaUi.startedAt = now;
     this._otaUi.lastSeenAt = now;
@@ -578,6 +584,55 @@ class WaterTankCard extends HTMLElement {
     this._otaUi.lastProgress = null;
     this._otaUi.lastMessage = "Starting update…";
     this._otaUi.result = null;
+    this._otaUi.resultAt = 0;
+  }
+
+  _resetOtaUiSession() {
+    if (this._otaUi.resultTimer) {
+      clearTimeout(this._otaUi.resultTimer);
+      this._otaUi.resultTimer = null;
+    }
+    this._otaUi.active = false;
+    this._otaUi.startedAt = 0;
+    this._otaUi.lastSeenAt = 0;
+    this._otaUi.lastState = null;
+    this._otaUi.lastProgress = null;
+    this._otaUi.lastMessage = null;
+    this._otaUi.result = null;
+    this._otaUi.resultAt = 0;
+  }
+
+  _otaStepLabel(state) {
+    if (this._isUnknownState(state)) return "Waiting";
+    const v = String(state).trim().toLowerCase();
+    switch (v) {
+      case "queued": return "Queued";
+      case "downloading": return "Downloading";
+      case "verifying": return "Verifying";
+      case "applying": return "Applying";
+      case "rebooting": return "Rebooting";
+      case "reconnecting": return "Rebooting / reconnecting…";
+      case "success": return "Completed";
+      case "failed": return "Failed";
+      default: return this._safeText(state);
+    }
+  }
+
+  _otaSeverity(stateOrResult) {
+    if (this._isUnknownState(stateOrResult)) return "info";
+    const v = String(stateOrResult).trim().toLowerCase();
+    if (v === "success") return "success";
+    if (v === "failed" || v === "error") return "error";
+    return "info";
+  }
+
+  _formatElapsed(ms) {
+    const value = Number(ms);
+    if (!Number.isFinite(value) || value <= 0) return "0s";
+    const totalSec = Math.floor(value / 1000);
+    const min = Math.floor(totalSec / 60);
+    const sec = totalSec % 60;
+    return min > 0 ? `${min}m ${sec}s` : `${sec}s`;
   }
 
   _updateOtaUiSession(otaStateRaw, otaProgressVal, otaLastMessageRaw, now = Date.now()) {
@@ -619,6 +674,20 @@ class WaterTankCard extends HTMLElement {
     if (stateLower === "success" || stateLower === "failed") {
       session.active = false;
       session.result = stateLower;
+      session.resultAt = session.resultAt || now;
+      if (stateLower === "success") {
+        if (session.resultTimer) clearTimeout(session.resultTimer);
+        const resultAt = session.resultAt;
+        session.resultTimer = setTimeout(() => {
+          if (this._otaUi?.result === "success" && this._otaUi?.resultAt === resultAt) {
+            this._resetOtaUiSession();
+            this._render();
+          }
+        }, 15000);
+      } else if (session.resultTimer) {
+        clearTimeout(session.resultTimer);
+        session.resultTimer = null;
+      }
       if (this._toastTimer) {
         clearTimeout(this._toastTimer);
         this._toastTimer = null;
@@ -634,6 +703,11 @@ class WaterTankCard extends HTMLElement {
     ) {
       session.active = false;
       session.result = "failed";
+      session.resultAt = session.resultAt || now;
+      if (session.resultTimer) {
+        clearTimeout(session.resultTimer);
+        session.resultTimer = null;
+      }
       session.lastState = "failed";
       session.lastMessage = "Timed out";
       session.lastSeenAt = now;
@@ -2118,40 +2192,84 @@ class WaterTankCard extends HTMLElement {
     const otaState = this._config.ota_state_entity ? this._state(this._config.ota_state_entity) : null;
     const otaProgressVal = this._config.ota_progress_entity ? this._num(this._config.ota_progress_entity) : null;
     const otaLastMessage = this._config.ota_last_message_entity ? this._state(this._config.ota_last_message_entity) : null;
+    const otaErrorState = this._config.ota_error_entity ? this._state(this._config.ota_error_entity) : null;
     this._updateOtaUiSession(otaState, otaProgressVal, otaLastMessage, now);
+    if (this._otaUi?.result === "success" && this._otaUi.resultAt > 0 && (now - this._otaUi.resultAt) > 15000) {
+      this._resetOtaUiSession();
+    }
     const otaStateKnown = this._config.ota_state_entity && !this._isUnknownState(otaState);
     const otaStateLower = otaStateKnown ? String(otaState).trim().toLowerCase() : "";
     const otaSessionActive = !!this._otaUi?.active;
+    const otaSessionResult = this._otaUi?.result || null;
     const otaInProgress = otaStateLower === "downloading" || otaStateLower === "verifying" || otaStateLower === "applying" || otaSessionActive;
-    const otaActive = otaStateLower === "downloading" || otaStateLower === "verifying" || otaStateLower === "applying" || otaStateLower === "rebooting" || otaSessionActive;
     const otaProgressEff = otaProgressVal === null ? this._otaUi?.lastProgress : otaProgressVal;
     const otaProgressPct = (otaProgressEff !== null && otaProgressEff !== undefined && otaProgressEff >= 1 && otaProgressEff <= 100)
       ? Math.round(otaProgressEff)
       : null;
-    const otaProgressText = otaProgressPct !== null ? `${otaProgressPct}%` : "—";
+    const otaProgressText = otaProgressPct !== null ? `${otaProgressPct}%` : "…";
     const otaStale = this._otaSessionIsStale(now);
-    const otaStatusText = (() => {
-      if (otaStale) return "Rebooting / reconnecting…";
-      switch (otaStateLower) {
-        case "downloading": return "Downloading";
-        case "verifying": return "Verifying";
-        case "applying": return "Applying";
-        case "rebooting": return "Rebooting";
-        default:
-          if (otaSessionActive && this._otaUi?.lastState === "queued") return "Queued";
-          return this._safeText(otaState);
+    const otaStepState = otaStale
+      ? "reconnecting"
+      : (otaStateKnown ? otaStateLower : (this._otaUi?.lastState || null));
+    const otaStepLabel = this._otaStepLabel(otaStepState);
+    const otaSeverity = this._otaSeverity(otaSessionActive ? "info" : otaSessionResult);
+    const otaElapsed = otaSessionActive ? this._formatElapsed(now - (this._otaUi?.startedAt || now)) : "";
+    const otaFooterSource = !this._isUnknownState(this._otaUi?.lastMessage)
+      ? String(this._otaUi.lastMessage)
+      : (!this._isUnknownState(otaLastMessage) ? String(otaLastMessage) : "");
+    const otaFooterMsg = otaFooterSource.length > 96 ? `${otaFooterSource.slice(0, 93)}...` : otaFooterSource;
+    const otaFailureSource = !this._isUnknownState(otaErrorState)
+      ? String(otaErrorState)
+      : (!this._isUnknownState(this._otaUi?.lastMessage)
+        ? String(this._otaUi.lastMessage)
+        : (!this._isUnknownState(otaLastMessage) ? String(otaLastMessage) : "Update failed"));
+    const otaFailureMsg = otaFailureSource.length > 128 ? `${otaFailureSource.slice(0, 125)}...` : otaFailureSource;
+    const otaInline = (() => {
+      if (otaSessionActive) {
+        return `
+          <div class="otaPanel otaPanel--${otaSeverity}">
+            <div class="otaPanelHead">
+              <div>
+                <div class="otaPanelTitle">Updating firmware</div>
+                <div class="otaPanelSub">${this._safeText(otaStepLabel)}</div>
+              </div>
+              <div class="otaPanelRight">${otaProgressText}</div>
+            </div>
+            <div class="otaBar">
+              <div class="otaBarFill ${otaProgressPct !== null ? "" : "otaBarFill--ind"}" style="${otaProgressPct !== null ? `width:${otaProgressPct}%;` : ""}"></div>
+            </div>
+            <div class="otaPanelFoot">
+              <span>${this._safeText(otaElapsed)}</span>
+              ${otaFooterMsg ? `<span class="otaDivider">•</span><span class="otaMsg">${this._safeText(otaFooterMsg, "")}</span>` : ``}
+            </div>
+          </div>
+        `;
       }
+      if (otaSessionResult === "success") {
+        return `
+          <div class="otaBanner otaBanner--success">
+            <ha-icon icon="mdi:check-circle"></ha-icon>
+            <div class="otaBannerBody">
+              <div class="otaBannerTitle">Firmware updated</div>
+              <div class="otaBannerMsg">${this._safeText(this._otaUi?.lastMessage || "Update completed successfully")}</div>
+            </div>
+          </div>
+        `;
+      }
+      if (otaSessionResult === "failed") {
+        return `
+          <div class="otaBanner otaBanner--error">
+            <ha-icon icon="mdi:alert-circle"></ha-icon>
+            <div class="otaBannerBody">
+              <div class="otaBannerTitle">Update failed</div>
+              <div class="otaBannerMsg">${this._safeText(otaFailureMsg)}</div>
+            </div>
+            <button class="otaViewDetailsBtn" id="otaViewDetailsBtn" type="button">View details</button>
+          </div>
+        `;
+      }
+      return "";
     })();
-    const otaInline = otaActive ? `
-      <div class="otaRow">
-        <ha-icon icon="mdi:update"></ha-icon>
-        <div class="otaText">Updating… ${this._safeText(otaStatusText)}</div>
-        <div class="otaPct">${otaProgressText}</div>
-      </div>
-      <div class="otaBar">
-        <div class="otaBarFill ${otaProgressPct !== null ? "" : "otaBarFill--ind"}" style="${otaProgressPct !== null ? `width:${otaProgressPct}%;` : ""}"></div>
-      </div>
-    ` : "";
     const currentFw = this._config.fw_version_entity ? this._state(this._config.fw_version_entity) : null;
     const targetFw = this._config.ota_target_version_entity ? this._state(this._config.ota_target_version_entity) : null;
     const showUpdateBanner = updateAvailable && !otaInProgress;
@@ -2368,27 +2486,90 @@ class WaterTankCard extends HTMLElement {
         font-weight: 800;
         font-size: 16px;
       }
-      .otaRow {
-        display: flex;
-        align-items: center;
-        gap: 8px;
+      .otaPanel,
+      .otaBanner {
+        margin-top: 10px;
         padding: 10px 12px;
         border-radius: 12px;
         background: rgba(0,0,0,0.06);
-        margin-top: 10px;
+        border: 1px solid rgba(0,0,0,0.08);
       }
-      .otaRow ha-icon {
+      .otaPanel--info {
+        background: rgba(0,0,0,0.06);
+      }
+      .otaPanel--success,
+      .otaBanner--success {
+        background: rgba(0,150,0,0.12);
+        border-color: rgba(0,150,0,0.3);
+      }
+      .otaPanel--error,
+      .otaBanner--error {
+        background: rgba(255,64,64,0.14);
+        border-color: rgba(255,64,64,0.35);
+      }
+      .otaPanelHead {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .otaPanelTitle,
+      .otaBannerTitle {
+        font-size: 13px;
+        font-weight: 800;
+        line-height: 1.2;
+      }
+      .otaPanelSub,
+      .otaBannerMsg {
+        font-size: 12px;
+        opacity: 0.8;
+        margin-top: 2px;
+      }
+      .otaPanelRight {
+        font-size: 13px;
+        font-weight: 800;
+        opacity: 0.9;
+      }
+      .otaPanelFoot {
+        margin-top: 8px;
+        font-size: 12px;
+        opacity: 0.85;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+      }
+      .otaMsg {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
+        flex: 1;
+      }
+      .otaDivider {
+        opacity: 0.65;
+      }
+      .otaBanner {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .otaBanner ha-icon {
         --mdc-icon-size: 18px;
       }
-      .otaText {
+      .otaBannerBody {
+        min-width: 0;
         flex: 1;
-        font-size: 13px;
-        font-weight: 700;
       }
-      .otaPct {
+      .otaViewDetailsBtn {
+        border: none;
+        border-radius: 8px;
+        padding: 6px 10px;
         font-size: 12px;
-        font-weight: 800;
-        opacity: 0.8;
+        font-weight: 700;
+        cursor: pointer;
+        background: rgba(0,0,0,0.12);
+        color: inherit;
       }
       .otaBar {
         height: 4px;
@@ -2925,6 +3106,16 @@ class WaterTankCard extends HTMLElement {
           this._scrollToOta = true;
           this._openModal("advanced");
         }
+      };
+    }
+
+    const otaViewDetailsBtn = this.shadowRoot.getElementById("otaViewDetailsBtn");
+    if (otaViewDetailsBtn) {
+      otaViewDetailsBtn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this._scrollToOta = true;
+        this._openModal("advanced");
       };
     }
 
