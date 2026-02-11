@@ -401,6 +401,7 @@ jobs:
             exit 1
           fi
           MIN_RELEASE_ASSET_BYTES=131072
+          MAX_RELEASE_ASSET_BYTES=1400000
           RELEASE_ASSET_SIZE="$(wc -c < "${RELEASE_ASSET_PATH}" | tr -d '[:space:]')"
           if [[ ! "${RELEASE_ASSET_SIZE}" =~ ^[0-9]+$ ]]; then
             echo "::error::Failed to determine release asset size for ${RELEASE_ASSET_PATH}" >&2
@@ -408,6 +409,10 @@ jobs:
           fi
           if (( RELEASE_ASSET_SIZE < MIN_RELEASE_ASSET_BYTES )); then
             echo "::error::Release asset is suspiciously small (${RELEASE_ASSET_SIZE} bytes, minimum ${MIN_RELEASE_ASSET_BYTES})" >&2
+            exit 1
+          fi
+          if (( RELEASE_ASSET_SIZE > MAX_RELEASE_ASSET_BYTES )); then
+            echo "::error::Firmware too large for OTA slot (${RELEASE_ASSET_SIZE} bytes)" >&2
             exit 1
           fi
           if (( RELEASE_ASSET_SIZE > OTA_SLOT_MAX_BYTES )); then
