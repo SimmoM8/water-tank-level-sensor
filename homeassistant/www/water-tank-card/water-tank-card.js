@@ -8,6 +8,8 @@ const VERSION = "0.5.10";
 
 // Toast timing (ms)
 const TOAST_RESULT_MS = 2200;
+const OTA_UI_STALE_MS = 25000;
+const OTA_UI_TIMEOUT_MS = 20 * 60 * 1000;
 
 // Diagnostics numeric precision
 const DIAGNOSTICS_DECIMALS = 10;
@@ -203,6 +205,15 @@ class WaterTankCard extends HTMLElement {
     this._scrollToOta = false;
     this._renderDeferMs = 350;
     this._lastInteractionAt = 0;
+    this._otaUi = {
+      active: false,
+      startedAt: 0,
+      lastSeenAt: 0,
+      lastState: null,
+      lastProgress: null,
+      lastMessage: null,
+      result: null,
+    };
     this._draft = {
       tankVolume: "",
       rodLength: "",
@@ -550,6 +561,61 @@ class WaterTankCard extends HTMLElement {
     if (this._isUnknownState(value)) return false;
     const v = String(value).trim().toLowerCase();
     return v === "downloading" || v === "verifying" || v === "applying" || v === "rebooting";
+  }
+
+  _otaSessionIsStale(now = Date.now()) {
+    const s = this._otaUi;
+    if (!s || !s.active) return false;
+    if (!Number.isFinite(s.lastSeenAt) || s.lastSeenAt <= 0) return false;
+    return (now - s.lastSeenAt) > OTA_UI_STALE_MS;
+  }
+
+  _startOtaUiSession(now = Date.now()) {
+    this._otaUi.active = true;
+    this._otaUi.startedAt = now;
+    this._otaUi.lastSeenAt = now;
+    this._otaUi.lastState = "queued";
+    this._otaUi.lastProgress = null;
+    this._otaUi.lastMessage = "Starting update…";
+    this._otaUi.result = null;
+  }
+
+  _updateOtaUiSession(otaStateRaw, otaProgressVal, otaLastMessageRaw, now = Date.now()) {
+    const session = this._otaUi;
+    if (!session) return;
+
+    let stateLower = null;
+    if (!this._isUnknownState(otaStateRaw)) {
+      stateLower = String(otaStateRaw).trim().toLowerCase();
+      session.lastState = stateLower;
+      session.lastSeenAt = now;
+    }
+
+    if (Number.isFinite(otaProgressVal)) {
+      session.lastProgress = otaProgressVal;
+      session.lastSeenAt = now;
+    }
+
+    if (!this._isUnknownState(otaLastMessageRaw)) {
+      session.lastMessage = String(otaLastMessageRaw);
+      session.lastSeenAt = now;
+    }
+
+    if (!session.active) return;
+
+    if (stateLower === "success" || stateLower === "failed") {
+      session.active = false;
+      session.result = stateLower;
+      return;
+    }
+
+    if ((now - session.startedAt) > OTA_UI_TIMEOUT_MS) {
+      session.active = false;
+      session.result = "failed";
+      session.lastState = "failed";
+      session.lastMessage = "Timed out";
+      session.lastSeenAt = now;
+    }
   }
 
   _safeText(v, fallback = "—") {
@@ -1285,13 +1351,19 @@ class WaterTankCard extends HTMLElement {
       .join("");
 
     const otaState = this._config.ota_state_entity ? this._state(this._config.ota_state_entity) : null;
-    const otaBusy = this._isOtaBusyValue(otaState);
+    const otaBusy = this._isOtaBusyValue(otaState) || !!this._otaUi?.active;
     const otaProgressVal = this._config.ota_progress_entity ? this._num(this._config.ota_progress_entity) : null;
-    const otaProgressLabel = otaProgressVal === null ? "—" : `${this._formatNumber(otaProgressVal, 0)}%`;
+    const otaProgressEff = otaProgressVal === null ? this._otaUi?.lastProgress : otaProgressVal;
+    const otaProgressLabel = otaProgressEff === null || otaProgressEff === undefined ? "—" : `${this._formatNumber(otaProgressEff, 0)}%`;
     const otaLastStatus = this._config.ota_last_status_entity ? this._state(this._config.ota_last_status_entity) : null;
-    const otaLastMessage = this._config.ota_last_message_entity ? this._state(this._config.ota_last_message_entity) : null;
+    const otaLastMessageRaw = this._config.ota_last_message_entity ? this._state(this._config.ota_last_message_entity) : null;
+    const otaLastMessage = this._isUnknownState(otaLastMessageRaw) ? this._otaUi?.lastMessage : otaLastMessageRaw;
     const updateAvailableState = this._config.update_available_entity ? this._state(this._config.update_available_entity) : null;
     const updateAvailableLabel = this._boolLabelFromState(updateAvailableState, "Yes", "No");
+    const otaStateKnown = !this._isUnknownState(otaState);
+    const otaStateDisplay = this._otaSessionIsStale(Date.now())
+      ? "Rebooting / reconnecting…"
+      : (otaStateKnown ? otaState : (this._otaUi?.lastState || otaState));
     const otaButtonDisabled = !online || otaBusy || !this._config.ota_pull_entity;
     const hasOtaSection =
       !!(this._config.ota_pull_entity ||
@@ -1305,7 +1377,7 @@ class WaterTankCard extends HTMLElement {
         <div class="wt-section-sub" style="margin-bottom:8px;">OTA Update</div>
         <div class="wt-diag-list">
           <div class="wt-diag-row"><span>Update available</span><b>${this._safeText(updateAvailableLabel)}</b></div>
-          <div class="wt-diag-row"><span>State</span><b>${this._safeText(otaState)}</b></div>
+          <div class="wt-diag-row"><span>State</span><b>${this._safeText(otaStateDisplay)}</b></div>
           <div class="wt-diag-row"><span>Progress</span><b>${otaProgressLabel}</b></div>
           <div class="wt-diag-row"><span>Last status</span><b>${this._safeText(otaLastStatus)}</b></div>
           <div class="wt-diag-row"><span>Last message</span><b>${this._safeText(otaLastMessage)}</b></div>
@@ -1536,7 +1608,8 @@ class WaterTankCard extends HTMLElement {
         if (otaBtn.disabled) return;
         const entityId = otaBtn.dataset.entity;
         if (!entityId) return;
-        this._showToast("Starting OTA update…", "info", TOAST_RESULT_MS);
+        this._startOtaUiSession(Date.now());
+        this._showToast("OTA started…", "info", 0, { sticky: true });
         pressButton(entityId);
       };
     }
@@ -2012,25 +2085,35 @@ class WaterTankCard extends HTMLElement {
       : false;
     const probeState = this._state(this._config.probe_entity);
 
+    const now = Date.now();
     const updateAvailableState = this._config.update_available_entity ? this._state(this._config.update_available_entity) : null;
     const updateAvailable = this._isTruthyState(updateAvailableState);
     const otaState = this._config.ota_state_entity ? this._state(this._config.ota_state_entity) : null;
+    const otaProgressVal = this._config.ota_progress_entity ? this._num(this._config.ota_progress_entity) : null;
+    const otaLastMessage = this._config.ota_last_message_entity ? this._state(this._config.ota_last_message_entity) : null;
+    this._updateOtaUiSession(otaState, otaProgressVal, otaLastMessage, now);
     const otaStateKnown = this._config.ota_state_entity && !this._isUnknownState(otaState);
     const otaStateLower = otaStateKnown ? String(otaState).trim().toLowerCase() : "";
-    const otaInProgress = otaStateLower === "downloading" || otaStateLower === "verifying" || otaStateLower === "applying";
-    const otaActive = otaStateLower === "downloading" || otaStateLower === "verifying" || otaStateLower === "applying" || otaStateLower === "rebooting";
-    const otaProgressVal = this._config.ota_progress_entity ? this._num(this._config.ota_progress_entity) : null;
-    const otaProgressPct = (otaProgressVal !== null && otaProgressVal >= 1 && otaProgressVal <= 100)
-      ? Math.round(otaProgressVal)
+    const otaSessionActive = !!this._otaUi?.active;
+    const otaInProgress = otaStateLower === "downloading" || otaStateLower === "verifying" || otaStateLower === "applying" || otaSessionActive;
+    const otaActive = otaStateLower === "downloading" || otaStateLower === "verifying" || otaStateLower === "applying" || otaStateLower === "rebooting" || otaSessionActive;
+    const otaProgressEff = otaProgressVal === null ? this._otaUi?.lastProgress : otaProgressVal;
+    const otaProgressPct = (otaProgressEff !== null && otaProgressEff !== undefined && otaProgressEff >= 1 && otaProgressEff <= 100)
+      ? Math.round(otaProgressEff)
       : null;
     const otaProgressText = otaProgressPct !== null ? `${otaProgressPct}%` : "—";
+    const otaStale = this._otaSessionIsStale(now);
     const otaStatusText = (() => {
+      if (otaStale) return "Rebooting / reconnecting…";
       switch (otaStateLower) {
         case "downloading": return "Downloading";
         case "verifying": return "Verifying";
         case "applying": return "Applying";
         case "rebooting": return "Rebooting";
-        default: return this._safeText(otaState);
+        case "queued": return "Queued";
+        default:
+          if (otaSessionActive && this._otaUi?.lastState === "queued") return "Queued";
+          return this._safeText(otaState);
       }
     })();
     const otaInline = otaActive ? `
