@@ -2184,9 +2184,6 @@ class WaterTankCard extends HTMLElement {
     const otaLastMessage = this._config.ota_last_message_entity ? this._state(this._config.ota_last_message_entity) : null;
     const otaErrorState = this._config.ota_error_entity ? this._state(this._config.ota_error_entity) : null;
     this._updateOtaUiSession(otaState, otaProgressVal, otaLastMessage, now);
-    if (this._otaUi?.result === "success" && this._otaUi.resultAt > 0 && (now - this._otaUi.resultAt) > 15000) {
-      this._resetOtaUiSession();
-    }
     const otaStateKnown = this._config.ota_state_entity && !this._isUnknownState(otaState);
     const otaStateLower = otaStateKnown ? String(otaState).trim().toLowerCase() : "";
     const otaBusyFromDevice = otaStateKnown && (
