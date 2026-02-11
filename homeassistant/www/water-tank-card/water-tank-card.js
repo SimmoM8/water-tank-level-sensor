@@ -642,16 +642,6 @@ class WaterTankCard extends HTMLElement {
     let stateLower = null;
     if (!this._isUnknownState(otaStateRaw)) {
       stateLower = String(otaStateRaw).trim().toLowerCase();
-      const isFirmwareBusyState =
-        stateLower === "downloading" ||
-        stateLower === "verifying" ||
-        stateLower === "applying" ||
-        stateLower === "rebooting";
-
-      // OTA may be started externally (automation/MQTT) before button press.
-      if (!session.active && isFirmwareBusyState) {
-        this._startOtaUiSession(now);
-      }
 
       if (stateLower !== "queued") {
         session.lastState = stateLower;
@@ -2199,9 +2189,25 @@ class WaterTankCard extends HTMLElement {
     }
     const otaStateKnown = this._config.ota_state_entity && !this._isUnknownState(otaState);
     const otaStateLower = otaStateKnown ? String(otaState).trim().toLowerCase() : "";
+    const otaBusyFromDevice = otaStateKnown && (
+      otaStateLower === "downloading" ||
+      otaStateLower === "verifying" ||
+      otaStateLower === "applying" ||
+      otaStateLower === "rebooting"
+    );
+    if (otaBusyFromDevice && !this._otaUi?.active && this._otaUi?.result === null) {
+      this._otaUi.active = true;
+      if (!Number.isFinite(this._otaUi.startedAt) || this._otaUi.startedAt === 0) {
+        this._otaUi.startedAt = now;
+      }
+      this._otaUi.lastSeenAt = now;
+      this._otaUi.lastState = otaStateLower;
+      if (!this._isUnknownState(otaLastMessage)) this._otaUi.lastMessage = String(otaLastMessage);
+    }
     const otaSessionActive = !!this._otaUi?.active;
+    const otaPanelActive = otaSessionActive || otaBusyFromDevice;
     const otaSessionResult = this._otaUi?.result || null;
-    const otaInProgress = otaStateLower === "downloading" || otaStateLower === "verifying" || otaStateLower === "applying" || otaSessionActive;
+    const otaInProgress = otaPanelActive;
     const otaProgressEff = otaProgressVal === null ? this._otaUi?.lastProgress : otaProgressVal;
     const otaProgressPct = (otaProgressEff !== null && otaProgressEff !== undefined && otaProgressEff >= 1 && otaProgressEff <= 100)
       ? Math.round(otaProgressEff)
@@ -2212,8 +2218,8 @@ class WaterTankCard extends HTMLElement {
       ? "reconnecting"
       : (otaStateKnown ? otaStateLower : (this._otaUi?.lastState || null));
     const otaStepLabel = this._otaStepLabel(otaStepState);
-    const otaSeverity = this._otaSeverity(otaSessionActive ? "info" : otaSessionResult);
-    const otaElapsed = otaSessionActive ? this._formatElapsed(now - (this._otaUi?.startedAt || now)) : "";
+    const otaSeverity = this._otaSeverity(otaPanelActive ? "info" : otaSessionResult);
+    const otaElapsed = otaPanelActive ? this._formatElapsed(now - (this._otaUi?.startedAt || now)) : "";
     const otaFooterSource = !this._isUnknownState(this._otaUi?.lastMessage)
       ? String(this._otaUi.lastMessage)
       : (!this._isUnknownState(otaLastMessage) ? String(otaLastMessage) : "");
@@ -2225,7 +2231,7 @@ class WaterTankCard extends HTMLElement {
         : (!this._isUnknownState(otaLastMessage) ? String(otaLastMessage) : "Update failed"));
     const otaFailureMsg = otaFailureSource.length > 128 ? `${otaFailureSource.slice(0, 125)}...` : otaFailureSource;
     const otaInline = (() => {
-      if (otaSessionActive) {
+      if (otaPanelActive) {
         return `
           <div class="otaPanel otaPanel--${otaSeverity}">
             <div class="otaPanelHead">
