@@ -140,6 +140,7 @@ jobs:
           PLATFORM_COUNT=0
           LIB_COUNT=0
           ESP32_CORE_INSTALLED=0
+          ESP32_CORE_EXPECTED_VERSION=""
 
           for line in "${DEP_LINES[@]}"; do
             kind="${line%%|*}"
@@ -167,6 +168,7 @@ jobs:
               fi
               if [[ "${name}" == "esp32:esp32" ]]; then
                 ESP32_CORE_INSTALLED=1
+                ESP32_CORE_EXPECTED_VERSION="${version#v}"
               fi
             elif [[ "${kind}" == "LIB" ]]; then
               LIB_COUNT=$((LIB_COUNT + 1))
@@ -223,16 +225,34 @@ jobs:
             echo "::error::Profile '${PROFILE}' does not declare required esp32:esp32 core."
             exit 1
           fi
+          if [[ -z "${ESP32_CORE_EXPECTED_VERSION}" ]]; then
+            echo "::error::Failed to resolve expected esp32:esp32 core version from ${SKETCH_FILE}."
+            exit 1
+          fi
+
+          esp32_core_actual_version="$(arduino-cli core list | awk '$1=="esp32:esp32"{print $2; exit}')"
+          if [[ -z "${esp32_core_actual_version}" ]]; then
+            echo "::error::esp32:esp32 core is not installed after install step; expected ${ESP32_CORE_EXPECTED_VERSION}"
+            exit 1
+          fi
+          esp32_core_actual_version="${esp32_core_actual_version#v}"
+          if [[ "${esp32_core_actual_version}" != "${ESP32_CORE_EXPECTED_VERSION}" ]]; then
+            echo "::error::esp32:esp32 core version mismatch: expected ${ESP32_CORE_EXPECTED_VERSION}, got ${esp32_core_actual_version}"
+            exit 1
+          fi
 
           echo "Resolved FQBN: ${FQBN}"
+          echo "Resolved esp32 core version: ${esp32_core_actual_version}"
           echo "Installed platform deps: ${PLATFORM_COUNT}"
           echo "Installed library deps: ${LIB_COUNT}"
           echo "fqbn=${FQBN}" >> "${GITHUB_OUTPUT}"
+          echo "esp32_core_version=${esp32_core_actual_version}" >> "${GITHUB_OUTPUT}"
 
       - name: Print installed cores and libraries
         shell: bash
         run: |
           set -euo pipefail
+          echo "Pinned esp32 core version: ${{ steps.deps.outputs.esp32_core_version }}"
           echo "Installed cores:"
           arduino-cli core list
           echo "Installed pinned libraries:"
