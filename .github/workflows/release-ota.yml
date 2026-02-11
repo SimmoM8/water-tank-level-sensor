@@ -294,26 +294,33 @@ jobs:
             ls -la build >&2 || true
             exit 1
           fi
-          MIN_APP_BIN_BYTES=131072
-          APP_BIN_SIZE="$(wc -c < "${APP_BIN}" | tr -d '[:space:]')"
-          if [[ ! "${APP_BIN_SIZE}" =~ ^[0-9]+$ ]]; then
-            echo "::error::Failed to determine application binary size for ${APP_BIN}" >&2
+
+          RELEASE_ASSET_PATH="build/${{ steps.meta.outputs.asset_name }}"
+          cp "${APP_BIN}" "${RELEASE_ASSET_PATH}"
+          if [[ ! -s "${RELEASE_ASSET_PATH}" ]]; then
+            echo "::error::Release asset is missing or empty at ${RELEASE_ASSET_PATH}" >&2
             exit 1
           fi
-          if (( APP_BIN_SIZE < MIN_APP_BIN_BYTES )); then
-            echo "::error::Application binary is suspiciously small (${APP_BIN_SIZE} bytes, minimum ${MIN_APP_BIN_BYTES})" >&2
+          MIN_RELEASE_ASSET_BYTES=131072
+          RELEASE_ASSET_SIZE="$(wc -c < "${RELEASE_ASSET_PATH}" | tr -d '[:space:]')"
+          if [[ ! "${RELEASE_ASSET_SIZE}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Failed to determine release asset size for ${RELEASE_ASSET_PATH}" >&2
+            exit 1
+          fi
+          if (( RELEASE_ASSET_SIZE < MIN_RELEASE_ASSET_BYTES )); then
+            echo "::error::Release asset is suspiciously small (${RELEASE_ASSET_SIZE} bytes, minimum ${MIN_RELEASE_ASSET_BYTES})" >&2
             exit 1
           fi
 
-          ASSET_PATH="build/${{ steps.meta.outputs.asset_name }}"
-          cp "${APP_BIN}" "${ASSET_PATH}"
-          if [[ ! -s "${ASSET_PATH}" ]]; then
-            echo "::error::Release asset is missing or empty at ${ASSET_PATH}" >&2
+          RELEASE_ASSET_NAME="$(basename "${RELEASE_ASSET_PATH}")"
+          if [[ -z "${RELEASE_ASSET_NAME}" ]]; then
+            echo "::error::Failed to resolve release asset name from ${RELEASE_ASSET_PATH}" >&2
             exit 1
           fi
-          SHA256="$(sha256sum "${ASSET_PATH}" | awk '{print $1}')"
+
+          SHA256="$(sha256sum "${RELEASE_ASSET_PATH}" | awk '{print $1}')"
           if [[ -z "${SHA256}" ]]; then
-            echo "::error::Computed SHA256 is empty for ${ASSET_PATH}" >&2
+            echo "::error::Computed SHA256 is empty for ${RELEASE_ASSET_PATH}" >&2
             exit 1
           fi
           if [[ ! "${SHA256}" =~ ^[0-9a-fA-F]{64}$ ]]; then
@@ -321,7 +328,8 @@ jobs:
             exit 1
           fi
 
-          echo "firmware_path=${ASSET_PATH}" >> "${GITHUB_OUTPUT}"
+          echo "release_asset_path=${RELEASE_ASSET_PATH}" >> "${GITHUB_OUTPUT}"
+          echo "release_asset_name=${RELEASE_ASSET_NAME}" >> "${GITHUB_OUTPUT}"
           echo "sha256=${SHA256}" >> "${GITHUB_OUTPUT}"
 
       - name: Create GitHub Release and upload .bin
@@ -331,10 +339,10 @@ jobs:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: ${{ steps.meta.outputs.tag }}
           target_commitish: ${{ github.sha }}
-          files: ${{ steps.build.outputs.firmware_path }}
+          files: ${{ steps.build.outputs.release_asset_path }}
           generate_release_notes: true
 
-      - name: Update manifests/dev.json and push to main
+      - name: Update manifests/dev.json
         shell: bash
         run: |
           set -euo pipefail
@@ -344,7 +352,18 @@ jobs:
           git pull --ff-only origin main
 
           mkdir -p "$(dirname "${MANIFEST_PATH}")"
-          RELEASE_URL="https://github.com/${{ github.repository }}/releases/download/${{ steps.meta.outputs.tag }}/${{ steps.meta.outputs.asset_name }}"
+          RELEASE_ASSET_NAME="${{ steps.build.outputs.release_asset_name }}"
+          EXPECTED_ASSET_NAME="${{ steps.meta.outputs.asset_name }}"
+          if [[ -z "${RELEASE_ASSET_NAME}" ]]; then
+            echo "::error::Build output 'release_asset_name' is empty; refusing to update manifest" >&2
+            exit 1
+          fi
+          if [[ "${RELEASE_ASSET_NAME}" != "${EXPECTED_ASSET_NAME}" ]]; then
+            echo "::error::Release asset name mismatch: expected ${EXPECTED_ASSET_NAME}, got ${RELEASE_ASSET_NAME}" >&2
+            exit 1
+          fi
+
+          RELEASE_URL="https://github.com/${{ github.repository }}/releases/download/${{ steps.meta.outputs.tag }}/${RELEASE_ASSET_NAME}"
           BUILD_SHA256="${{ steps.build.outputs.sha256 }}"
           if [[ -z "${RELEASE_URL}" ]]; then
             echo "::error::Release URL resolved empty; refusing to update manifest" >&2
@@ -352,6 +371,10 @@ jobs:
           fi
           if [[ -z "${BUILD_SHA256}" ]]; then
             echo "::error::Build SHA256 output is empty; refusing to update manifest" >&2
+            exit 1
+          fi
+          if [[ ! "${BUILD_SHA256}" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            echo "::error::Build SHA256 output is not a 64-char hex string: ${BUILD_SHA256}" >&2
             exit 1
           fi
 
@@ -362,6 +385,58 @@ jobs:
             '{version: $version, url: $url, sha256: $sha256}' > "${MANIFEST_PATH}"
 
           ./scripts/validate_manifests.sh manifests
+
+      - name: Final manifest self-check
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f "${MANIFEST_PATH}" ]]; then
+            echo "::error::Manifest file missing after update: ${MANIFEST_PATH}" >&2
+            exit 1
+          fi
+
+          MANIFEST_VERSION="$(jq -r '.version // ""' "${MANIFEST_PATH}")"
+          MANIFEST_URL="$(jq -r '.url // ""' "${MANIFEST_PATH}")"
+          MANIFEST_SHA256="$(jq -r '.sha256 // ""' "${MANIFEST_PATH}")"
+          EXPECTED_VERSION="${{ steps.meta.outputs.version }}"
+          EXPECTED_URL="https://github.com/${{ github.repository }}/releases/download/${{ steps.meta.outputs.tag }}/${{ steps.build.outputs.release_asset_name }}"
+          EXPECTED_SHA256="${{ steps.build.outputs.sha256 }}"
+
+          if [[ -z "${MANIFEST_URL}" ]]; then
+            echo "::error::Manifest self-check failed: url is empty in ${MANIFEST_PATH}" >&2
+            exit 1
+          fi
+          if [[ -z "${MANIFEST_SHA256}" ]]; then
+            echo "::error::Manifest self-check failed: sha256 is empty in ${MANIFEST_PATH}" >&2
+            exit 1
+          fi
+          if [[ ! "${MANIFEST_SHA256}" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            echo "::error::Manifest self-check failed: sha256 is not 64-char hex (${MANIFEST_SHA256})" >&2
+            exit 1
+          fi
+          if [[ "${MANIFEST_VERSION}" != "${EXPECTED_VERSION}" ]]; then
+            echo "::error::Manifest self-check failed: version mismatch (expected ${EXPECTED_VERSION}, got ${MANIFEST_VERSION})" >&2
+            exit 1
+          fi
+          if [[ "${MANIFEST_URL}" != "${EXPECTED_URL}" ]]; then
+            echo "::error::Manifest self-check failed: url mismatch (expected ${EXPECTED_URL}, got ${MANIFEST_URL})" >&2
+            exit 1
+          fi
+          if [[ "${MANIFEST_SHA256}" != "${EXPECTED_SHA256}" ]]; then
+            echo "::error::Manifest self-check failed: sha256 mismatch (expected ${EXPECTED_SHA256}, got ${MANIFEST_SHA256})" >&2
+            exit 1
+          fi
+
+      - name: Commit and push manifest changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$(git branch --show-current)" != "main" ]]; then
+            echo "::error::Expected to be on 'main' before committing manifest changes" >&2
+            exit 1
+          fi
 
           git add "${MANIFEST_PATH}"
           if git diff --cached --quiet; then
