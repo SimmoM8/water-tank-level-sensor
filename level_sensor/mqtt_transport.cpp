@@ -92,13 +92,15 @@ static const char *otaStatusTopicValue(const DeviceState &state)
     case OtaStatus::DOWNLOADING:
         return "downloading";
     case OtaStatus::VERIFYING:
+        return "verifying";
     case OtaStatus::APPLYING:
-        return "flashing";
-    case OtaStatus::SUCCESS:
+        return "applying";
     case OtaStatus::REBOOTING:
+        return "rebooting";
+    case OtaStatus::SUCCESS:
         return "success";
     case OtaStatus::ERROR:
-        return "fail";
+        return "failed";
     }
     return "idle";
 }
