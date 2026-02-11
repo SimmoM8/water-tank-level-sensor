@@ -58,3 +58,26 @@ arduino-cli compile \
 ```
 
 CI uses the same `release` profile from `esp32/level_sensor/sketch.yaml`.
+
+## Firmware Build Audit Script
+
+Run a full compile + static audit (size, symbol/map, dynamic allocation indicators, format-string risk, JSON headroom):
+
+```bash
+./scripts/audit_firmware_build.py
+```
+
+Strict mode (non-zero exit on warnings/findings):
+
+```bash
+./scripts/audit_firmware_build.py --strict
+```
+
+Reports are written to:
+
+- `build/firmware_audit/reports/audit_summary.txt`
+- `build/firmware_audit/reports/compile.log`
+- `build/firmware_audit/reports/symbols_nm.txt`
+- `build/firmware_audit/reports/size.txt`
+- `build/firmware_audit/reports/size_sections.txt`
+- `build/firmware_audit/reports/symbols_objdump.txt`
