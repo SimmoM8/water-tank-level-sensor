@@ -53,6 +53,9 @@
 #define CFG_OTA_HTTP_RETRY_MAX_BACKOFF_MS 10000u
 #endif
 
+static constexpr uint8_t MAX_OTA_RETRIES = 3u;
+static constexpr uint32_t BASE_RETRY_DELAY_MS = 5000u;
+
 static const char *s_hostName = nullptr;
 static const char *s_password = nullptr;
 static bool s_started = false;
@@ -77,6 +80,8 @@ struct PullOtaJob
     uint8_t zeroReadStreak = 0;
     uint8_t netRetryCount = 0;
     uint32_t retryAtMs = 0;
+    uint8_t retryCount = 0;
+    uint32_t nextRetryAtMs = 0;
 
     // Streaming objects
     HTTPClient http;
@@ -544,6 +549,8 @@ static const char *ota_externalStatusFor(OtaStatus status)
         return "success";
     case OtaStatus::ERROR:
         return "failed";
+    case OtaStatus::RETRYING:
+        return "retrying";
     }
     return "idle";
 }
@@ -858,6 +865,8 @@ bool ota_pullStart(DeviceState *state,
     g_job.zeroReadStreak = 0;
     g_job.netRetryCount = 0;
     g_job.retryAtMs = 0;
+    g_job.retryCount = 0;
+    g_job.nextRetryAtMs = 0;
     g_job.request_id[0] = '\0';
     g_job.version[0] = '\0';
     g_job.url[0] = '\0';
@@ -1291,6 +1300,54 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
 
 static void ota_abort(DeviceState *state, const char *reason)
 {
+    if (g_job.retryCount < MAX_OTA_RETRIES)
+    {
+        const uint8_t nextRetryCount = (uint8_t)(g_job.retryCount + 1u);
+        const uint32_t backoffMs = (uint32_t)(BASE_RETRY_DELAY_MS << nextRetryCount);
+        g_job.retryCount = nextRetryCount;
+        g_job.nextRetryAtMs = millis() + backoffMs;
+
+        if (g_job.updateBegun)
+        {
+            Update.abort();
+            g_job.updateBegun = false;
+        }
+        if (g_job.httpBegun)
+        {
+            g_job.http.end();
+            g_job.httpBegun = false;
+        }
+        if (g_job.shaInit)
+        {
+            mbedtls_sha256_free(&g_job.shaCtx);
+            g_job.shaInit = false;
+        }
+        g_job.bytesTotal = 0;
+        g_job.bytesWritten = 0;
+        g_job.lastProgressMs = 0;
+        g_job.lastReportMs = 0;
+        g_job.noDataSinceMs = 0;
+        g_job.zeroReadStreak = 0;
+        g_job.netRetryCount = 0;
+        g_job.retryAtMs = 0;
+
+        if (state)
+        {
+            ota_setStatus(state, OtaStatus::RETRYING);
+            ota_setResult(state, "error", reason ? reason : "retrying");
+            ota_setFlat(state, "retrying", state->ota.progress, reason ? reason : "retrying", state->ota.version, true);
+            ota_requestPublish();
+        }
+
+        LOG_WARN(LogDomain::OTA,
+                 "Pull OTA retry scheduled reason=%s attempt=%u/%u backoff_ms=%lu",
+                 reason ? reason : "",
+                 (unsigned int)g_job.retryCount,
+                 (unsigned int)MAX_OTA_RETRIES,
+                 (unsigned long)backoffMs);
+        return;
+    }
+
     if (state)
     {
         ota_setStatus(state, OtaStatus::ERROR);
@@ -1364,6 +1421,48 @@ void ota_tick(DeviceState *state)
     if (!g_job.active)
         return;
 
+    const uint32_t nowMs = millis();
+    if (g_job.nextRetryAtMs != 0 && !ota_timeReached(nowMs, g_job.nextRetryAtMs))
+    {
+        return;
+    }
+    if (g_job.nextRetryAtMs != 0 && ota_timeReached(nowMs, g_job.nextRetryAtMs))
+    {
+        g_job.nextRetryAtMs = 0;
+        if (g_job.updateBegun)
+        {
+            Update.abort();
+            g_job.updateBegun = false;
+        }
+        if (g_job.httpBegun)
+        {
+            g_job.http.end();
+            g_job.httpBegun = false;
+        }
+        if (g_job.shaInit)
+        {
+            mbedtls_sha256_free(&g_job.shaCtx);
+            g_job.shaInit = false;
+        }
+        g_job.bytesTotal = 0;
+        g_job.bytesWritten = 0;
+        g_job.lastProgressMs = 0;
+        g_job.lastReportMs = 0;
+        g_job.noDataSinceMs = 0;
+        g_job.zeroReadStreak = 0;
+        g_job.netRetryCount = 0;
+        g_job.retryAtMs = 0;
+        if (state)
+        {
+            ota_setStatus(state, OtaStatus::DOWNLOADING);
+            ota_setFlat(state, "downloading", 0, "", state->ota.version, false);
+            ota_requestPublish();
+        }
+        LOG_INFO(LogDomain::OTA, "Pull OTA retrying download attempt=%u/%u",
+                 (unsigned int)g_job.retryCount,
+                 (unsigned int)MAX_OTA_RETRIES);
+    }
+
     if (!WiFi.isConnected())
     {
         ota_abort(state, "wifi_disconnected");
@@ -1375,8 +1474,6 @@ void ota_tick(DeviceState *state)
         ota_abort(state, "time_not_set");
         return;
     }
-
-    const uint32_t nowMs = millis();
 
     if (!g_job.httpBegun && g_job.retryAtMs != 0 && !ota_timeReached(nowMs, g_job.retryAtMs))
     {

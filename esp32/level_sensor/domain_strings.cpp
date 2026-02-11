@@ -125,6 +125,8 @@ namespace domain_strings
             return "success";
         case OtaStatus::ERROR:
             return "failed";
+        case OtaStatus::RETRYING:
+            return "retrying";
         }
 #if DOMAIN_STRINGS_STRICT
         __builtin_unreachable();
