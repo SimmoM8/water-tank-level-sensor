@@ -24,12 +24,23 @@ static const time_t VALID_TIME_EPOCH = 1600000000;
 #ifndef CFG_TIME_SYNC_RETRY_MAX_MS
 #define CFG_TIME_SYNC_RETRY_MAX_MS 300000u
 #endif
+#ifndef CFG_WIFI_CONNECT_RETRY_MIN_MS
+#define CFG_WIFI_CONNECT_RETRY_MIN_MS 5000u
+#endif
+#ifndef CFG_WIFI_CONNECT_RETRY_MAX_MS
+#define CFG_WIFI_CONNECT_RETRY_MAX_MS 300000u
+#endif
 
 static Preferences wifiPrefs; // WiFi-related preferences
 
 static const char *TIME_STATUS_VALID = "valid";
 static const char *TIME_STATUS_SYNCING = "syncing";
 static const char *TIME_STATUS_NOT_SET = "time_not_set";
+
+static bool s_wifiConnectInFlight = false;
+static uint32_t s_wifiConnectStartMs = 0;
+static uint32_t s_wifiConnectRetryAtMs = 0;
+static uint32_t s_wifiConnectBackoffMs = CFG_WIFI_CONNECT_RETRY_MIN_MS;
 
 static bool s_timeSyncInFlight = false;
 static uint32_t s_timeSyncStartMs = 0;
@@ -53,6 +64,19 @@ static uint32_t wifi_clampBackoff(uint32_t valueMs)
     if (valueMs > CFG_TIME_SYNC_RETRY_MAX_MS)
     {
         return CFG_TIME_SYNC_RETRY_MAX_MS;
+    }
+    return valueMs;
+}
+
+static uint32_t wifi_clampConnectBackoff(uint32_t valueMs)
+{
+    if (valueMs < CFG_WIFI_CONNECT_RETRY_MIN_MS)
+    {
+        return CFG_WIFI_CONNECT_RETRY_MIN_MS;
+    }
+    if (valueMs > CFG_WIFI_CONNECT_RETRY_MAX_MS)
+    {
+        return CFG_WIFI_CONNECT_RETRY_MAX_MS;
     }
     return valueMs;
 }
@@ -159,7 +183,6 @@ static void startPortal()
     LOG_INFO(LogDomain::WIFI, "Starting captive portal (setup mode)...");
     WiFi.mode(WIFI_STA);
     WiFi.disconnect(true, true);
-    delay(100);
 
     WiFiManager wm;
     wm.setConfigPortalTimeout(180); // seconds
@@ -173,11 +196,14 @@ static void startPortal()
     if (!ok)
     {
         LOG_WARN(LogDomain::WIFI, "Portal timed out or failed. Rebooting...");
-        delay(500);
         ESP.restart();
     }
 
     LOG_INFO(LogDomain::WIFI, "WiFi configured and connected ip=%s", WiFi.localIP().toString().c_str());
+    s_wifiConnectInFlight = false;
+    s_wifiConnectStartMs = 0;
+    s_wifiConnectRetryAtMs = 0;
+    s_wifiConnectBackoffMs = CFG_WIFI_CONNECT_RETRY_MIN_MS;
     s_nextTimeSyncRetryMs = 0;
     wifi_timeSyncTick();
 
@@ -187,22 +213,71 @@ static void startPortal()
 // Ensure WiFi is connected, otherwise start captive portal
 void wifi_ensureConnected(uint32_t wifiTimeoutMs)
 {
-    // If already connected, run non-blocking time sync tick.
+    const uint32_t now = millis();
+
+    // Keep time sync state fresh even while disconnected.
+    wifi_timeSyncTick();
+
     if (WiFi.status() == WL_CONNECTED)
     {
-        wifi_timeSyncTick();
+        if (s_wifiConnectInFlight)
+        {
+            const uint32_t elapsed = now - s_wifiConnectStartMs;
+            LOG_INFO(LogDomain::WIFI, "Connected ip=%s connect_ms=%lu",
+                     WiFi.localIP().toString().c_str(),
+                     (unsigned long)elapsed);
+        }
+
+        s_wifiConnectInFlight = false;
+        s_wifiConnectStartMs = 0;
+        s_wifiConnectRetryAtMs = 0;
+        s_wifiConnectBackoffMs = CFG_WIFI_CONNECT_RETRY_MIN_MS;
         return;
     }
 
-    WiFi.mode(WIFI_STA); // station mode
+    if (s_wifiConnectInFlight)
+    {
+        const uint32_t timeoutMs = (wifiTimeoutMs == 0u) ? 1u : wifiTimeoutMs;
+        if ((uint32_t)(now - s_wifiConnectStartMs) < timeoutMs)
+        {
+            return;
+        }
+
+        LOG_WARN(LogDomain::WIFI, "WiFi connect timed out after %lums; retry_in_ms=%lu",
+                 (unsigned long)(now - s_wifiConnectStartMs),
+                 (unsigned long)s_wifiConnectBackoffMs);
+        WiFi.disconnect(false, false);
+        s_wifiConnectInFlight = false;
+        s_wifiConnectStartMs = 0;
+        s_wifiConnectRetryAtMs = now + s_wifiConnectBackoffMs;
+        if (s_wifiConnectBackoffMs >= (CFG_WIFI_CONNECT_RETRY_MAX_MS / 2u))
+        {
+            s_wifiConnectBackoffMs = CFG_WIFI_CONNECT_RETRY_MAX_MS;
+        }
+        else
+        {
+            s_wifiConnectBackoffMs = wifi_clampConnectBackoff(s_wifiConnectBackoffMs * 2u);
+        }
+        return;
+    }
 
     // Check if we need to force the portal
     if (wifiPrefs.getBool(PREF_KEY_FORCE_PORTAL, false))
     {
-        startPortal(); // start captive portal
+        startPortal(); // explicit user-driven setup mode
         return;
     }
 
+    if (s_wifiConnectRetryAtMs != 0 && (int32_t)(now - s_wifiConnectRetryAtMs) < 0)
+    {
+        logger_logEvery("wifi_wait_retry", 15000, LogLevel::DEBUG, LogDomain::WIFI,
+                        "Waiting for WiFi retry now_ms=%lu retry_at_ms=%lu",
+                        (unsigned long)now,
+                        (unsigned long)s_wifiConnectRetryAtMs);
+        return;
+    }
+
+    WiFi.mode(WIFI_STA); // station mode
     LOG_INFO(LogDomain::WIFI, "Connecting to saved WiFi%s", WiFi.SSID().length() ? "" : " (no saved SSID)");
     if (WiFi.SSID().length())
     {
@@ -210,23 +285,9 @@ void wifi_ensureConnected(uint32_t wifiTimeoutMs)
     }
 
     WiFi.begin(); // use stored credentials
-
-    uint32_t start = millis();
-    while (WiFi.status() != WL_CONNECTED)
-    {
-        delay(250);
-
-        if (millis() - start > wifiTimeoutMs)
-        {
-            LOG_WARN(LogDomain::WIFI, "Connection failed, launching portal...");
-            startPortal(); // start captive portal
-            return;
-        }
-    }
-
-    LOG_INFO(LogDomain::WIFI, "Connected ip=%s", WiFi.localIP().toString().c_str());
-    s_nextTimeSyncRetryMs = 0;
-    wifi_timeSyncTick();
+    s_wifiConnectInFlight = true;
+    s_wifiConnectStartMs = now;
+    s_wifiConnectRetryAtMs = 0;
 }
 
 void wifi_getTimeSyncStatus(WifiTimeSyncStatus &out)
@@ -244,7 +305,10 @@ void wifi_requestPortal()
     LOG_INFO(LogDomain::WIFI, "Forcing captive portal");
     wifiPrefs.putBool(PREF_KEY_FORCE_PORTAL, true);
     WiFi.disconnect(true, true);
-    delay(250);
+    s_wifiConnectInFlight = false;
+    s_wifiConnectStartMs = 0;
+    s_wifiConnectRetryAtMs = 0;
+    s_wifiConnectBackoffMs = CFG_WIFI_CONNECT_RETRY_MIN_MS;
 }
 
 void wifi_wipeCredentialsAndReboot()
@@ -252,6 +316,5 @@ void wifi_wipeCredentialsAndReboot()
     LOG_WARN(LogDomain::WIFI, "Wiping WiFi credentials and rebooting");
     WiFi.disconnect(true, true);
     wifiPrefs.putBool(PREF_KEY_FORCE_PORTAL, true);
-    delay(500);
     ESP.restart();
 }
