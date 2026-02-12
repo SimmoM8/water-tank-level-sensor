@@ -344,7 +344,7 @@ static bool write_device(const DeviceState &s, JsonObject &root)
 static bool write_wifi(const DeviceState &s, JsonObject &root)
 {
     bool wrote = false;
-    wrote |= writeAtPath(root, "wifi.rssi", s.wifi.rssi);
+    wrote |= writeAtPath(root, "wifi.rssi", (int32_t)s.wifi.rssi);
     wrote |= writeAtPath(root, "wifi.ip", s.wifi.ip, true);
     return wrote;
 }
@@ -362,7 +362,7 @@ static bool write_time(const DeviceState &s, JsonObject &root)
 
 static bool write_wifi_rssi(const DeviceState &s, JsonObject &root)
 {
-    return writeAtPath(root, "wifi.rssi", s.wifi.rssi);
+    return writeAtPath(root, "wifi.rssi", (int32_t)s.wifi.rssi);
 }
 
 static bool write_wifi_ip(const DeviceState &s, JsonObject &root)

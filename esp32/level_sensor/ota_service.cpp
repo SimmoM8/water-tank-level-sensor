@@ -1584,15 +1584,7 @@ void ota_tick(DeviceState *state)
             return;
         }
         mbedtls_sha256_init(&g_job.shaCtx);
-#if defined(MBEDTLS_VERSION_NUMBER) && MBEDTLS_VERSION_NUMBER >= 0x03000000
-        if (mbedtls_sha256_starts_ret(&g_job.shaCtx, 0) != 0)
-        {
-            ota_abort(state, "sha_init_failed");
-            return;
-        }
-#else
         mbedtls_sha256_starts(&g_job.shaCtx, 0);
-#endif
         g_job.shaInit = true;
         g_job.updateBegun = true;
 
