@@ -40,6 +40,9 @@ static constexpr const char kKeyCrashLastBoot[] = "cr_last_boot";
 static constexpr const char kKeyCrashLatched[] = "cr_latched";
 static constexpr const char kKeyCrashLastStable[] = "cr_last_stable";
 static constexpr const char kKeyCrashLastReason[] = "cr_last_reason";
+static constexpr const char kKeyGoodBootTs[] = "good_boot_ts";
+static constexpr const char kKeyBadBootStreak[] = "bad_boot_streak";
+static constexpr const char kKeySafeMode[] = "safe_mode";
 static constexpr const char kKeyRebootIntent[] = "reboot_intent";
 static constexpr const char kKeyRebootIntentTs[] = "reboot_intent_ts";
 
@@ -230,6 +233,27 @@ bool storage_loadCrashLoop(uint32_t &winBoots, uint32_t &winBad, uint32_t &lastB
     return hasAny;
 }
 
+bool storage_loadGoodBootTs(uint32_t &ts)
+{
+    const bool hasTs = prefs.isKey(storage::nvs::kKeyGoodBootTs);
+    ts = prefs.getUInt(storage::nvs::kKeyGoodBootTs, 0u);
+    return hasTs;
+}
+
+bool storage_loadBadBootStreak(uint32_t &count)
+{
+    const bool hasCount = prefs.isKey(storage::nvs::kKeyBadBootStreak);
+    count = prefs.getUInt(storage::nvs::kKeyBadBootStreak, 0u);
+    return hasCount;
+}
+
+bool storage_loadSafeMode(bool &enabled)
+{
+    const bool hasMode = prefs.isKey(storage::nvs::kKeySafeMode);
+    enabled = prefs.getBool(storage::nvs::kKeySafeMode, false);
+    return hasMode;
+}
+
 bool storage_loadRebootIntent(uint8_t &intent)
 {
     const bool hasIntent = prefs.isKey(storage::nvs::kKeyRebootIntent);
@@ -323,6 +347,21 @@ void storage_saveCrashLoop(uint32_t winBoots, uint32_t winBad, uint32_t lastBoot
     putBoolIfChanged(storage::nvs::kKeyCrashLatched, latched);
     putUIntIfChanged(storage::nvs::kKeyCrashLastStable, lastStable);
     putUIntIfChanged(storage::nvs::kKeyCrashLastReason, lastReason);
+}
+
+void storage_saveGoodBootTs(uint32_t ts)
+{
+    putUIntIfChanged(storage::nvs::kKeyGoodBootTs, ts);
+}
+
+void storage_saveBadBootStreak(uint32_t count)
+{
+    putUIntIfChanged(storage::nvs::kKeyBadBootStreak, count);
+}
+
+void storage_saveSafeMode(bool enabled)
+{
+    putBoolIfChanged(storage::nvs::kKeySafeMode, enabled);
 }
 
 void storage_saveRebootIntent(uint8_t intent)
@@ -422,6 +461,9 @@ void storage_dump()
     const bool hasCrashLatched = prefs.isKey(storage::nvs::kKeyCrashLatched);
     const bool hasCrashLastStable = prefs.isKey(storage::nvs::kKeyCrashLastStable);
     const bool hasCrashLastReason = prefs.isKey(storage::nvs::kKeyCrashLastReason);
+    const bool hasGoodBootTs = prefs.isKey(storage::nvs::kKeyGoodBootTs);
+    const bool hasBadBootStreak = prefs.isKey(storage::nvs::kKeyBadBootStreak);
+    const bool hasSafeMode = prefs.isKey(storage::nvs::kKeySafeMode);
     const bool hasRebootIntent = prefs.isKey(storage::nvs::kKeyRebootIntent);
     const bool hasRebootIntentTs = prefs.isKey(storage::nvs::kKeyRebootIntentTs);
     bool otaForce = prefs.getBool(storage::nvs::kKeyOtaForce, false);
@@ -434,6 +476,9 @@ void storage_dump()
     bool crashLatched = prefs.getBool(storage::nvs::kKeyCrashLatched, false);
     uint32_t crashLastStable = prefs.getUInt(storage::nvs::kKeyCrashLastStable, 0u);
     uint32_t crashLastReason = prefs.getUInt(storage::nvs::kKeyCrashLastReason, 0u);
+    uint32_t goodBootTs = prefs.getUInt(storage::nvs::kKeyGoodBootTs, 0u);
+    uint32_t badBootStreak = prefs.getUInt(storage::nvs::kKeyBadBootStreak, 0u);
+    bool safeMode = prefs.getBool(storage::nvs::kKeySafeMode, false);
     uint8_t rebootIntent = prefs.getUChar(storage::nvs::kKeyRebootIntent, (uint8_t)RebootIntent::NONE);
     uint32_t rebootIntentTs = prefs.getUInt(storage::nvs::kKeyRebootIntentTs, 0u);
 
@@ -475,6 +520,12 @@ void storage_dump()
     fnv1aMixU32(marker, crashLastStable);
     fnv1aMixBool(marker, hasCrashLastReason);
     fnv1aMixU32(marker, crashLastReason);
+    fnv1aMixBool(marker, hasGoodBootTs);
+    fnv1aMixU32(marker, goodBootTs);
+    fnv1aMixBool(marker, hasBadBootStreak);
+    fnv1aMixU32(marker, badBootStreak);
+    fnv1aMixBool(marker, hasSafeMode);
+    fnv1aMixBool(marker, safeMode);
     fnv1aMixBool(marker, hasRebootIntent);
     fnv1aMixByte(marker, rebootIntent);
     fnv1aMixBool(marker, hasRebootIntentTs);
@@ -533,6 +584,14 @@ void storage_dump()
              crashLatched ? "true" : "false",
              (unsigned long)crashLastStable,
              (unsigned long)crashLastReason);
+    LOG_INFO(LogDomain::CONFIG,
+             "NVS safe_mode has[good_boot_ts=%s bad_boot_streak=%s safe_mode=%s] good_boot_ts=%lu bad_boot_streak=%lu safe_mode=%s",
+             hasGoodBootTs ? "y" : "n",
+             hasBadBootStreak ? "y" : "n",
+             hasSafeMode ? "y" : "n",
+             (unsigned long)goodBootTs,
+             (unsigned long)badBootStreak,
+             safeMode ? "true" : "false");
     LOG_INFO(LogDomain::CONFIG,
              "NVS reboot_intent has[intent=%s ts=%s] intent=%u intent_ts=%lu",
              hasRebootIntent ? "y" : "n",
