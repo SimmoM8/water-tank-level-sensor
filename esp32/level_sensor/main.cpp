@@ -82,6 +82,12 @@ DeviceState g_state;
 #ifndef CFG_PERCENT_EMA_ALPHA
 #define CFG_PERCENT_EMA_ALPHA 0.2f
 #endif
+#ifndef CFG_CRASH_MAX_BAD_BOOTS
+#define CFG_CRASH_MAX_BAD_BOOTS 3u
+#endif
+#ifndef CFG_CRASH_GOOD_BOOT_AFTER_MS
+#define CFG_CRASH_GOOD_BOOT_AFTER_MS 90000u
+#endif
 
 // =============================================================================
 // Dad's Smart Home — Water Level Sensor (ESP32 touch) → MQTT → Home Assistant
@@ -150,9 +156,6 @@ static uint32_t s_lastManifestAttemptMs = 0;
 
 // ===== Network timeouts =====
 static const uint32_t WIFI_TIMEOUT_MS = 20000;
-static const uint32_t CRASH_WINDOW_BOOTS = 6u;
-static const uint32_t CRASH_BAD_BOOTS_THRESHOLD = 3u;
-static const uint32_t CRASH_STABLE_UPTIME_S = 120u;
 
 // ===== Runtime state (owned by this module) =====
 static bool calibrationInProgress = false;
@@ -170,7 +173,7 @@ static bool calInverted = false;
 static float lastLiters = NAN; // Derived caches for change detection
 static float lastCentimeters = NAN;
 static char s_emptyStr[1] = {0};
-static bool s_crashClearedThisBoot = false;
+static bool s_goodBootMarked = false;
 
 static void applyConfigFromCache(bool logValues);
 static bool reloadConfigIfDirty(bool logValues);
@@ -256,40 +259,42 @@ static uint8_t normalizeRebootIntent(uint8_t intent)
   return intent;
 }
 
-static bool isBadCrashResetReason(const char *resetReason, uint8_t rebootIntent)
+enum class BootClassification : uint8_t
+{
+  BAD = 0,
+  INTENTIONAL,
+  NEUTRAL
+};
+
+static BootClassification classifyBoot(const char *resetReason, uint8_t rebootIntent)
 {
   if (!resetReason || resetReason[0] == '\0')
   {
-    return false;
+    return BootClassification::NEUTRAL;
+  }
+  if (strcmp(resetReason, "watchdog") == 0 || strcmp(resetReason, "panic") == 0)
+  {
+    return BootClassification::BAD;
   }
   if (strcmp(resetReason, "software_reset") == 0)
   {
-    return rebootIntent == (uint8_t)RebootIntent::NONE;
+    return (rebootIntent == (uint8_t)RebootIntent::NONE) ? BootClassification::BAD : BootClassification::INTENTIONAL;
   }
-  return strcmp(resetReason, "watchdog") == 0 ||
-         strcmp(resetReason, "panic") == 0 ||
-         strcmp(resetReason, "other") == 0;
+  return BootClassification::NEUTRAL;
 }
 
-static const char *mapCrashLoopReason(bool latched, bool badBoot, const char *resetReason)
+static const char *bootClassificationLabel(BootClassification cls)
 {
-  if (latched)
+  switch (cls)
   {
-    return "threshold_exceeded";
+  case BootClassification::BAD:
+    return "bad";
+  case BootClassification::INTENTIONAL:
+    return "intentional";
+  case BootClassification::NEUTRAL:
+    return "neutral";
   }
-  if (resetReason && strcmp(resetReason, "deep_sleep") == 0)
-  {
-    return "deep_sleep_neutral";
-  }
-  if (resetReason && strcmp(resetReason, "power_on") == 0)
-  {
-    return "power_on_neutral";
-  }
-  if (badBoot)
-  {
-    return "bad_boot_observed";
-  }
-  return "neutral_boot";
+  return "neutral";
 }
 
 static void printHelpMenu()
@@ -804,6 +809,14 @@ static void windowCompute()
 
 static void maybeCheckManifest()
 {
+  if (g_state.safe_mode)
+  {
+    logger_logEvery("ota_manifest_safe_mode", 30000u, LogLevel::DEBUG, LogDomain::OTA,
+                    "Skipping manifest check: safe_mode=true reason=%s",
+                    g_state.safe_mode_reason);
+    return;
+  }
+
   if (!WiFi.isConnected() || ota_isBusy())
     return;
 
@@ -1016,8 +1029,7 @@ static LoopWindow g_windows[] = {
 // Contract: call once after boot. Initializes subsystems, state, and MQTT/OTA handlers.
 void appSetup()
 {
-  const esp_reset_reason_t resetReasonCode = esp_reset_reason();
-  const char *bootReason = mapResetReason(resetReasonCode);
+  const char *bootReason = mapResetReason(esp_reset_reason());
   strncpy(g_state.reset_reason, bootReason, sizeof(g_state.reset_reason));
   g_state.reset_reason[sizeof(g_state.reset_reason) - 1] = '\0';
 
@@ -1049,50 +1061,72 @@ void appSetup()
     strncpy(g_state.reboot_intent_label, intentLabel, sizeof(g_state.reboot_intent_label));
     g_state.reboot_intent_label[sizeof(g_state.reboot_intent_label) - 1] = '\0';
 
-    uint32_t winBoots = 0u;
-    uint32_t winBad = 0u;
-    uint32_t lastBoot = 0u;
-    bool latched = false;
-    uint32_t lastStable = 0u;
-    uint32_t lastReason = 0u;
-    storage_loadCrashLoop(winBoots, winBad, lastBoot, latched, lastStable, lastReason);
+    uint32_t badBootStreak = 0u;
+    uint32_t lastGoodBootTs = 0u;
+    bool safeMode = false;
+    storage_loadBadBootStreak(badBootStreak);
+    storage_loadGoodBootTs(lastGoodBootTs);
+    storage_loadSafeMode(safeMode);
 
-    if (lastBoot == 0u || (uint32_t)(g_state.boot_count - lastBoot) > CRASH_WINDOW_BOOTS)
-    {
-      winBoots = 0u;
-      winBad = 0u;
-      lastBoot = g_state.boot_count;
-    }
-
-    winBoots++;
-    const bool badBoot = isBadCrashResetReason(g_state.reset_reason, rebootIntent);
+    const BootClassification cls = classifyBoot(g_state.reset_reason, rebootIntent);
+    const bool badBoot = (cls == BootClassification::BAD);
     LOG_INFO(LogDomain::SYSTEM,
-             "Crash classification reset_reason=%s reboot_intent=%s bad_boot=%s",
+             "Boot classification reset_reason=%s reboot_intent=%s class=%s bad_boot=%s",
              g_state.reset_reason,
              g_state.reboot_intent_label,
+             bootClassificationLabel(cls),
              badBoot ? "true" : "false");
+
     if (badBoot)
     {
-      winBad++;
+      badBootStreak++;
+      storage_saveBadBootStreak(badBootStreak);
     }
 
-    if (winBad >= CRASH_BAD_BOOTS_THRESHOLD && winBoots <= CRASH_WINDOW_BOOTS)
+    if (badBootStreak >= (uint32_t)CFG_CRASH_MAX_BAD_BOOTS)
     {
-      latched = true;
+      safeMode = true;
+      storage_saveSafeMode(true);
+      LOG_WARN(LogDomain::SYSTEM, "Entering safe mode: bad_boot_streak=%lu threshold=%u",
+               (unsigned long)badBootStreak,
+               (unsigned int)CFG_CRASH_MAX_BAD_BOOTS);
     }
-    lastReason = (uint32_t)resetReasonCode;
-    storage_saveCrashLoop(winBoots, winBad, lastBoot, latched, lastStable, lastReason);
 
-    g_state.crash_loop = latched;
-    g_state.crash_window_boots = winBoots;
-    g_state.crash_window_bad = winBad;
-    g_state.last_stable_boot = lastStable;
-    const char *crashReason = mapCrashLoopReason(latched, badBoot, g_state.reset_reason);
-    strncpy(g_state.crash_loop_reason, crashReason, sizeof(g_state.crash_loop_reason));
+    g_state.bad_boot_streak = badBootStreak;
+    g_state.last_good_boot_ts = lastGoodBootTs;
+    g_state.safe_mode = safeMode;
+    strncpy(g_state.safe_mode_reason, safeMode ? "crash_loop" : "none", sizeof(g_state.safe_mode_reason));
+    g_state.safe_mode_reason[sizeof(g_state.safe_mode_reason) - 1] = '\0';
+
+    // Keep existing crash fields aligned for compatibility with older dashboards.
+    g_state.crash_loop = safeMode;
+    strncpy(g_state.crash_loop_reason, safeMode ? "crash_loop" : bootClassificationLabel(cls), sizeof(g_state.crash_loop_reason));
     g_state.crash_loop_reason[sizeof(g_state.crash_loop_reason) - 1] = '\0';
-    s_crashClearedThisBoot = false;
+    g_state.crash_window_boots = badBootStreak;
+    g_state.crash_window_bad = badBootStreak;
+    if (!safeMode && badBootStreak == 0u)
+    {
+      g_state.last_stable_boot = g_state.boot_count;
+    }
+
     LOG_INFO(LogDomain::SYSTEM,
-             "Crash loop state latched=%s boots=%lu bad=%lu reason=%s",
+             "Crash/safe-mode state streak=%lu safe_mode=%s last_good_boot_ts=%lu",
+             (unsigned long)g_state.bad_boot_streak,
+             g_state.safe_mode ? "true" : "false",
+             (unsigned long)g_state.last_good_boot_ts);
+
+    if (badBoot)
+    {
+      LOG_WARN(LogDomain::SYSTEM, "Bad boot observed: streak now %lu", (unsigned long)g_state.bad_boot_streak);
+    }
+
+    if (g_state.safe_mode)
+    {
+      LOG_WARN(LogDomain::SYSTEM, "Safe mode active reason=%s", g_state.safe_mode_reason);
+    }
+    s_goodBootMarked = false;
+    LOG_INFO(LogDomain::SYSTEM,
+             "Crash loop compatibility state latched=%s boots=%lu bad=%lu reason=%s",
              g_state.crash_loop ? "true" : "false",
              (unsigned long)g_state.crash_window_boots,
              (unsigned long)g_state.crash_window_bad,
@@ -1192,29 +1226,24 @@ void appLoop()
     runWindow(w, now);
   }
 
-  if (!s_crashClearedThisBoot && g_state.uptime_seconds >= CRASH_STABLE_UPTIME_S)
+  if (!s_goodBootMarked &&
+      !g_state.safe_mode &&
+      g_state.bad_boot_streak > 0u &&
+      now >= (uint32_t)CFG_CRASH_GOOD_BOOT_AFTER_MS)
   {
-    uint32_t winBoots = 0u;
-    uint32_t winBad = 0u;
-    uint32_t lastBoot = 0u;
-    bool latched = false;
-    uint32_t lastStable = 0u;
-    uint32_t lastReason = 0u;
-    storage_loadCrashLoop(winBoots, winBad, lastBoot, latched, lastStable, lastReason);
-    winBoots = 0u;
-    winBad = 0u;
-    latched = false;
-    lastStable = g_state.boot_count;
-    lastBoot = g_state.boot_count;
-    storage_saveCrashLoop(winBoots, winBad, lastBoot, latched, lastStable, lastReason);
-
-    g_state.crash_loop = false;
+    g_state.bad_boot_streak = 0u;
+    storage_saveBadBootStreak(0u);
+    g_state.last_good_boot_ts = g_state.ts;
+    storage_saveGoodBootTs(g_state.last_good_boot_ts);
+    g_state.last_stable_boot = g_state.boot_count;
     g_state.crash_window_boots = 0u;
     g_state.crash_window_bad = 0u;
-    g_state.last_stable_boot = lastStable;
+    g_state.crash_loop = false;
     strncpy(g_state.crash_loop_reason, "stable_runtime", sizeof(g_state.crash_loop_reason));
     g_state.crash_loop_reason[sizeof(g_state.crash_loop_reason) - 1] = '\0';
-    s_crashClearedThisBoot = true;
+    LOG_INFO(LogDomain::SYSTEM, "Good boot confirmed: bad_boot_streak reset, last_good_boot_ts=%lu",
+             (unsigned long)g_state.last_good_boot_ts);
+    s_goodBootMarked = true;
     mqtt_requestStatePublish();
   }
 }

@@ -281,6 +281,26 @@ static bool write_reboot_intent_label(const DeviceState &s, JsonObject &root)
     return writeAtPath(root, "reboot_intent_label", s.reboot_intent_label, true);
 }
 
+static bool write_bad_boot_streak(const DeviceState &s, JsonObject &root)
+{
+    return writeAtPath(root, "bad_boot_streak", s.bad_boot_streak);
+}
+
+static bool write_last_good_boot_ts(const DeviceState &s, JsonObject &root)
+{
+    return writeAtPath(root, "last_good_boot_ts", s.last_good_boot_ts);
+}
+
+static bool write_safe_mode(const DeviceState &s, JsonObject &root)
+{
+    return writeAtPath(root, "safe_mode", s.safe_mode);
+}
+
+static bool write_safe_mode_reason(const DeviceState &s, JsonObject &root)
+{
+    return writeAtPath(root, "safe_mode_reason", s.safe_mode_reason, true);
+}
+
 static bool write_crash_loop(const DeviceState &s, JsonObject &root)
 {
     return writeAtPath(root, "crash_loop", s.crash_loop);
@@ -617,6 +637,10 @@ static const TelemetryFieldDef TELEMETRY_FIELDS[] = {
     {HaComponent::Sensor, "boot_count", "Boot Count", "boot_count", nullptr, nullptr, ICON_CHIP, nullptr, nullptr, write_boot_count},
     {HaComponent::Sensor, "reboot_intent", "Reboot Intent", "reboot_intent", nullptr, nullptr, ICON_CHIP, nullptr, nullptr, write_reboot_intent},
     {HaComponent::Sensor, "reboot_intent_label", "Reboot Intent Label", "reboot_intent_label", nullptr, nullptr, ICON_CHIP, nullptr, nullptr, write_reboot_intent_label},
+    {HaComponent::Sensor, "bad_boot_streak", "Bad Boot Streak", "bad_boot_streak", nullptr, nullptr, ICON_ALERT, nullptr, nullptr, write_bad_boot_streak},
+    {HaComponent::BinarySensor, "safe_mode", "Safe Mode", "safe_mode", nullptr, nullptr, ICON_ALERT, nullptr, nullptr, write_safe_mode},
+    {HaComponent::Sensor, "safe_mode_reason", "Safe Mode Reason", "safe_mode_reason", nullptr, nullptr, ICON_ALERT, nullptr, nullptr, write_safe_mode_reason},
+    {HaComponent::Sensor, "last_good_boot_ts", "Last Good Boot TS", "last_good_boot_ts", nullptr, nullptr, ICON_CLOCK, nullptr, nullptr, write_last_good_boot_ts},
     {HaComponent::BinarySensor, "crash_loop", "Crash Loop Latched", "crash_loop", nullptr, nullptr, ICON_ALERT, nullptr, nullptr, write_crash_loop},
     {HaComponent::Sensor, "crash_loop_reason", "Crash Loop Reason", "crash_loop_reason", nullptr, nullptr, ICON_ALERT, nullptr, nullptr, write_crash_loop_reason},
     {HaComponent::Sensor, "crash_window_boots", "Crash Window Boots", "crash_window_boots", nullptr, nullptr, ICON_ALERT, nullptr, nullptr, write_crash_window_boots},

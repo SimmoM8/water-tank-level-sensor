@@ -10,9 +10,9 @@ bool buildStateJson(const DeviceState &s, char *outBuf, size_t outSize)
 {
     // Capacity rationale (ArduinoJson v6):
     // - Objects created by dotted paths: root + device + wifi + time + mqtt + probe + calibration + level + config + ota + ota.active + ota.result + last_cmd = 13
-    // - Leaf keys (worst case): 70 (schema/ts/uptime_seconds/boot_count/reboot_intent*/crash_*/reset_reason/device/.../last_cmd.* + time.* + ota.force + ota.reboot + ota_last_success_ts)
+    // - Leaf keys (worst case): 74 (schema/ts/uptime_seconds/boot_count/reboot_intent*/safe_mode*/crash_*/reset_reason/device/.../last_cmd.* + time.* + ota.force + ota.reboot + ota_last_success_ts)
     // - String pool: conservative sum of max field sizes + enum labels + key bytes headroom.
-    static constexpr size_t kRootMembers = 35;
+    static constexpr size_t kRootMembers = 39;
     static constexpr size_t kDeviceMembers = 3;
     static constexpr size_t kWifiMembers = 2;
     static constexpr size_t kTimeMembers = 5;
@@ -61,6 +61,7 @@ bool buildStateJson(const DeviceState &s, char *outBuf, size_t outSize)
         JSON_STRING_SIZE(OTA_TARGET_VERSION_MAX) +  // latest_version / ota_target_version
         JSON_STRING_SIZE(RESET_REASON_MAX) +        // reset_reason
         JSON_STRING_SIZE(REBOOT_INTENT_LABEL_MAX) + // reboot_intent_label
+        JSON_STRING_SIZE(SAFE_MODE_REASON_MAX) +    // safe_mode_reason
         JSON_STRING_SIZE(CRASH_LOOP_REASON_MAX) +   // crash_loop_reason
         JSON_STRING_SIZE(kMaxWifiIp) +
         JSON_STRING_SIZE(TIME_STATUS_MAX) +
@@ -84,7 +85,7 @@ bool buildStateJson(const DeviceState &s, char *outBuf, size_t outSize)
         JSON_STRING_SIZE(kMaxEnumStr) +             // last_cmd.status
         JSON_STRING_SIZE(kMaxLastCmdMsg);
 
-    static constexpr size_t kJsonKeyBytes = 760; // ~70 keys * avg 10 bytes + headroom
+    static constexpr size_t kJsonKeyBytes = 840; // ~80 keys * avg 10 bytes + headroom
     static constexpr size_t kStateJsonCapacity = kJsonObjectCapacity + kJsonStringCapacity + kJsonKeyBytes;
     static constexpr size_t kMinJsonSize = 4; // "{}" + NUL
     static constexpr uint32_t kWarnThrottleMs = 5000;

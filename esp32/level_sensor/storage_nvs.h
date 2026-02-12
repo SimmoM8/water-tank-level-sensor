@@ -46,6 +46,14 @@ void storage_saveBootCount(uint32_t count);
 bool storage_loadCrashLoop(uint32_t &winBoots, uint32_t &winBad, uint32_t &lastBoot, bool &latched, uint32_t &lastStable, uint32_t &lastReason);
 void storage_saveCrashLoop(uint32_t winBoots, uint32_t winBad, uint32_t lastBoot, bool latched, uint32_t lastStable, uint32_t lastReason);
 
+/* ---------------- Safe Mode ---------------- */
+bool storage_loadGoodBootTs(uint32_t &ts);
+void storage_saveGoodBootTs(uint32_t ts);
+bool storage_loadBadBootStreak(uint32_t &count);
+void storage_saveBadBootStreak(uint32_t count);
+bool storage_loadSafeMode(bool &enabled);
+void storage_saveSafeMode(bool enabled);
+
 /* ---------------- Reboot Intent ---------------- */
 bool storage_loadRebootIntent(uint8_t &intent);
 void storage_saveRebootIntent(uint8_t intent);
