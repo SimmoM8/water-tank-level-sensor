@@ -1065,6 +1065,9 @@ static void handleSerialCommands()
       LOG_WARN(LogDomain::OTA, "OTA serial rejected: missing_url_or_sha256");
       return;
     }
+    LOG_INFO(LogDomain::OTA, "SHA len=%u last_char=0x%02X",
+             strlen(sha256),
+             (unsigned char)sha256[strlen(sha256)]);
     if (!isHex64(sha256))
     {
       LOG_WARN(LogDomain::OTA, "OTA serial rejected: bad_sha256_format");
