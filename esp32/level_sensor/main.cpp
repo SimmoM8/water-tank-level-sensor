@@ -143,7 +143,7 @@ static const uint32_t PERCENT_SAMPLE_MS = CFG_PERCENT_SAMPLE_MS;
 static const float PERCENT_EMA_ALPHA = CFG_PERCENT_EMA_ALPHA;
 static constexpr uint8_t SIM_MODE_MAX = 5;
 static constexpr float LEVEL_CHANGE_EPS = 0.01f;
-static constexpr size_t SERIAL_CMD_BUF = 64;
+static constexpr size_t SERIAL_CMD_BUF = 192;
 static constexpr char SERIAL_CMD_DELIMS[] = " \t";
 
 static_assert(TOUCH_SAMPLES > 0, "TOUCH_SAMPLES must be > 0");
@@ -398,7 +398,28 @@ static bool isHex64(const char *s)
 
 static bool readSerialLine(char *buf, size_t bufSize)
 {
-  if (!buf || bufSize < 2 || !Serial.available())
+  static bool s_discardUntilNewline = false;
+
+  if (!buf || bufSize < 2)
+  {
+    return false;
+  }
+
+  if (s_discardUntilNewline)
+  {
+    while (Serial.available())
+    {
+      const int ch = Serial.read();
+      if (ch == '\n')
+      {
+        s_discardUntilNewline = false;
+        break;
+      }
+    }
+    return false;
+  }
+
+  if (!Serial.available())
   {
     return false;
   }
@@ -406,6 +427,27 @@ static bool readSerialLine(char *buf, size_t bufSize)
   size_t len = Serial.readBytesUntil('\n', buf, bufSize - 1);
   if (len == 0)
   {
+    return false;
+  }
+  if (len == (bufSize - 1))
+  {
+    bool sawNewline = false;
+    while (Serial.available())
+    {
+      const int ch = Serial.read();
+      if (ch == '\n')
+      {
+        sawNewline = true;
+        break;
+      }
+    }
+    if (!sawNewline)
+    {
+      s_discardUntilNewline = true;
+    }
+    LOG_WARN(LogDomain::SYSTEM,
+             "Serial command truncated (buffer=%u). Increase SERIAL_CMD_BUF.",
+             (unsigned)bufSize);
     return false;
   }
 
@@ -1059,7 +1101,20 @@ static void handleSerialCommands()
   if (strcmp(cmd, "ota") == 0)
   {
     const char *url = strtok_r(nullptr, SERIAL_CMD_DELIMS, &save);
-    const char *sha256 = strtok_r(nullptr, SERIAL_CMD_DELIMS, &save);
+    char *sha256 = strtok_r(nullptr, SERIAL_CMD_DELIMS, &save);
+    if (sha256)
+    {
+      while (*sha256 != '\0' && isspace((unsigned char)*sha256))
+      {
+        sha256++;
+      }
+      size_t shaLen = strlen(sha256);
+      while (shaLen > 0 && isspace((unsigned char)sha256[shaLen - 1]))
+      {
+        sha256[shaLen - 1] = '\0';
+        shaLen--;
+      }
+    }
     if (!url || !sha256 || url[0] == '\0' || sha256[0] == '\0')
     {
       LOG_WARN(LogDomain::OTA, "OTA serial rejected: missing_url_or_sha256");
