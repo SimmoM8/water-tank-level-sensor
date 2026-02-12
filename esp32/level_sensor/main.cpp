@@ -335,6 +335,7 @@ static void printHelpMenu()
   LOG_INFO(LogDomain::SYSTEM, "  sim <0-5> -> set simulation mode and enable sim backend");
   LOG_INFO(LogDomain::SYSTEM, "  mode touch -> use touchRead()");
   LOG_INFO(LogDomain::SYSTEM, "  mode sim   -> use simulation backend");
+  LOG_INFO(LogDomain::SYSTEM, "  ota <url> <sha256> -> start force pull-OTA from serial");
   LOG_INFO(LogDomain::SYSTEM, "  help  -> show this menu");
 }
 
@@ -370,6 +371,29 @@ static bool parseInt(const char *s, int &out)
   }
   out = (int)v;
   return true;
+}
+
+static bool isHex64(const char *s)
+{
+  if (!s)
+  {
+    return false;
+  }
+  for (int i = 0; i < 64; i++)
+  {
+    const char c = s[i];
+    if (c == '\0')
+    {
+      return false;
+    }
+    if (!((c >= '0' && c <= '9') ||
+          (c >= 'a' && c <= 'f') ||
+          (c >= 'A' && c <= 'F')))
+    {
+      return false;
+    }
+  }
+  return s[64] == '\0';
 }
 
 static bool readSerialLine(char *buf, size_t bufSize)
@@ -1030,6 +1054,49 @@ static void handleSerialCommands()
       return;
     }
     printHelpMenu();
+    return;
+  }
+  if (strcmp(cmd, "ota") == 0)
+  {
+    const char *url = strtok_r(nullptr, SERIAL_CMD_DELIMS, &save);
+    const char *sha256 = strtok_r(nullptr, SERIAL_CMD_DELIMS, &save);
+    if (!url || !sha256 || url[0] == '\0' || sha256[0] == '\0')
+    {
+      LOG_WARN(LogDomain::OTA, "OTA serial rejected: missing_url_or_sha256");
+      return;
+    }
+    if (!isHex64(sha256))
+    {
+      LOG_WARN(LogDomain::OTA, "OTA serial rejected: bad_sha256_format");
+      return;
+    }
+    if (ota_isBusy())
+    {
+      LOG_WARN(LogDomain::OTA, "OTA serial rejected: busy");
+      return;
+    }
+    if (!WiFi.isConnected())
+    {
+      LOG_WARN(LogDomain::OTA, "OTA serial rejected: wifi_disconnected");
+      return;
+    }
+
+    char errBuf[48] = {0};
+    LOG_INFO(LogDomain::OTA, "OTA serial start: url=%s", url);
+    const bool ok = ota_pullStart(
+        &g_state,
+        "serial_test",
+        "dev-test",
+        url,
+        sha256,
+        true,
+        true,
+        errBuf,
+        sizeof(errBuf));
+    if (!ok)
+    {
+      LOG_WARN(LogDomain::OTA, "OTA serial start failed: %s", errBuf[0] ? errBuf : "start_failed");
+    }
     return;
   }
   if (strcmp(cmd, "help") == 0)
