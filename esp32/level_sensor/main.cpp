@@ -297,6 +297,27 @@ static const char *bootClassificationLabel(BootClassification cls)
   return "neutral";
 }
 
+static void applySafeModeState(bool enabled, const char *reason)
+{
+  g_state.safe_mode = enabled;
+  strncpy(g_state.safe_mode_reason, reason ? reason : "", sizeof(g_state.safe_mode_reason));
+  g_state.safe_mode_reason[sizeof(g_state.safe_mode_reason) - 1] = '\0';
+
+  // Keep compatibility crash-loop fields aligned.
+  g_state.crash_loop = enabled;
+  strncpy(g_state.crash_loop_reason, reason ? reason : "", sizeof(g_state.crash_loop_reason));
+  g_state.crash_loop_reason[sizeof(g_state.crash_loop_reason) - 1] = '\0';
+}
+
+static void logSafeModeStatus()
+{
+  LOG_INFO(LogDomain::SYSTEM, "safe_mode=%s bad_boot_streak=%lu reason=%s last_good_boot_ts=%lu",
+           g_state.safe_mode ? "true" : "false",
+           (unsigned long)g_state.bad_boot_streak,
+           g_state.safe_mode_reason,
+           (unsigned long)g_state.last_good_boot_ts);
+}
+
 static void printHelpMenu()
 {
   LOG_INFO(LogDomain::SYSTEM, "[CAL] Serial commands:");
@@ -307,6 +328,9 @@ static void printHelpMenu()
   LOG_INFO(LogDomain::SYSTEM, "  invert-> toggle inverted flag and save");
   LOG_INFO(LogDomain::SYSTEM, "  wifi  -> start WiFi captive portal (setup mode)");
   LOG_INFO(LogDomain::SYSTEM, "  wipewifi -> clear WiFi creds + reboot into setup portal");
+  LOG_INFO(LogDomain::SYSTEM, "  safe_mode -> show safe mode status");
+  LOG_INFO(LogDomain::SYSTEM, "  safe_mode clear -> clear safe mode and reset bad-boot streak");
+  LOG_INFO(LogDomain::SYSTEM, "  safe_mode enter -> force safe mode on (testing)");
   LOG_INFO(LogDomain::SYSTEM, "  log hf on/off -> enable/disable high-frequency logs");
   LOG_INFO(LogDomain::SYSTEM, "  sim <0-5> -> set simulation mode and enable sim backend");
   LOG_INFO(LogDomain::SYSTEM, "  mode touch -> use touchRead()");
@@ -974,6 +998,38 @@ static void handleSerialCommands()
   if (strcmp(cmd, "wipewifi") == 0)
   {
     wipeWifiCredentials();
+    return;
+  }
+  if (strcmp(cmd, "safe_mode") == 0)
+  {
+    const char *sub = strtok_r(nullptr, SERIAL_CMD_DELIMS, &save);
+    if (!sub || strcmp(sub, "status") == 0)
+    {
+      logSafeModeStatus();
+      return;
+    }
+    if (strcmp(sub, "clear") == 0)
+    {
+      storage_saveSafeMode(false);
+      storage_saveBadBootStreak(0u);
+      g_state.bad_boot_streak = 0u;
+      g_state.crash_window_boots = 0u;
+      g_state.crash_window_bad = 0u;
+      applySafeModeState(false, "cleared");
+      s_goodBootMarked = true;
+      mqtt_requestStatePublish();
+      LOG_INFO(LogDomain::SYSTEM, "Safe mode cleared via serial command");
+      return;
+    }
+    if (strcmp(sub, "enter") == 0)
+    {
+      storage_saveSafeMode(true);
+      applySafeModeState(true, "forced");
+      mqtt_requestStatePublish();
+      LOG_INFO(LogDomain::SYSTEM, "Safe mode forced on via serial command");
+      return;
+    }
+    printHelpMenu();
     return;
   }
   if (strcmp(cmd, "help") == 0)

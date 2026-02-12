@@ -354,6 +354,70 @@ static void handleOtaOptions(JsonObject data, const char *requestId)
     LOG_INFO(LogDomain::COMMAND, "OTA options applied request_id=%s", requestId ? requestId : "");
 }
 
+static void handleSafeMode(JsonObject data, bool hasDataObj, const char *requestId)
+{
+    if (!s_ctx.state)
+    {
+        finish(requestId, "safe_mode", CmdStatus::ERROR, "missing_state");
+        return;
+    }
+
+    const char *action = "status";
+    if (hasDataObj && data.containsKey("action"))
+    {
+        action = data["action"] | "status";
+    }
+
+    if (strcmp(action, "status") == 0)
+    {
+        char statusMsg[64];
+        snprintf(statusMsg, sizeof(statusMsg), "safe_mode=%s streak=%lu",
+                 s_ctx.state->safe_mode ? "true" : "false",
+                 (unsigned long)s_ctx.state->bad_boot_streak);
+        statusMsg[sizeof(statusMsg) - 1] = '\0';
+        LOG_INFO(LogDomain::COMMAND, "Safe mode status request_id=%s %s reason=%s",
+                 requestId ? requestId : "",
+                 statusMsg,
+                 s_ctx.state->safe_mode_reason);
+        finish(requestId, "safe_mode", CmdStatus::APPLIED, statusMsg);
+        return;
+    }
+
+    if (strcmp(action, "clear") == 0)
+    {
+        storage_saveSafeMode(false);
+        storage_saveBadBootStreak(0u);
+        s_ctx.state->safe_mode = false;
+        s_ctx.state->bad_boot_streak = 0u;
+        s_ctx.state->crash_loop = false;
+        s_ctx.state->crash_window_boots = 0u;
+        s_ctx.state->crash_window_bad = 0u;
+        strncpy(s_ctx.state->safe_mode_reason, "cleared", sizeof(s_ctx.state->safe_mode_reason));
+        s_ctx.state->safe_mode_reason[sizeof(s_ctx.state->safe_mode_reason) - 1] = '\0';
+        strncpy(s_ctx.state->crash_loop_reason, "cleared", sizeof(s_ctx.state->crash_loop_reason));
+        s_ctx.state->crash_loop_reason[sizeof(s_ctx.state->crash_loop_reason) - 1] = '\0';
+        LOG_INFO(LogDomain::SYSTEM, "Safe mode cleared via MQTT command request_id=%s", requestId ? requestId : "");
+        finish(requestId, "safe_mode", CmdStatus::APPLIED, "cleared");
+        return;
+    }
+
+    if (strcmp(action, "enter") == 0)
+    {
+        storage_saveSafeMode(true);
+        s_ctx.state->safe_mode = true;
+        s_ctx.state->crash_loop = true;
+        strncpy(s_ctx.state->safe_mode_reason, "forced", sizeof(s_ctx.state->safe_mode_reason));
+        s_ctx.state->safe_mode_reason[sizeof(s_ctx.state->safe_mode_reason) - 1] = '\0';
+        strncpy(s_ctx.state->crash_loop_reason, "forced", sizeof(s_ctx.state->crash_loop_reason));
+        s_ctx.state->crash_loop_reason[sizeof(s_ctx.state->crash_loop_reason) - 1] = '\0';
+        LOG_INFO(LogDomain::SYSTEM, "Safe mode forced on via MQTT command request_id=%s", requestId ? requestId : "");
+        finish(requestId, "safe_mode", CmdStatus::APPLIED, "forced");
+        return;
+    }
+
+    finish(requestId, "safe_mode", CmdStatus::REJECTED, "invalid_action");
+}
+
 static SenseMode parseSenseMode(JsonVariant value)
 {
     if (value.is<const char *>())
@@ -616,6 +680,10 @@ void commands_handle(const uint8_t *payload, size_t len)
             return;
         }
         handleOtaOptions(data, requestId);
+    }
+    else if (strcmp(type, "safe_mode") == 0)
+    {
+        handleSafeMode(data, hasDataObj, requestId);
     }
     else
     {
