@@ -21,7 +21,7 @@ struct CommandsContext
     void (*wipeWifiCredentials)();
 
     void (*requestStatePublish)();
-    bool (*publishAck)(const char *requestId, const char *type, CmdStatus status, const char *msg);
+    bool (*publishAck)(const char *requestId, const char *type, const char *status, const char *msg);
 };
 
 // Initialize command handling with device-owned context.

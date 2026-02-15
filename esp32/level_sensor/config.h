@@ -1,6 +1,7 @@
 // Optional config overrides for water_level_sensor.ino
+// Contract: values must be sane/positive; this file should only define overrides.
+#pragma once
 // Copy any of the defines below to change probe reliability thresholds.
-// This file contains no secrets and is safe to commit (or add to .gitignore if preferred).
 
 #define CFG_PROBE_DISCONNECTED_BELOW_RAW 60000u
 #define CFG_CAL_MIN_DIFF 20u
@@ -32,3 +33,13 @@
 #define CFG_RAW_SAMPLE_MS 1000u
 #define CFG_PERCENT_SAMPLE_MS 1000u // the interval in milliseconds to update the smoothed percent level
 #define CFG_PERCENT_EMA_ALPHA 1.0f
+
+// — OTA —
+#define CFG_OTA_MANIFEST_URL "https://raw.githubusercontent.com/SimmoM8/water-tank-level-sensor/main/manifests/dev.json"
+// — Time sync (non-blocking NTP) —
+// #define CFG_TIME_SYNC_TIMEOUT_MS 20000u
+// #define CFG_TIME_SYNC_RETRY_MIN_MS 5000u
+// #define CFG_TIME_SYNC_RETRY_MAX_MS 300000u
+// Optional OTA safety guardrails (disabled by default):
+// #define CFG_OTA_GUARD_REQUIRE_MQTT_CONNECTED 1   // reject OTA if MQTT is not connected
+// #define CFG_OTA_GUARD_MIN_WIFI_RSSI -80          // reject OTA if RSSI is below threshold (dBm)

@@ -2,6 +2,9 @@
 #include <math.h>
 #include <Arduino.h>
 #include <stdlib.h>
+#include <ctype.h>
+#include <string.h>
+#include <esp_system.h>
 #include "main.h"
 #include "probe_reader.h"
 #include "wifi_provisioning.h"
@@ -14,6 +17,7 @@
 #include "applied_config.h"
 #include "logger.h"
 #include "quality.h"
+#include "version.h"
 
 DeviceState g_state;
 
@@ -78,6 +82,12 @@ DeviceState g_state;
 #ifndef CFG_PERCENT_EMA_ALPHA
 #define CFG_PERCENT_EMA_ALPHA 0.2f
 #endif
+#ifndef CFG_CRASH_MAX_BAD_BOOTS
+#define CFG_CRASH_MAX_BAD_BOOTS 3u
+#endif
+#ifndef CFG_CRASH_GOOD_BOOT_AFTER_MS
+#define CFG_CRASH_GOOD_BOOT_AFTER_MS 90000u
+#endif
 
 // =============================================================================
 // Dad's Smart Home — Water Level Sensor (ESP32 touch) → MQTT → Home Assistant
@@ -92,7 +102,11 @@ DeviceState g_state;
 // =============================================================================
 
 // --------- MQTT credentials (secrets.h) ---------
+#ifdef __has_include
+#if __has_include("secrets.h")
 #include "secrets.h"
+#endif
+#endif
 
 #ifndef MQTT_USER
 #define MQTT_USER ""
@@ -106,8 +120,15 @@ DeviceState g_state;
 // -------------------------------------------
 
 // ===== MQTT config =====
-static const char *MQTT_HOST = "192.168.0.198";
-static const int MQTT_PORT = 1883;
+#ifndef MQTT_HOST
+#define MQTT_HOST "192.168.0.198"
+#endif
+#ifndef MQTT_PORT
+#define MQTT_PORT 1883
+#endif
+
+static const char *MQTT_HOST_VALUE = MQTT_HOST;
+static const int MQTT_PORT_VALUE = MQTT_PORT;
 
 // Use a stable client id (unique per device). If you add more ESP32 devices later,
 // change this string so they don't clash.
@@ -117,15 +138,32 @@ static const char *BASE_TOPIC = "water_tank/water_tank_esp32";
 // ===== Device identity =====
 static const char *DEVICE_ID = "water_tank_esp32";
 static const char *DEVICE_NAME = "Water Tank Sensor";
-static const char *DEVICE_FW = "1.3";
+static constexpr char DEVICE_FW[] = FW_VERSION;
+static constexpr char DEVICE_HW[] = HW_VERSION;
+static_assert(sizeof(DEVICE_FW) == fw_version::kSizeWithNul, "FW_VERSION literal size mismatch");
+static_assert((sizeof(DEVICE_FW) - 1) < DEVICE_FW_VERSION_MAX,
+              "FW_VERSION too long: DEVICE_FW_VERSION_MAX must include the trailing NUL");
+static_assert(sizeof(DEVICE_HW) == hw_version::kSizeWithNul, "HW_VERSION literal size mismatch");
 
 // ===== Sensor / Sampling =====
 static const int TOUCH_PIN = 14; // GPIO14 or A7
-static const uint8_t TOUCH_SAMPLES = 16;
+static const uint8_t TOUCH_SAMPLES = 8;
 static const uint8_t TOUCH_SAMPLE_DELAY_MS = 5;
 static const uint32_t RAW_SAMPLE_MS = CFG_RAW_SAMPLE_MS;
 static const uint32_t PERCENT_SAMPLE_MS = CFG_PERCENT_SAMPLE_MS;
 static const float PERCENT_EMA_ALPHA = CFG_PERCENT_EMA_ALPHA;
+static constexpr uint8_t SIM_MODE_MAX = 5;
+static constexpr float LEVEL_CHANGE_EPS = 0.01f;
+static constexpr size_t SERIAL_CMD_BUF = 256;
+static constexpr char SERIAL_CMD_DELIMS[] = " \t";
+
+static_assert(TOUCH_SAMPLES > 0, "TOUCH_SAMPLES must be > 0");
+static_assert(CFG_PERCENT_EMA_ALPHA >= 0.0f && CFG_PERCENT_EMA_ALPHA <= 1.0f, "CFG_PERCENT_EMA_ALPHA must be 0..1");
+
+static const uint32_t OTA_MANIFEST_CHECK_MS = 21600000u; // 6h
+static const uint32_t OTA_MANIFEST_RETRY_MS = 60000u;    // 60s on failure
+static uint32_t s_lastManifestCheckMs = 0;
+static uint32_t s_lastManifestAttemptMs = 0;
 
 // ===== Network timeouts =====
 static const uint32_t WIFI_TIMEOUT_MS = 20000;
@@ -146,6 +184,7 @@ static bool calInverted = false;
 static float lastLiters = NAN; // Derived caches for change detection
 static float lastCentimeters = NAN;
 static char s_emptyStr[1] = {0};
+static bool s_goodBootMarked = false;
 
 static void applyConfigFromCache(bool logValues);
 static bool reloadConfigIfDirty(bool logValues);
@@ -179,9 +218,115 @@ static void runWindow(LoopWindow &w, uint32_t now)
 
 // ----------------- Helpers -----------------
 
-static void logLine(const char *msg)
+static const char *mapResetReason(esp_reset_reason_t reason)
 {
-  LOG_INFO(LogDomain::SYSTEM, "%s", msg);
+  switch (reason)
+  {
+  case ESP_RST_POWERON:
+    return "power_on";
+  case ESP_RST_SW:
+    return "software_reset";
+#ifdef ESP_RST_PANIC
+  case ESP_RST_PANIC:
+    return "panic";
+#endif
+  case ESP_RST_DEEPSLEEP:
+    return "deep_sleep";
+  case ESP_RST_INT_WDT:
+#ifdef ESP_RST_TASK_WDT
+  case ESP_RST_TASK_WDT:
+#endif
+  case ESP_RST_WDT:
+    return "watchdog";
+  default:
+    return "other";
+  }
+}
+
+static const char *rebootIntentLabel(uint8_t intent)
+{
+  switch ((RebootIntent)intent)
+  {
+  case RebootIntent::NONE:
+    return "none";
+  case RebootIntent::OTA:
+    return "ota";
+  case RebootIntent::WIFI_WIPE:
+    return "wifi_wipe";
+  case RebootIntent::USER_CMD:
+    return "user_cmd";
+  case RebootIntent::OTHER:
+    return "other";
+  }
+  return "other";
+}
+
+static uint8_t normalizeRebootIntent(uint8_t intent)
+{
+  if (intent > (uint8_t)RebootIntent::OTHER)
+  {
+    return (uint8_t)RebootIntent::OTHER;
+  }
+  return intent;
+}
+
+enum class BootClassification : uint8_t
+{
+  BAD = 0,
+  INTENTIONAL,
+  NEUTRAL
+};
+
+static BootClassification classifyBoot(const char *resetReason, uint8_t rebootIntent)
+{
+  if (!resetReason || resetReason[0] == '\0')
+  {
+    return BootClassification::NEUTRAL;
+  }
+  if (strcmp(resetReason, "watchdog") == 0 || strcmp(resetReason, "panic") == 0)
+  {
+    return BootClassification::BAD;
+  }
+  if (strcmp(resetReason, "software_reset") == 0)
+  {
+    return (rebootIntent == (uint8_t)RebootIntent::NONE) ? BootClassification::BAD : BootClassification::INTENTIONAL;
+  }
+  return BootClassification::NEUTRAL;
+}
+
+static const char *bootClassificationLabel(BootClassification cls)
+{
+  switch (cls)
+  {
+  case BootClassification::BAD:
+    return "bad";
+  case BootClassification::INTENTIONAL:
+    return "intentional";
+  case BootClassification::NEUTRAL:
+    return "neutral";
+  }
+  return "neutral";
+}
+
+static void applySafeModeState(bool enabled, const char *reason)
+{
+  g_state.safe_mode = enabled;
+  strncpy(g_state.safe_mode_reason, reason ? reason : "", sizeof(g_state.safe_mode_reason));
+  g_state.safe_mode_reason[sizeof(g_state.safe_mode_reason) - 1] = '\0';
+
+  // Keep compatibility crash-loop fields aligned.
+  g_state.crash_loop = enabled;
+  strncpy(g_state.crash_loop_reason, reason ? reason : "", sizeof(g_state.crash_loop_reason));
+  g_state.crash_loop_reason[sizeof(g_state.crash_loop_reason) - 1] = '\0';
+}
+
+static void logSafeModeStatus()
+{
+  LOG_INFO(LogDomain::SYSTEM, "safe_mode=%s bad_boot_streak=%lu reason=%s last_good_boot_ts=%lu",
+           g_state.safe_mode ? "true" : "false",
+           (unsigned long)g_state.bad_boot_streak,
+           g_state.safe_mode_reason,
+           (unsigned long)g_state.last_good_boot_ts);
 }
 
 static void printHelpMenu()
@@ -194,11 +339,152 @@ static void printHelpMenu()
   LOG_INFO(LogDomain::SYSTEM, "  invert-> toggle inverted flag and save");
   LOG_INFO(LogDomain::SYSTEM, "  wifi  -> start WiFi captive portal (setup mode)");
   LOG_INFO(LogDomain::SYSTEM, "  wipewifi -> clear WiFi creds + reboot into setup portal");
+  LOG_INFO(LogDomain::SYSTEM, "  safe_mode -> show safe mode status");
+  LOG_INFO(LogDomain::SYSTEM, "  safe_mode clear -> clear safe mode and reset bad-boot streak");
+  LOG_INFO(LogDomain::SYSTEM, "  safe_mode enter -> force safe mode on (testing)");
   LOG_INFO(LogDomain::SYSTEM, "  log hf on/off -> enable/disable high-frequency logs");
   LOG_INFO(LogDomain::SYSTEM, "  sim <0-5> -> set simulation mode and enable sim backend");
   LOG_INFO(LogDomain::SYSTEM, "  mode touch -> use touchRead()");
   LOG_INFO(LogDomain::SYSTEM, "  mode sim   -> use simulation backend");
+  LOG_INFO(LogDomain::SYSTEM, "  ota <url> <sha256> <version> -> start force pull-OTA from serial");
   LOG_INFO(LogDomain::SYSTEM, "  help  -> show this menu");
+}
+
+static int32_t clampNonNegativeInt32(int32_t value)
+{
+  return value < 0 ? 0 : value;
+}
+
+static uint8_t clampSimulationMode(int value)
+{
+  if (value < 0)
+  {
+    return 0;
+  }
+  if (value > SIM_MODE_MAX)
+  {
+    return SIM_MODE_MAX;
+  }
+  return (uint8_t)value;
+}
+
+static bool parseInt(const char *s, int &out)
+{
+  if (!s || *s == '\0')
+  {
+    return false;
+  }
+  char *end = nullptr;
+  long v = strtol(s, &end, 10);
+  if (!end || *end != '\0')
+  {
+    return false;
+  }
+  out = (int)v;
+  return true;
+}
+
+static bool isHex64(const char *s)
+{
+  if (!s)
+  {
+    return false;
+  }
+  for (int i = 0; i < 64; i++)
+  {
+    const char c = s[i];
+    if (c == '\0')
+    {
+      return false;
+    }
+    if (!((c >= '0' && c <= '9') ||
+          (c >= 'a' && c <= 'f') ||
+          (c >= 'A' && c <= 'F')))
+    {
+      return false;
+    }
+  }
+  return s[64] == '\0';
+}
+
+static bool readSerialLine(char *buf, size_t bufSize)
+{
+  static bool s_discardUntilNewline = false;
+
+  if (!buf || bufSize < 2)
+  {
+    return false;
+  }
+
+  if (s_discardUntilNewline)
+  {
+    while (Serial.available())
+    {
+      const int ch = Serial.read();
+      if (ch == '\n')
+      {
+        s_discardUntilNewline = false;
+        break;
+      }
+    }
+    return false;
+  }
+
+  if (!Serial.available())
+  {
+    return false;
+  }
+
+  size_t len = Serial.readBytesUntil('\n', buf, bufSize - 1);
+  if (len == 0)
+  {
+    return false;
+  }
+  if (len == (bufSize - 1))
+  {
+    bool sawNewline = false;
+    while (Serial.available())
+    {
+      const int ch = Serial.read();
+      if (ch == '\n')
+      {
+        sawNewline = true;
+        break;
+      }
+    }
+    if (!sawNewline)
+    {
+      s_discardUntilNewline = true;
+    }
+    LOG_WARN(LogDomain::SYSTEM,
+             "Serial command truncated (buffer=%u). Increase SERIAL_CMD_BUF.",
+             (unsigned)bufSize);
+    return false;
+  }
+
+  while (len > 0 && (buf[len - 1] == '\r' || buf[len - 1] == '\n' || buf[len - 1] == ' ' || buf[len - 1] == '\t'))
+  {
+    len--;
+  }
+  buf[len] = '\0';
+
+  size_t start = 0;
+  while (buf[start] != '\0' && (buf[start] == ' ' || buf[start] == '\t'))
+  {
+    start++;
+  }
+  if (start > 0)
+  {
+    memmove(buf, buf + start, len - start + 1);
+    len -= start;
+  }
+
+  for (size_t i = 0; i < len; i++)
+  {
+    buf[i] = (char)tolower((unsigned char)buf[i]);
+  }
+
+  return buf[0] != '\0';
 }
 
 static bool hasCalibrationValues()
@@ -226,79 +512,6 @@ static float computePercent(int32_t raw)
   const float percent = ((float)raw - inputStart) * 100.0f / (inputEnd - inputStart);
 
   return constrain(percent, 0.0f, 100.0f);
-}
-
-static bool evaluateProbeConnected(int32_t raw)
-{
-  static bool hasLast = false;
-  static int32_t lastRaw = 0;
-  static uint8_t spikeCount = 0;
-  static uint32_t spikeWindowStart = 0;
-  static uint32_t stuckStartMs = 0;
-
-  const uint32_t now = millis();
-  if (spikeWindowStart == 0)
-  {
-    spikeWindowStart = now;
-  }
-  if (stuckStartMs == 0)
-  {
-    stuckStartMs = now;
-  }
-
-  ProbeQualityReason reason = ProbeQualityReason::OK;
-  if (raw < CFG_PROBE_DISCONNECTED_BELOW_RAW)
-  {
-    reason = ProbeQualityReason::DISCONNECTED_LOW_RAW;
-  }
-  else if (raw < CFG_PROBE_MIN_RAW || raw > CFG_PROBE_MAX_RAW)
-  {
-    reason = ProbeQualityReason::OUT_OF_BOUNDS;
-  }
-  else
-  {
-    uint32_t delta = 0;
-    if (hasLast)
-    {
-      delta = (uint32_t)abs((int32_t)raw - (int32_t)lastRaw);
-    }
-
-    if (delta >= CFG_RAPID_FLUCTUATION_DELTA)
-    {
-      reason = ProbeQualityReason::UNRELIABLE_RAPID;
-    }
-    else
-    {
-      if (now - spikeWindowStart > CFG_SPIKE_WINDOW_MS)
-      {
-        spikeWindowStart = now;
-        spikeCount = 0;
-      }
-      if (delta >= CFG_SPIKE_DELTA)
-      {
-        spikeCount++;
-        if (spikeCount >= CFG_SPIKE_COUNT_THRESHOLD)
-        {
-          reason = ProbeQualityReason::UNRELIABLE_SPIKES;
-        }
-      }
-
-      if (delta > CFG_STUCK_EPS)
-      {
-        stuckStartMs = now;
-      }
-      else if ((now - stuckStartMs) >= CFG_STUCK_MS)
-      {
-        reason = ProbeQualityReason::UNRELIABLE_STUCK;
-      }
-    }
-  }
-
-  lastRaw = raw;
-  hasLast = true;
-
-  probeQualityReason = reason;
-  return reason == ProbeQualityReason::OK;
 }
 
 static int32_t getRaw()
@@ -346,8 +559,8 @@ static void refreshLevelFromPercent(float percent)
     g_state.level.centimeters = centimeters;
     g_state.level.centimetersValid = true;
 
-    const bool litersChanged = isnan(lastLiters) || fabs(lastLiters - liters) > 0.01f;
-    const bool cmChanged = isnan(lastCentimeters) || fabs(lastCentimeters - centimeters) > 0.01f;
+    const bool litersChanged = isnan(lastLiters) || fabs(lastLiters - liters) > LEVEL_CHANGE_EPS;
+    const bool cmChanged = isnan(lastCentimeters) || fabs(lastCentimeters - centimeters) > LEVEL_CHANGE_EPS;
     if (litersChanged || cmChanged)
     {
       mqtt_requestStatePublish();
@@ -419,12 +632,23 @@ static void refreshDeviceMeta()
 
   g_state.device.id = DEVICE_ID;
   g_state.device.name = DEVICE_NAME;
-  g_state.device.fw = DEVICE_FW;
+  strncpy(g_state.fw_version, DEVICE_FW, sizeof(g_state.fw_version));
+  g_state.fw_version[sizeof(g_state.fw_version) - 1] = '\0';
+  g_state.device.fw = g_state.fw_version;
 
   g_state.wifi.rssi = WiFi.RSSI();
   g_state.wifi.ip = ipBuf;
 
   g_state.mqtt.connected = mqtt_isConnected();
+
+  WifiTimeSyncStatus timeStatus{};
+  wifi_getTimeSyncStatus(timeStatus);
+  g_state.time.valid = timeStatus.valid;
+  strncpy(g_state.time.status, timeStatus.status ? timeStatus.status : "time_not_set", sizeof(g_state.time.status));
+  g_state.time.status[sizeof(g_state.time.status) - 1] = '\0';
+  g_state.time.last_attempt_s = timeStatus.lastAttemptMs / 1000u;
+  g_state.time.last_success_s = timeStatus.lastSuccessMs / 1000u;
+  g_state.time.next_retry_s = timeStatus.nextRetryMs / 1000u;
 
   const AppliedConfig &cfg = config_get();
   g_state.config.tankVolumeLiters = cfg.tankVolumeLiters;
@@ -474,6 +698,7 @@ static void clearCalibration()
 static void wipeWifiCredentials()
 {
   LOG_WARN(LogDomain::WIFI, "Wipe WiFi credentials requested via command");
+  storage_saveRebootIntent((uint8_t)RebootIntent::WIFI_WIPE);
   wifi_wipeCredentialsAndReboot();
 }
 
@@ -550,7 +775,7 @@ static void setSenseMode(SenseMode mode, bool /*forcePublish*/ = false, const ch
 
 static void setSimulationModeInternal(uint8_t mode, bool /*forcePublish*/ = false, const char * /*sourceMsg*/ = nullptr)
 {
-  uint8_t clamped = mode > 5 ? 5 : mode;
+  uint8_t clamped = clampSimulationMode(mode);
   storage_saveSimulationMode(clamped);
   g_state.config.simulationMode = clamped;
   setSimulationMode(clamped);
@@ -560,7 +785,7 @@ static void setSimulationModeInternal(uint8_t mode, bool /*forcePublish*/ = fals
 
 static void setCalibrationValueInternal(int32_t value, bool isDry, const char *sourceMsg)
 {
-  const int32_t clamped = value < 0 ? 0 : value;
+  const int32_t clamped = clampNonNegativeInt32(value);
   if (isDry)
   {
     calDry = clamped;
@@ -655,6 +880,7 @@ static bool reloadConfigIfDirty(bool logValues)
 static void windowFast()
 {
   ota_handle();
+  ota_tick(&g_state); // NEW pull-OTA
   wifi_ensureConnected(WIFI_TIMEOUT_MS);
 
   if (reloadConfigIfDirty(true))
@@ -682,9 +908,38 @@ static void windowCompute()
   updatePercentFromRaw();
 }
 
+static void maybeCheckManifest()
+{
+  if (g_state.safe_mode)
+  {
+    logger_logEvery("ota_manifest_safe_mode", 30000u, LogLevel::DEBUG, LogDomain::OTA,
+                    "Skipping manifest check: safe_mode=true reason=%s",
+                    g_state.safe_mode_reason);
+    return;
+  }
+
+  if (!WiFi.isConnected() || ota_isBusy())
+    return;
+
+  const uint32_t now = millis();
+  const bool due = (s_lastManifestCheckMs == 0) || (now - s_lastManifestCheckMs >= OTA_MANIFEST_CHECK_MS);
+  const bool retryOk = (s_lastManifestAttemptMs == 0) || (now - s_lastManifestAttemptMs >= OTA_MANIFEST_RETRY_MS);
+  if (!due || !retryOk)
+    return;
+
+  s_lastManifestAttemptMs = now;
+  char err[32] = {0};
+  if (ota_checkManifest(&g_state, err, sizeof(err)))
+  {
+    s_lastManifestCheckMs = now;
+    mqtt_requestStatePublish();
+  }
+}
+
 static void windowStateMeta()
 {
   refreshStateSnapshot();
+  maybeCheckManifest();
 }
 
 static void windowMqtt()
@@ -694,102 +949,232 @@ static void windowMqtt()
 
 static void handleSerialCommands()
 {
-  if (!Serial.available())
-    return;
-
-  String cmd = Serial.readStringUntil('\n');
-  cmd.trim();
-  cmd.toLowerCase();
-
-  if (cmd == "mode touch")
+  char line[SERIAL_CMD_BUF];
+  if (!readSerialLine(line, sizeof(line)))
   {
-    setSenseMode(SenseMode::TOUCH, true, "serial");
-    probe_updateMode(READ_PROBE);
-    return;
-  }
-  if (cmd.startsWith("mode sim "))
-  {
-    int m = cmd.substring(9).toInt();
-    if (m < 0)
-      m = 0;
-    if (m > 5)
-      m = 5;
-    setSenseMode(SenseMode::SIM, true, "serial");
-    setSimulationModeInternal((uint8_t)m, true, "serial");
-    setSimulationMode((uint8_t)m);
-    probe_updateMode(READ_SIM);
-    LOG_INFO(LogDomain::SYSTEM, "Simulation mode set to %d (serial)", m);
-    return;
-  }
-  if (cmd == "mode sim")
-  {
-    setSenseMode(SenseMode::SIM, true, "serial");
-    probe_updateMode(READ_SIM);
-    return;
-  }
-  if (cmd.startsWith("sim "))
-  {
-    int m = cmd.substring(4).toInt();
-    if (m < 0)
-      m = 0;
-    if (m > 5)
-      m = 5;
-    setSenseMode(SenseMode::SIM, true, "serial");
-    setSimulationModeInternal((uint8_t)m, true, "serial");
-    setSimulationMode((uint8_t)m);
-    probe_updateMode(READ_SIM);
-    LOG_INFO(LogDomain::SYSTEM, "Simulation mode set to %d (serial)", m);
     return;
   }
 
-  if (cmd == "dry")
+  char *save = nullptr;
+  char *cmd = strtok_r(line, SERIAL_CMD_DELIMS, &save);
+  if (!cmd || *cmd == '\0')
+  {
+    return;
+  }
+
+  if (strcmp(cmd, "mode") == 0)
+  {
+    const char *mode = strtok_r(nullptr, SERIAL_CMD_DELIMS, &save);
+    if (!mode)
+    {
+      printHelpMenu();
+      return;
+    }
+    if (strcmp(mode, "touch") == 0)
+    {
+      setSenseMode(SenseMode::TOUCH, true, "serial");
+      return;
+    }
+    if (strcmp(mode, "sim") == 0)
+    {
+      const char *modeStr = strtok_r(nullptr, SERIAL_CMD_DELIMS, &save);
+      if (!modeStr)
+      {
+        setSenseMode(SenseMode::SIM, true, "serial");
+        return;
+      }
+      int modeVal = 0;
+      if (!parseInt(modeStr, modeVal))
+      {
+        printHelpMenu();
+        return;
+      }
+      const uint8_t clamped = clampSimulationMode(modeVal);
+      setSenseMode(SenseMode::SIM, true, "serial");
+      setSimulationModeInternal(clamped, true, "serial");
+      LOG_INFO(LogDomain::SYSTEM, "Simulation mode set to %u (serial)", (unsigned)clamped);
+      return;
+    }
+    printHelpMenu();
+    return;
+  }
+
+  if (strcmp(cmd, "sim") == 0)
+  {
+    const char *modeStr = strtok_r(nullptr, SERIAL_CMD_DELIMS, &save);
+    int modeVal = 0;
+    if (!modeStr || !parseInt(modeStr, modeVal))
+    {
+      printHelpMenu();
+      return;
+    }
+    const uint8_t clamped = clampSimulationMode(modeVal);
+    setSenseMode(SenseMode::SIM, true, "serial");
+    setSimulationModeInternal(clamped, true, "serial");
+    LOG_INFO(LogDomain::SYSTEM, "Simulation mode set to %u (serial)", (unsigned)clamped);
+    return;
+  }
+
+  if (strcmp(cmd, "dry") == 0)
   {
     captureCalibrationPoint(true);
+    return;
   }
-  else if (cmd == "wet")
+  if (strcmp(cmd, "wet") == 0)
   {
     captureCalibrationPoint(false);
+    return;
   }
-  else if (cmd == "show")
+  if (strcmp(cmd, "show") == 0)
   {
     LOG_INFO(LogDomain::CAL, "[CAL] Dry=%ld Wet=%ld Inverted=%s", (long)calDry, (long)calWet, calInverted ? "true" : "false");
     LOG_INFO(LogDomain::CAL, "[CAL] Valid=%s", hasCalibrationValues() ? "yes" : "no");
     storage_dump();
+    return;
   }
-  else if (cmd == "clear")
+  if (strcmp(cmd, "clear") == 0)
   {
     clearCalibration();
+    return;
   }
-  else if (cmd == "invert")
+  if (strcmp(cmd, "invert") == 0)
   {
     handleInvertCalibration();
+    return;
   }
-  else if (cmd == "log hf on" || cmd == "loghf on")
+
+  if (strcmp(cmd, "log") == 0 || strcmp(cmd, "loghf") == 0)
   {
-    logger_setHighFreqEnabled(true);
-    LOG_INFO(LogDomain::SYSTEM, "High-frequency logging enabled (serial command)");
+    const bool isLogHf = strcmp(cmd, "loghf") == 0;
+    const char *arg1 = isLogHf ? "hf" : strtok_r(nullptr, SERIAL_CMD_DELIMS, &save);
+    const char *arg2 = strtok_r(nullptr, SERIAL_CMD_DELIMS, &save);
+    if (arg1 && strcmp(arg1, "hf") == 0 && arg2)
+    {
+      if (strcmp(arg2, "on") == 0)
+      {
+        logger_setHighFreqEnabled(true);
+        LOG_INFO(LogDomain::SYSTEM, "High-frequency logging enabled (serial command)");
+        return;
+      }
+      if (strcmp(arg2, "off") == 0)
+      {
+        logger_setHighFreqEnabled(false);
+        LOG_INFO(LogDomain::SYSTEM, "High-frequency logging disabled (serial command)");
+        return;
+      }
+    }
+    printHelpMenu();
+    return;
   }
-  else if (cmd == "log hf off" || cmd == "loghf off")
-  {
-    logger_setHighFreqEnabled(false);
-    LOG_INFO(LogDomain::SYSTEM, "High-frequency logging disabled (serial command)");
-  }
-  else if (cmd == "wifi")
+
+  if (strcmp(cmd, "wifi") == 0)
   {
     wifi_requestPortal();
+    return;
   }
-  else if (cmd == "wipewifi")
+  if (strcmp(cmd, "wipewifi") == 0)
   {
-    wifi_wipeCredentialsAndReboot();
+    wipeWifiCredentials();
+    return;
   }
-  else if (cmd == "help")
+  if (strcmp(cmd, "safe_mode") == 0)
+  {
+    const char *sub = strtok_r(nullptr, SERIAL_CMD_DELIMS, &save);
+    if (!sub || strcmp(sub, "status") == 0)
+    {
+      logSafeModeStatus();
+      return;
+    }
+    if (strcmp(sub, "clear") == 0)
+    {
+      storage_saveSafeMode(false);
+      storage_saveBadBootStreak(0u);
+      g_state.bad_boot_streak = 0u;
+      g_state.crash_window_boots = 0u;
+      g_state.crash_window_bad = 0u;
+      applySafeModeState(false, "cleared");
+      s_goodBootMarked = true;
+      mqtt_requestStatePublish();
+      LOG_INFO(LogDomain::SYSTEM, "Safe mode cleared via serial command");
+      return;
+    }
+    if (strcmp(sub, "enter") == 0)
+    {
+      storage_saveSafeMode(true);
+      applySafeModeState(true, "forced");
+      mqtt_requestStatePublish();
+      LOG_INFO(LogDomain::SYSTEM, "Safe mode forced on via serial command");
+      return;
+    }
+    printHelpMenu();
+    return;
+  }
+  if (strcmp(cmd, "ota") == 0)
+  {
+    const char *url = strtok_r(nullptr, SERIAL_CMD_DELIMS, &save);
+    char *sha256 = strtok_r(nullptr, SERIAL_CMD_DELIMS, &save);
+    const char *version = strtok_r(nullptr, SERIAL_CMD_DELIMS, &save);
+    if (sha256)
+    {
+      while (*sha256 != '\0' && isspace((unsigned char)*sha256))
+      {
+        sha256++;
+      }
+      size_t shaLen = strlen(sha256);
+      while (shaLen > 0 && isspace((unsigned char)sha256[shaLen - 1]))
+      {
+        sha256[shaLen - 1] = '\0';
+        shaLen--;
+      }
+    }
+    if (!url || !sha256 || !version || url[0] == '\0' || sha256[0] == '\0' || version[0] == '\0')
+    {
+      LOG_WARN(LogDomain::OTA, "OTA serial rejected: missing_url_or_sha256_or_version");
+      return;
+    }
+    LOG_INFO(LogDomain::OTA, "OTA serial parsed: url=%s sha_prefix=%.8s target=%s",
+             url, sha256, version);
+    if (!isHex64(sha256))
+    {
+      LOG_WARN(LogDomain::OTA, "OTA serial rejected: bad_sha256_format");
+      return;
+    }
+    if (ota_isBusy())
+    {
+      LOG_WARN(LogDomain::OTA, "OTA serial rejected: busy");
+      return;
+    }
+    if (!WiFi.isConnected())
+    {
+      LOG_WARN(LogDomain::OTA, "OTA serial rejected: wifi_disconnected");
+      return;
+    }
+
+    char errBuf[48] = {0};
+    LOG_INFO(LogDomain::OTA, "OTA serial start: url=%s", url);
+    const bool ok = ota_pullStart(
+        &g_state,
+        "serial_test",
+        version,
+        url,
+        sha256,
+        true,
+        true,
+        errBuf,
+        sizeof(errBuf));
+    if (!ok)
+    {
+      LOG_WARN(LogDomain::OTA, "OTA serial start failed: %s", errBuf[0] ? errBuf : "start_failed");
+    }
+    return;
+  }
+  if (strcmp(cmd, "help") == 0)
   {
     printHelpMenu();
+    return;
   }
-  else if (cmd.length() > 0)
-  {
-    printHelpMenu();
-  }
+
+  printHelpMenu();
 }
 
 static void updatePercentFromRaw()
@@ -833,17 +1218,112 @@ static LoopWindow g_windows[] = {
 
 // ---------------- Arduino lifecycle ----------------
 
+// Contract: call once after boot. Initializes subsystems, state, and MQTT/OTA handlers.
 void appSetup()
 {
+  const char *bootReason = mapResetReason(esp_reset_reason());
+  strncpy(g_state.reset_reason, bootReason, sizeof(g_state.reset_reason));
+  g_state.reset_reason[sizeof(g_state.reset_reason) - 1] = '\0';
+
   Serial.begin(115200);
   delay(1500);
   logger_begin(BASE_TOPIC, true, true);
   logger_setHighFreqEnabled(false);
   quality_init(probeQualityRt);
   LOG_INFO(LogDomain::SYSTEM, "BOOT water_level_sensor starting...");
+  LOG_INFO(LogDomain::SYSTEM, "Reset reason=%s", g_state.reset_reason);
   LOG_INFO(LogDomain::SYSTEM, "TOUCH_PIN=%d", TOUCH_PIN);
 
   storage_begin();
+  {
+    uint32_t persistedBootCount = 0u;
+    storage_loadBootCount(persistedBootCount);
+    g_state.boot_count = persistedBootCount + 1u;
+    storage_saveBootCount(g_state.boot_count);
+
+    uint8_t rebootIntent = (uint8_t)RebootIntent::NONE;
+    storage_loadRebootIntent(rebootIntent);
+    rebootIntent = normalizeRebootIntent(rebootIntent);
+    if (rebootIntent != (uint8_t)RebootIntent::NONE)
+    {
+      storage_clearRebootIntent();
+    }
+    g_state.reboot_intent = rebootIntent;
+    const char *intentLabel = rebootIntentLabel(rebootIntent);
+    strncpy(g_state.reboot_intent_label, intentLabel, sizeof(g_state.reboot_intent_label));
+    g_state.reboot_intent_label[sizeof(g_state.reboot_intent_label) - 1] = '\0';
+
+    uint32_t badBootStreak = 0u;
+    uint32_t lastGoodBootTs = 0u;
+    bool safeMode = false;
+    storage_loadBadBootStreak(badBootStreak);
+    storage_loadGoodBootTs(lastGoodBootTs);
+    storage_loadSafeMode(safeMode);
+
+    const BootClassification cls = classifyBoot(g_state.reset_reason, rebootIntent);
+    const bool badBoot = (cls == BootClassification::BAD);
+    LOG_INFO(LogDomain::SYSTEM,
+             "Boot classification reset_reason=%s reboot_intent=%s class=%s bad_boot=%s",
+             g_state.reset_reason,
+             g_state.reboot_intent_label,
+             bootClassificationLabel(cls),
+             badBoot ? "true" : "false");
+
+    if (badBoot)
+    {
+      badBootStreak++;
+      storage_saveBadBootStreak(badBootStreak);
+    }
+
+    if (badBootStreak >= (uint32_t)CFG_CRASH_MAX_BAD_BOOTS)
+    {
+      safeMode = true;
+      storage_saveSafeMode(true);
+      LOG_WARN(LogDomain::SYSTEM, "Entering safe mode: bad_boot_streak=%lu threshold=%u",
+               (unsigned long)badBootStreak,
+               (unsigned int)CFG_CRASH_MAX_BAD_BOOTS);
+    }
+
+    g_state.bad_boot_streak = badBootStreak;
+    g_state.last_good_boot_ts = lastGoodBootTs;
+    g_state.safe_mode = safeMode;
+    strncpy(g_state.safe_mode_reason, safeMode ? "crash_loop" : "none", sizeof(g_state.safe_mode_reason));
+    g_state.safe_mode_reason[sizeof(g_state.safe_mode_reason) - 1] = '\0';
+
+    // Keep existing crash fields aligned for compatibility with older dashboards.
+    g_state.crash_loop = safeMode;
+    strncpy(g_state.crash_loop_reason, safeMode ? "crash_loop" : bootClassificationLabel(cls), sizeof(g_state.crash_loop_reason));
+    g_state.crash_loop_reason[sizeof(g_state.crash_loop_reason) - 1] = '\0';
+    g_state.crash_window_boots = badBootStreak;
+    g_state.crash_window_bad = badBootStreak;
+    if (!safeMode && badBootStreak == 0u)
+    {
+      g_state.last_stable_boot = g_state.boot_count;
+    }
+
+    LOG_INFO(LogDomain::SYSTEM,
+             "Crash/safe-mode state streak=%lu safe_mode=%s last_good_boot_ts=%lu",
+             (unsigned long)g_state.bad_boot_streak,
+             g_state.safe_mode ? "true" : "false",
+             (unsigned long)g_state.last_good_boot_ts);
+
+    if (badBoot)
+    {
+      LOG_WARN(LogDomain::SYSTEM, "Bad boot observed: streak now %lu", (unsigned long)g_state.bad_boot_streak);
+    }
+
+    if (g_state.safe_mode)
+    {
+      LOG_WARN(LogDomain::SYSTEM, "Safe mode active reason=%s", g_state.safe_mode_reason);
+    }
+    s_goodBootMarked = false;
+    LOG_INFO(LogDomain::SYSTEM,
+             "Crash loop compatibility state latched=%s boots=%lu bad=%lu reason=%s",
+             g_state.crash_loop ? "true" : "false",
+             (unsigned long)g_state.crash_window_boots,
+             (unsigned long)g_state.crash_window_bad,
+             g_state.crash_loop_reason);
+  }
   wifi_begin();
   config_begin();
 
@@ -859,6 +1339,36 @@ void appSetup()
   g_state.lastCmd.message = s_emptyStr;
   g_state.lastCmd.status = CmdStatus::RECEIVED;
   g_state.lastCmd.ts = g_state.ts;
+
+  if (g_state.ota_state[0] == '\0')
+  {
+    strncpy(g_state.ota_state, "idle", sizeof(g_state.ota_state));
+    g_state.ota_state[sizeof(g_state.ota_state) - 1] = '\0';
+  }
+  g_state.ota_progress = 0;
+  g_state.ota_error[0] = '\0';
+  g_state.ota_target_version[0] = '\0';
+  g_state.ota_last_ts = 0;
+  g_state.ota_last_success_ts = 0;
+  g_state.update_available = false;
+  g_state.time.valid = false;
+  strncpy(g_state.time.status, "time_not_set", sizeof(g_state.time.status));
+  g_state.time.status[sizeof(g_state.time.status) - 1] = '\0';
+  g_state.time.last_attempt_s = 0;
+  g_state.time.last_success_s = 0;
+  g_state.time.next_retry_s = 0;
+  {
+    bool otaForce = false;
+    bool otaReboot = true;
+    storage_loadOtaOptions(otaForce, otaReboot);
+    g_state.ota_force = otaForce;
+    g_state.ota_reboot = otaReboot;
+    uint32_t otaLastOk = 0;
+    if (storage_loadOtaLastSuccess(otaLastOk))
+    {
+      g_state.ota_last_success_ts = otaLastOk;
+    }
+  }
 
   g_state.level.percent = NAN;
   g_state.level.liters = NAN;
@@ -884,8 +1394,8 @@ void appSetup()
   commands_begin(cmdCtx);
 
   MqttConfig mqttCfg{
-      .host = MQTT_HOST,
-      .port = MQTT_PORT,
+      .host = MQTT_HOST_VALUE,
+      .port = MQTT_PORT_VALUE,
       .clientId = MQTT_CLIENT_ID,
       .user = MQTT_USER,
       .pass = MQTT_PASS,
@@ -893,15 +1403,39 @@ void appSetup()
       .deviceId = DEVICE_ID,
       .deviceName = DEVICE_NAME,
       .deviceModel = DEVICE_NAME,
-      .deviceSw = DEVICE_FW};
+      .deviceSw = DEVICE_FW,
+      .deviceHw = DEVICE_HW};
   mqtt_begin(mqttCfg, commands_handle);
 }
 
+// Contract: called frequently from the Arduino loop; must remain non-blocking.
 void appLoop()
 {
   const uint32_t now = millis();
+  g_state.uptime_seconds = now / 1000u;
   for (LoopWindow &w : g_windows)
   {
     runWindow(w, now);
+  }
+
+  if (!s_goodBootMarked &&
+      !g_state.safe_mode &&
+      g_state.bad_boot_streak > 0u &&
+      now >= (uint32_t)CFG_CRASH_GOOD_BOOT_AFTER_MS)
+  {
+    g_state.bad_boot_streak = 0u;
+    storage_saveBadBootStreak(0u);
+    g_state.last_good_boot_ts = g_state.ts;
+    storage_saveGoodBootTs(g_state.last_good_boot_ts);
+    g_state.last_stable_boot = g_state.boot_count;
+    g_state.crash_window_boots = 0u;
+    g_state.crash_window_bad = 0u;
+    g_state.crash_loop = false;
+    strncpy(g_state.crash_loop_reason, "stable_runtime", sizeof(g_state.crash_loop_reason));
+    g_state.crash_loop_reason[sizeof(g_state.crash_loop_reason) - 1] = '\0';
+    LOG_INFO(LogDomain::SYSTEM, "Good boot confirmed: bad_boot_streak reset, last_good_boot_ts=%lu",
+             (unsigned long)g_state.last_good_boot_ts);
+    s_goodBootMarked = true;
+    mqtt_requestStatePublish();
   }
 }

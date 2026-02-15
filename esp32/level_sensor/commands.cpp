@@ -3,9 +3,17 @@
 #include <stdarg.h>
 #include <string.h>
 #include <strings.h>
+#include <WiFi.h>
 #include "logger.h"
 
 #include "device_state.h"
+#include "domain_strings.h"
+#include "ota_service.h"
+#include "storage_nvs.h"
+
+#ifndef CMD_SCHEMA_VERSION
+#define CMD_SCHEMA_VERSION 1
+#endif
 
 static CommandsContext s_ctx{};
 
@@ -34,7 +42,24 @@ static void setLastCmd(const char *reqId, const char *type, CmdStatus st, const 
     s_ctx.state->lastCmd.type = s_type;
     s_ctx.state->lastCmd.status = st;
     s_ctx.state->lastCmd.message = s_msg;
-    s_ctx.state->lastCmd.ts = s_ctx.state->ts; // align to latest state snapshot time
+    s_ctx.state->lastCmd.ts = (uint32_t)(millis() / 1000);
+}
+
+static bool isHex64(const char *s)
+{
+    if (!s)
+        return false;
+    for (int i = 0; i < 64; i++)
+    {
+        char c = s[i];
+        if (c == '\0')
+            return false;
+        if (!((c >= '0' && c <= '9') ||
+              (c >= 'a' && c <= 'f') ||
+              (c >= 'A' && c <= 'F')))
+            return false;
+    }
+    return s[64] == '\0';
 }
 
 static void appendChange(char *buf, size_t bufSize, const char *fmt, ...)
@@ -61,12 +86,23 @@ static void appendChange(char *buf, size_t bufSize, const char *fmt, ...)
     buf[bufSize - 1] = '\0';
 }
 
+static void buildAutoRequestId(char *buf, size_t len)
+{
+    if (!buf || len == 0)
+        return;
+    const uint32_t now = (uint32_t)millis();
+    const uint32_t rand16 = (uint32_t)random(0, 0xFFFF);
+    snprintf(buf, len, "auto_%08lx_%04lx", (unsigned long)now, (unsigned long)rand16);
+    buf[len - 1] = '\0';
+}
+
 static void finish(const char *reqId, const char *type, CmdStatus st, const char *msg)
 {
     setLastCmd(reqId, type, st, msg);
     if (s_ctx.publishAck)
     {
-        s_ctx.publishAck(reqId ? reqId : "", type ? type : "", st, msg ? msg : "");
+        const char *stStr = toString(st);
+        s_ctx.publishAck(reqId ? reqId : "", type ? type : "", stStr ? stStr : "", msg ? msg : "");
     }
     if (s_ctx.requestStatePublish)
     {
@@ -202,6 +238,186 @@ static void handleSetCalibration(JsonObject data, const char *requestId)
     }
 }
 
+static void handleOtaPull(JsonObject data, const char *requestId)
+{
+    char err[48] = {0};
+
+    if (ota_isBusy())
+    {
+        finish(requestId, "ota_pull", CmdStatus::REJECTED, "busy");
+        LOG_WARN(LogDomain::COMMAND, "OTA pull rejected request_id=%s reason=busy", requestId ? requestId : "");
+        return;
+    }
+    if (!WiFi.isConnected())
+    {
+        finish(requestId, "ota_pull", CmdStatus::REJECTED, "wifi_disconnected");
+        LOG_WARN(LogDomain::COMMAND, "OTA pull rejected request_id=%s reason=wifi_disconnected", requestId ? requestId : "");
+        return;
+    }
+
+    const char *version = data["version"] | "";
+    const char *url = data["url"] | "";
+    const char *sha256 = data["sha256"] | "";
+
+    const bool rebootDefault = s_ctx.state ? s_ctx.state->ota_reboot : true;
+    const bool forceDefault = s_ctx.state ? s_ctx.state->ota_force : false;
+    bool reboot = data["reboot"].is<bool>() ? data["reboot"].as<bool>() : rebootDefault;
+    bool force = data["force"].is<bool>() ? data["force"].as<bool>() : forceDefault;
+
+    const bool hasUrl = url && url[0] != '\0';
+    const bool hasSha = sha256 && sha256[0] != '\0';
+    const bool hasVersion = version && version[0] != '\0';
+    const bool useManifest = (!hasUrl || !hasSha) && (force || (!hasUrl && !hasSha && !hasVersion));
+
+    bool ok = false;
+    if (useManifest)
+    {
+        ok = ota_pullStartFromManifest(s_ctx.state, requestId, force, reboot, err, sizeof(err));
+    }
+    else
+    {
+        if (!hasUrl)
+        {
+            finish(requestId, "ota_pull", CmdStatus::REJECTED, "missing_url");
+            LOG_WARN(LogDomain::COMMAND, "OTA pull rejected request_id=%s reason=missing_url", requestId ? requestId : "");
+            return;
+        }
+        if (!hasSha)
+        {
+            finish(requestId, "ota_pull", CmdStatus::REJECTED, "missing_sha256");
+            LOG_WARN(LogDomain::COMMAND, "OTA pull rejected request_id=%s reason=missing_sha256", requestId ? requestId : "");
+            return;
+        }
+        if (!isHex64(sha256))
+        {
+            finish(requestId, "ota_pull", CmdStatus::REJECTED, "bad_sha256_format");
+            LOG_WARN(LogDomain::COMMAND, "OTA pull rejected request_id=%s reason=bad_sha256_format", requestId ? requestId : "");
+            return;
+        }
+        ok = ota_pullStart(s_ctx.state, requestId, version, url, sha256, force, reboot, err, sizeof(err));
+    }
+    if (!ok)
+    {
+        const char *reason = err[0] ? err : "start_failed";
+        finish(requestId, "ota_pull", CmdStatus::REJECTED, reason);
+        LOG_WARN(LogDomain::COMMAND, "OTA pull rejected request_id=%s reason=%s", requestId ? requestId : "", reason);
+        return;
+    }
+
+    finish(requestId, "ota_pull", CmdStatus::APPLIED, "queued");
+    LOG_INFO(LogDomain::COMMAND, "OTA pull accepted request_id=%s reason=queued", requestId ? requestId : "");
+}
+
+static void handleOtaOptions(JsonObject data, const char *requestId)
+{
+    if (!s_ctx.state)
+    {
+        finish(requestId, "ota_options", CmdStatus::ERROR, "missing_state");
+        return;
+    }
+
+    bool updatedAny = false;
+
+    if (data.containsKey("ota_force"))
+    {
+        if (!data["ota_force"].is<bool>())
+        {
+            finish(requestId, "ota_options", CmdStatus::REJECTED, "invalid_fields");
+            return;
+        }
+        const bool v = data["ota_force"].as<bool>();
+        s_ctx.state->ota_force = v;
+        storage_saveOtaForce(v);
+        updatedAny = true;
+    }
+
+    if (data.containsKey("ota_reboot"))
+    {
+        if (!data["ota_reboot"].is<bool>())
+        {
+            finish(requestId, "ota_options", CmdStatus::REJECTED, "invalid_fields");
+            return;
+        }
+        const bool v = data["ota_reboot"].as<bool>();
+        s_ctx.state->ota_reboot = v;
+        storage_saveOtaReboot(v);
+        updatedAny = true;
+    }
+
+    if (!updatedAny)
+    {
+        finish(requestId, "ota_options", CmdStatus::REJECTED, "invalid_fields");
+        return;
+    }
+
+    finish(requestId, "ota_options", CmdStatus::APPLIED, "applied");
+    LOG_INFO(LogDomain::COMMAND, "OTA options applied request_id=%s", requestId ? requestId : "");
+}
+
+static void handleSafeMode(JsonObject data, bool hasDataObj, const char *requestId)
+{
+    if (!s_ctx.state)
+    {
+        finish(requestId, "safe_mode", CmdStatus::ERROR, "missing_state");
+        return;
+    }
+
+    const char *action = "status";
+    if (hasDataObj && data.containsKey("action"))
+    {
+        action = data["action"] | "status";
+    }
+
+    if (strcmp(action, "status") == 0)
+    {
+        char statusMsg[64];
+        snprintf(statusMsg, sizeof(statusMsg), "safe_mode=%s streak=%lu",
+                 s_ctx.state->safe_mode ? "true" : "false",
+                 (unsigned long)s_ctx.state->bad_boot_streak);
+        statusMsg[sizeof(statusMsg) - 1] = '\0';
+        LOG_INFO(LogDomain::COMMAND, "Safe mode status request_id=%s %s reason=%s",
+                 requestId ? requestId : "",
+                 statusMsg,
+                 s_ctx.state->safe_mode_reason);
+        finish(requestId, "safe_mode", CmdStatus::APPLIED, statusMsg);
+        return;
+    }
+
+    if (strcmp(action, "clear") == 0)
+    {
+        storage_saveSafeMode(false);
+        storage_saveBadBootStreak(0u);
+        s_ctx.state->safe_mode = false;
+        s_ctx.state->bad_boot_streak = 0u;
+        s_ctx.state->crash_loop = false;
+        s_ctx.state->crash_window_boots = 0u;
+        s_ctx.state->crash_window_bad = 0u;
+        strncpy(s_ctx.state->safe_mode_reason, "cleared", sizeof(s_ctx.state->safe_mode_reason));
+        s_ctx.state->safe_mode_reason[sizeof(s_ctx.state->safe_mode_reason) - 1] = '\0';
+        strncpy(s_ctx.state->crash_loop_reason, "cleared", sizeof(s_ctx.state->crash_loop_reason));
+        s_ctx.state->crash_loop_reason[sizeof(s_ctx.state->crash_loop_reason) - 1] = '\0';
+        LOG_INFO(LogDomain::SYSTEM, "Safe mode cleared via MQTT command request_id=%s", requestId ? requestId : "");
+        finish(requestId, "safe_mode", CmdStatus::APPLIED, "cleared");
+        return;
+    }
+
+    if (strcmp(action, "enter") == 0)
+    {
+        storage_saveSafeMode(true);
+        s_ctx.state->safe_mode = true;
+        s_ctx.state->crash_loop = true;
+        strncpy(s_ctx.state->safe_mode_reason, "forced", sizeof(s_ctx.state->safe_mode_reason));
+        s_ctx.state->safe_mode_reason[sizeof(s_ctx.state->safe_mode_reason) - 1] = '\0';
+        strncpy(s_ctx.state->crash_loop_reason, "forced", sizeof(s_ctx.state->crash_loop_reason));
+        s_ctx.state->crash_loop_reason[sizeof(s_ctx.state->crash_loop_reason) - 1] = '\0';
+        LOG_INFO(LogDomain::SYSTEM, "Safe mode forced on via MQTT command request_id=%s", requestId ? requestId : "");
+        finish(requestId, "safe_mode", CmdStatus::APPLIED, "forced");
+        return;
+    }
+
+    finish(requestId, "safe_mode", CmdStatus::REJECTED, "invalid_action");
+}
+
 static SenseMode parseSenseMode(JsonVariant value)
 {
     if (value.is<const char *>())
@@ -322,7 +538,7 @@ void commands_handle(const uint8_t *payload, size_t len)
 {
     // Trim trailing nulls + whitespace (HA sometimes appends \n, and buffers can contain \0)
 
-    static char json[768];
+    static char json[4096];
 
     if (len == 0 || len >= sizeof(json))
     {
@@ -334,7 +550,7 @@ void commands_handle(const uint8_t *payload, size_t len)
     json[len] = '\0';
 
     // Try to parse incoming JSON payload
-    StaticJsonDocument<768> doc;
+    StaticJsonDocument<4096> doc;
     DeserializationError err = deserializeJson(doc, json);
 
     bool hasNull = false;
@@ -363,32 +579,67 @@ void commands_handle(const uint8_t *payload, size_t len)
     const char *type = doc["type"] | "";
 
     // Validate schema version and command type
-    if (schema != STATE_SCHEMA_VERSION || strlen(type) == 0)
+    if (schema != CMD_SCHEMA_VERSION || strlen(type) == 0)
     {
         LOG_WARN(LogDomain::COMMAND, "Command rejected: reason=invalid_schema_or_type type=%s", (type && strlen(type) ? type : "(none)"));
         finish(requestId, type, CmdStatus::REJECTED, "invalid_schema_or_type");
         return;
     }
 
+    char autoReqId[32] = {0};
+    if (!requestId || requestId[0] == '\0')
+    {
+        if (strcmp(type, "ota_pull") == 0)
+        {
+            buildAutoRequestId(autoReqId, sizeof(autoReqId));
+            requestId = autoReqId;
+        }
+        else
+        {
+            finish("", type, CmdStatus::REJECTED, "missing_request_id");
+            return;
+        }
+    }
+
     // Mark command as received
     setLastCmd(requestId, type, CmdStatus::RECEIVED, "received");
 
     // Extract optional data object
-    JsonObject data = doc["data"].as<JsonObject>();
+    const bool hasDataObj = doc["data"].is<JsonObject>();
+    JsonObject data;
+    if (hasDataObj)
+    {
+        data = doc["data"].as<JsonObject>();
+    }
 
     LOG_INFO(LogDomain::COMMAND, "Command received type=%s request_id=%s", type ? type : "", requestId ? requestId : "");
 
     // Dispatch to the appropriate handler
     if (strcmp(type, "set_config") == 0)
     {
+        if (!hasDataObj)
+        {
+            finish(requestId, type, CmdStatus::REJECTED, "missing_data");
+            return;
+        }
         handleSetConfig(data, requestId);
     }
     else if (strcmp(type, "set_calibration") == 0)
     {
+        if (!hasDataObj)
+        {
+            finish(requestId, type, CmdStatus::REJECTED, "missing_data");
+            return;
+        }
         handleSetCalibration(data, requestId);
     }
     else if (strcmp(type, "calibrate") == 0)
     {
+        if (!hasDataObj)
+        {
+            finish(requestId, type, CmdStatus::REJECTED, "missing_data");
+            return;
+        }
         handleCalibrate(data, requestId);
     }
     else if (strcmp(type, "clear_calibration") == 0)
@@ -401,11 +652,38 @@ void commands_handle(const uint8_t *payload, size_t len)
     }
     else if (strcmp(type, "set_simulation") == 0)
     {
+        if (!hasDataObj)
+        {
+            finish(requestId, type, CmdStatus::REJECTED, "missing_data");
+            return;
+        }
         handleSetSimulation(data, requestId);
     }
     else if (strcmp(type, "reannounce") == 0)
     {
         handleReannounce(requestId);
+    }
+    else if (strcmp(type, "ota_pull") == 0)
+    {
+        if (!hasDataObj)
+        {
+            finish(requestId, type, CmdStatus::REJECTED, "missing_data");
+            return;
+        }
+        handleOtaPull(data, requestId);
+    }
+    else if (strcmp(type, "ota_options") == 0)
+    {
+        if (!hasDataObj)
+        {
+            finish(requestId, type, CmdStatus::REJECTED, "missing_data");
+            return;
+        }
+        handleOtaOptions(data, requestId);
+    }
+    else if (strcmp(type, "safe_mode") == 0)
+    {
+        handleSafeMode(data, hasDataObj, requestId);
     }
     else
     {

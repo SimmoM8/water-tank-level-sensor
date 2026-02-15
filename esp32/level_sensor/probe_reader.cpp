@@ -5,26 +5,34 @@
 
 static struct
 {
-    ProbeConfig cfg = {0, 1, 5}; // default pin 0, 256 samples, 5ms delay
+    ProbeConfig cfg = {0, 1, 5}; // default pin 0, 1 sample, 5ms delay
     ReadMode mode = READ_PROBE;  // default mode
 } probe;
 
-void probe_begin(const ProbeConfig &config)
+static constexpr uint16_t kMinSamples = 1;
+
+static ProbeConfig normalizeConfig(ProbeConfig cfg)
 {
-    probe.cfg = config;
-    if (probe.cfg.samples == 0)
+    if (cfg.samples < kMinSamples)
     {
-        probe.cfg.samples = 1; // ensure at least 1 sample
+        cfg.samples = kMinSamples;
     }
+    return cfg;
 }
 
-// set read mode based on applied truth in preferences
+// Contract: config.samples must be >= 1 (clamped here); config.pin is used as-is.
+void probe_begin(const ProbeConfig &config)
+{
+    probe.cfg = normalizeConfig(config);
+}
+
+// Contract: mode selects between physical probe and simulation backend.
 void probe_updateMode(ReadMode mode)
 {
     probe.mode = mode;
 }
 
-// Read raw probe value using touchRead averaged over N samples
+// Read raw probe value using touchRead averaged over N samples.
 static uint32_t readProbe(uint8_t pin, uint16_t samples)
 {
     uint32_t averageRaw = 0;
@@ -36,7 +44,7 @@ static uint32_t readProbe(uint8_t pin, uint16_t samples)
     return averageRaw / samples;
 }
 
-// get the raw value either from the probe or simulation
+// Contract: returns a raw probe value from the active backend.
 uint32_t probe_getRaw()
 {
     if (probe.mode == READ_SIM)
@@ -45,3 +53,4 @@ uint32_t probe_getRaw()
     }
     return readProbe(probe.cfg.pin, probe.cfg.samples);
 }
+

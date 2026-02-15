@@ -1,6 +1,12 @@
 # Arduino / ESP32
 .secrets.h
 secrets.h
+esp32/level_sensor/.build/
+esp32/level_sensor/build/
+build/
+*.elf
+*.map
+*.bin
 
 # macOS
 .DS_Store

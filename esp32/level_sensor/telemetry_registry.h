@@ -25,7 +25,7 @@ struct TelemetryFieldDef
     const char *icon;           // optional
     const char *attrTemplate;   // optional JSON attributes template
     const char *uniqIdOverride; // optional stable unique_id suffix
-    void (*writeFn)(const DeviceState &, JsonObject &root);
+    bool (*writeFn)(const DeviceState &, JsonObject &root);
 };
 
 struct ControlDef

@@ -1,0 +1,28 @@
+name: Validate OTA Manifests
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+jobs:
+  validate-manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Ensure jq is available
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y jq
+          fi
+
+      - name: Validate manifest fields
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/validate_manifests.sh manifests

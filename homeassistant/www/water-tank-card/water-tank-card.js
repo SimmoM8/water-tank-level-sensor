@@ -4,10 +4,12 @@
  */
 
 const CARD_TAG = "water-tank-card";
-const VERSION = "0.5.9";
+const VERSION = "0.5.10";
 
 // Toast timing (ms)
 const TOAST_RESULT_MS = 2200;
+const OTA_UI_STALE_MS = 25000;
+const OTA_UI_TIMEOUT_MS = 20 * 60 * 1000;
 
 // Diagnostics numeric precision
 const DIAGNOSTICS_DECIMALS = 10;
@@ -38,12 +40,22 @@ const OPTIONAL_ENTITY_KEYS = [
   "calibrate_wet_entity",
   "clear_calibration_entity",
   "wipe_wifi_entity",
+  "ota_pull_entity",
+  "ota_state_entity",
+  "ota_progress_entity",
+  "ota_error_entity",
+  "ota_last_status_entity",
+  "ota_last_message_entity",
+  "update_available_entity",
   "simulation_mode_entity",
   "sense_mode_entity",
   "cal_dry_value_entity",
   "cal_wet_value_entity",
   "cal_dry_set_entity",
   "cal_wet_set_entity",
+  "fw_version_entity",
+  "ota_target_version_entity",
+  "ota_last_success_ts_entity",
 ];
 
 // Expected unique_id suffixes (or contains) for each logical key.
@@ -63,12 +75,22 @@ const UNIQUE_ID_SUFFIX_MAP = {
   calibrate_wet_entity: ["_calibrate_wet"],
   clear_calibration_entity: ["_clear_calibration"],
   wipe_wifi_entity: ["_wipe_wifi"],
+  ota_pull_entity: ["_ota_pull"],
+  ota_state_entity: ["_ota_state"],
+  ota_progress_entity: ["_ota_progress"],
+  ota_error_entity: ["_ota_error", "_ota_last_error"],
+  ota_last_status_entity: ["_ota_last_status"],
+  ota_last_message_entity: ["_ota_last_message"],
+  update_available_entity: ["_update_available"],
   simulation_mode_entity: ["_simulation_mode"],
   sense_mode_entity: ["_sense_mode"],
   cal_dry_value_entity: ["_cal_dry"],
   cal_wet_value_entity: ["_cal_wet"],
   cal_dry_set_entity: ["_cal_dry_set"],
   cal_wet_set_entity: ["_cal_wet_set"],
+  fw_version_entity: ["_fw_version"],
+  ota_target_version_entity: ["_ota_target_version"],
+  ota_last_success_ts_entity: ["_ota_last_success_ts"],
 };
 
 // Matching rules per logical key (domains and entity_id fallbacks).
@@ -88,12 +110,22 @@ const ENTITY_MATCH_RULES = {
   calibrate_wet_entity: { domains: ["button"], entitySuffixes: ["_calibrate_wet"] },
   clear_calibration_entity: { domains: ["button"], entitySuffixes: ["_clear_calibration"] },
   wipe_wifi_entity: { domains: ["button"], entitySuffixes: ["_wipe_wifi"] },
+  ota_pull_entity: { domains: ["button"], entitySuffixes: ["_ota_pull"] },
+  ota_state_entity: { domains: ["sensor"], entitySuffixes: ["_ota_state"] },
+  ota_progress_entity: { domains: ["sensor"], entitySuffixes: ["_ota_progress"] },
+  ota_error_entity: { domains: ["sensor"], entitySuffixes: ["_ota_error", "_ota_last_error"] },
+  ota_last_status_entity: { domains: ["sensor"], entitySuffixes: ["_ota_last_status"] },
+  ota_last_message_entity: { domains: ["sensor"], entitySuffixes: ["_ota_last_message"] },
+  update_available_entity: { domains: ["binary_sensor"], entitySuffixes: ["_update_available"] },
   simulation_mode_entity: { domains: ["select", "input_select"], entitySuffixes: ["_simulation_mode"] },
   sense_mode_entity: { domains: ["select", "input_select"], entitySuffixes: ["_sense_mode"] },
   cal_dry_value_entity: { domains: ["sensor", "number", "input_number"], entitySuffixes: ["_cal_dry"] },
   cal_wet_value_entity: { domains: ["sensor", "number", "input_number"], entitySuffixes: ["_cal_wet"] },
   cal_dry_set_entity: { domains: ["number", "input_number"], entitySuffixes: ["_cal_dry_set"] },
   cal_wet_set_entity: { domains: ["number", "input_number"], entitySuffixes: ["_cal_wet_set"] },
+  fw_version_entity: { domains: ["sensor"], entitySuffixes: ["_fw_version"] },
+  ota_target_version_entity: { domains: ["sensor"], entitySuffixes: ["_ota_target_version"] },
+  ota_last_success_ts_entity: { domains: ["sensor"], entitySuffixes: ["_ota_last_success_ts"] },
 };
 
 // Cache resolved configs per device_id to avoid repeated websocket queries.
@@ -170,8 +202,21 @@ class WaterTankCard extends HTMLElement {
     this._suspendRender = false;
     this._deferredRender = false;
     this._deferTimer = null;
+    this._scrollToOta = false;
+    this._flashOtaSectionUntil = 0;
     this._renderDeferMs = 350;
     this._lastInteractionAt = 0;
+    this._otaUi = {
+      active: false,
+      startedAt: 0,
+      lastSeenAt: 0,
+      lastState: null,
+      lastProgress: null,
+      lastMessage: null,
+      result: null,
+      resultAt: 0,
+      resultTimer: null,
+    };
     this._draft = {
       tankVolume: "",
       rodLength: "",
@@ -200,6 +245,15 @@ class WaterTankCard extends HTMLElement {
       calibrate_wet_entity: null,
       clear_calibration_entity: null,
       wipe_wifi_entity: null,
+      ota_pull_entity: null,
+      ota_state_entity: null,
+      ota_progress_entity: null,
+      ota_error_entity: null,
+      ota_last_status_entity: null,
+      ota_last_message_entity: null,
+      update_available_entity: null,
+      fw_version_entity: null,
+      ota_target_version_entity: null,
 
       // simulation controls (optional)
       simulation_mode_entity: null,
@@ -213,6 +267,7 @@ class WaterTankCard extends HTMLElement {
 
       // optional diagnostics
       quality_reason_entity: null,
+      ota_last_success_ts_entity: null,
     };
 
     const cfg = { ...defaults, ...config };
@@ -505,11 +560,302 @@ class WaterTankCard extends HTMLElement {
     return v === "unknown" || v === "unavailable" || v === "none";
   }
 
+  _isOtaBusyValue(value) {
+    if (this._isUnknownState(value)) return false;
+    const v = String(value).trim().toLowerCase();
+    return v === "downloading" || v === "verifying" || v === "applying" || v === "rebooting";
+  }
+
+  _otaSessionIsStale(now = Date.now()) {
+    const s = this._otaUi;
+    if (!s || !s.active) return false;
+    if (!Number.isFinite(s.lastSeenAt) || s.lastSeenAt <= 0) return false;
+    return (now - s.lastSeenAt) > OTA_UI_STALE_MS;
+  }
+
+  _startOtaUiSession(now = Date.now()) {
+    if (this._otaUi.resultTimer) {
+      clearTimeout(this._otaUi.resultTimer);
+      this._otaUi.resultTimer = null;
+    }
+    this._otaUi.active = true;
+    this._otaUi.startedAt = now;
+    this._otaUi.lastSeenAt = now;
+    this._otaUi.lastState = "queued";
+    this._otaUi.lastProgress = null;
+    this._otaUi.lastMessage = "Starting update…";
+    this._otaUi.result = null;
+    this._otaUi.resultAt = 0;
+  }
+
+  _resetOtaUiSession() {
+    if (this._otaUi.resultTimer) {
+      clearTimeout(this._otaUi.resultTimer);
+      this._otaUi.resultTimer = null;
+    }
+    this._otaUi.active = false;
+    this._otaUi.startedAt = 0;
+    this._otaUi.lastSeenAt = 0;
+    this._otaUi.lastState = null;
+    this._otaUi.lastProgress = null;
+    this._otaUi.lastMessage = null;
+    this._otaUi.result = null;
+    this._otaUi.resultAt = 0;
+  }
+
+  _otaStepLabel(state) {
+    if (this._isUnknownState(state)) return "Waiting";
+    const v = String(state).trim().toLowerCase();
+    switch (v) {
+      case "queued": return "Queued";
+      case "downloading": return "Downloading";
+      case "verifying": return "Verifying";
+      case "applying": return "Applying";
+      case "rebooting": return "Rebooting";
+      case "reconnecting": return "Rebooting / reconnecting…";
+      case "success": return "Completed";
+      case "failed": return "Failed";
+      default: return this._safeText(state);
+    }
+  }
+
+  _otaSeverity(stateOrResult) {
+    if (this._isUnknownState(stateOrResult)) return "info";
+    const v = String(stateOrResult).trim().toLowerCase();
+    if (v === "success") return "success";
+    if (v === "failed" || v === "error") return "error";
+    return "info";
+  }
+
+  _formatElapsed(ms) {
+    const value = Number(ms);
+    if (!Number.isFinite(value) || value <= 0) return "0s";
+    const totalSec = Math.floor(value / 1000);
+    const min = Math.floor(totalSec / 60);
+    const sec = totalSec % 60;
+    return min > 0 ? `${min}m ${sec}s` : `${sec}s`;
+  }
+
+  _entityUpdatedMs(entityId) {
+    if (!entityId || !this._hass?.states) return NaN;
+    const stateObj = this._hass.states[entityId];
+    if (!stateObj) return NaN;
+    const raw = stateObj.last_updated || stateObj.last_changed;
+    if (!raw) return NaN;
+    const ms = Date.parse(raw);
+    return Number.isFinite(ms) ? ms : NaN;
+  }
+
+  _latestEntityAgeSeconds(entityIds, nowMs = Date.now()) {
+    if (!Array.isArray(entityIds) || !entityIds.length) return NaN;
+    let latestMs = NaN;
+    entityIds.forEach((entityId) => {
+      const ms = this._entityUpdatedMs(entityId);
+      if (!Number.isFinite(ms)) return;
+      if (!Number.isFinite(latestMs) || ms > latestMs) latestMs = ms;
+    });
+    if (!Number.isFinite(latestMs)) return NaN;
+    return Math.max(0, Math.floor((nowMs - latestMs) / 1000));
+  }
+
+  async _copyTextToClipboard(text) {
+    if (!text) return false;
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (_err) {
+      // fallback below
+    }
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      ta.style.pointerEvents = "none";
+      ta.style.top = "-1000px";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const copied = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return !!copied;
+    } catch (_err) {
+      return false;
+    }
+  }
+
+  _buildOtaDiagnosticsPayload() {
+    const otaStateRaw = this._config.ota_state_entity ? this._state(this._config.ota_state_entity) : null;
+    const otaState = this._isUnknownState(otaStateRaw) ? (this._otaUi?.lastState || null) : String(otaStateRaw);
+    const otaProgressRaw = this._config.ota_progress_entity ? this._num(this._config.ota_progress_entity) : null;
+    const otaProgress = otaProgressRaw === null ? this._otaUi?.lastProgress : otaProgressRaw;
+    const otaLastStatusRaw = this._config.ota_last_status_entity ? this._state(this._config.ota_last_status_entity) : null;
+    const otaLastMessageRaw = this._config.ota_last_message_entity ? this._state(this._config.ota_last_message_entity) : null;
+    const otaLastMessage = this._isUnknownState(otaLastMessageRaw) ? this._otaUi?.lastMessage : otaLastMessageRaw;
+    const otaErrorRaw = this._config.ota_error_entity ? this._state(this._config.ota_error_entity) : null;
+    const fwRaw = this._config.fw_version_entity ? this._state(this._config.fw_version_entity) : null;
+    const targetRaw = this._config.ota_target_version_entity ? this._state(this._config.ota_target_version_entity) : null;
+    const bootCountRaw = this._config.boot_count_entity ? this._state(this._config.boot_count_entity) : null;
+    const resetReasonRaw = this._config.reset_reason_entity ? this._state(this._config.reset_reason_entity) : null;
+    const detailEntityIds = [
+      this._config.ota_state_entity,
+      this._config.ota_progress_entity,
+      this._config.ota_last_status_entity,
+      this._config.ota_last_message_entity,
+      this._config.ota_error_entity,
+    ].filter(Boolean);
+    const lastUpdatedSeconds = this._latestEntityAgeSeconds(detailEntityIds, Date.now());
+
+    const payload = {
+      title: this._config?.title || null,
+      fw_version: this._isUnknownState(fwRaw) ? null : String(fwRaw),
+      target_version: this._isUnknownState(targetRaw) ? null : String(targetRaw),
+      ota_state: this._isUnknownState(otaState) ? null : String(otaState),
+      ota_progress: Number.isFinite(otaProgress) ? Number(otaProgress) : null,
+      ota_last_status: this._isUnknownState(otaLastStatusRaw) ? null : String(otaLastStatusRaw),
+      ota_last_message: this._isUnknownState(otaLastMessage) ? null : String(otaLastMessage),
+      current_time_iso: new Date().toISOString(),
+    };
+
+    if (this._config.ota_error_entity) {
+      payload.ota_error = this._isUnknownState(otaErrorRaw) ? null : String(otaErrorRaw);
+    }
+    if (this._config.boot_count_entity) {
+      if (this._isUnknownState(bootCountRaw)) {
+        payload.boot_count = null;
+      } else {
+        const bootCountNum = Number(bootCountRaw);
+        payload.boot_count = Number.isFinite(bootCountNum) ? bootCountNum : String(bootCountRaw);
+      }
+    }
+    if (this._config.reset_reason_entity) {
+      payload.reset_reason = this._isUnknownState(resetReasonRaw) ? null : String(resetReasonRaw);
+    }
+    if (Number.isFinite(lastUpdatedSeconds)) {
+      payload.ota_last_updated_seconds_ago = lastUpdatedSeconds;
+    }
+    return payload;
+  }
+
+  _updateOtaUiSession(otaStateRaw, otaProgressVal, otaLastMessageRaw, now = Date.now()) {
+    const session = this._otaUi;
+    if (!session) return;
+
+    let stateLower = null;
+    if (!this._isUnknownState(otaStateRaw)) {
+      stateLower = String(otaStateRaw).trim().toLowerCase();
+
+      if (stateLower !== "queued") {
+        session.lastState = stateLower;
+        session.lastSeenAt = now;
+      }
+    }
+
+    if (Number.isFinite(otaProgressVal)) {
+      session.lastProgress = otaProgressVal;
+      session.lastSeenAt = now;
+    }
+
+    if (!this._isUnknownState(otaLastMessageRaw)) {
+      session.lastMessage = String(otaLastMessageRaw);
+      session.lastSeenAt = now;
+    }
+
+    if (!session.active) return;
+
+    if (stateLower === "success" || stateLower === "failed") {
+      session.active = false;
+      session.result = stateLower;
+      session.resultAt = session.resultAt || now;
+      if (stateLower === "success") {
+        if (session.resultTimer) clearTimeout(session.resultTimer);
+        const resultAt = session.resultAt;
+        session.resultTimer = setTimeout(() => {
+          if (this._otaUi?.result === "success" && this._otaUi?.resultAt === resultAt) {
+            this._resetOtaUiSession();
+            this._render();
+          }
+        }, 15000);
+      } else if (session.resultTimer) {
+        clearTimeout(session.resultTimer);
+        session.resultTimer = null;
+      }
+      if (this._toastTimer) {
+        clearTimeout(this._toastTimer);
+        this._toastTimer = null;
+      }
+      if (this._toast?.open) this._toast.open = false;
+      return;
+    }
+
+    if (
+      session.lastState !== "success" &&
+      session.lastState !== "failed" &&
+      (now - session.startedAt) > OTA_UI_TIMEOUT_MS
+    ) {
+      session.active = false;
+      session.result = "failed";
+      session.resultAt = session.resultAt || now;
+      if (session.resultTimer) {
+        clearTimeout(session.resultTimer);
+        session.resultTimer = null;
+      }
+      session.lastState = "failed";
+      session.lastMessage = "Timed out";
+      session.lastSeenAt = now;
+      if (this._toastTimer) {
+        clearTimeout(this._toastTimer);
+        this._toastTimer = null;
+      }
+      if (this._toast?.open) this._toast.open = false;
+    }
+  }
+
   _safeText(v, fallback = "—") {
     if (v === null || v === undefined) return fallback;
     if (typeof v === "number" && !Number.isFinite(v)) return fallback;
     const s = String(v);
     return s.length ? s : fallback;
+  }
+
+  _humanizeAgeFromEpochSeconds(ts) {
+    const n = Number(ts);
+    if (!Number.isFinite(n) || n <= 0) return "—";
+    const nowMs = Date.now();
+    const tsMs = n * 1000;
+    if (!Number.isFinite(tsMs) || tsMs <= 0) return "—";
+    const diffMs = nowMs - tsMs;
+    if (diffMs < 0) return "—";
+    const diffMin = diffMs / 60000;
+    if (diffMin < 60) return "just now";
+    const diffHours = Math.round(diffMin / 60);
+    if (diffHours < 24) return `${diffHours} hours ago`;
+    const diffDays = Math.round(diffHours / 24);
+    return `${diffDays} days ago`;
+  }
+
+  _timestampStateToEpochSeconds(raw) {
+    if (this._isUnknownState(raw)) return NaN;
+
+    if (typeof raw === "number") {
+      if (!Number.isFinite(raw) || raw <= 0) return NaN;
+      return raw > 1e12 ? raw / 1000 : raw;
+    }
+
+    const s = String(raw).trim();
+    if (!s.length) return NaN;
+
+    const numeric = Number(s);
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return numeric > 1e12 ? numeric / 1000 : numeric;
+    }
+
+    const parsedMs = Date.parse(s);
+    if (!Number.isFinite(parsedMs) || parsedMs <= 0) return NaN;
+    return parsedMs / 1000;
   }
 
   _formatNumber(value, decimals) {
@@ -1180,6 +1526,11 @@ class WaterTankCard extends HTMLElement {
       const qualityLabel = qm ? `${qm.label} (${qualityReason})` : qualityReason;
       diagnosticsLines.push({ label: "Quality", value: this._safeText(qualityLabel) });
     }
+    if (this._config.ota_last_success_ts_entity) {
+      const tsRaw = this._state(this._config.ota_last_success_ts_entity);
+      const tsValue = this._timestampStateToEpochSeconds(tsRaw);
+      diagnosticsLines.push({ label: "Last update", value: this._humanizeAgeFromEpochSeconds(tsValue) });
+    }
     if (this._config.percent_entity) diagnosticsLines.push({ label: "Percent", value: this._formatNumber(this._num(this._config.percent_entity), DIAGNOSTICS_DECIMALS) });
     if (this._config.liters_entity) {
       const v = this._formatVolume(this._num(this._config.liters_entity));
@@ -1194,6 +1545,79 @@ class WaterTankCard extends HTMLElement {
     const diagnosticsHtml = diagnosticsLines
       .map((l) => `<div class="wt-diag-row"><span>${l.label}</span><b>${l.value}</b></div>`)
       .join("");
+
+    const otaState = this._config.ota_state_entity ? this._state(this._config.ota_state_entity) : null;
+    const otaBusy = this._isOtaBusyValue(otaState) || !!this._otaUi?.active;
+    const otaProgressVal = this._config.ota_progress_entity ? this._num(this._config.ota_progress_entity) : null;
+    const otaProgressEff = otaProgressVal === null ? this._otaUi?.lastProgress : otaProgressVal;
+    const otaProgressLabel = otaProgressEff === null || otaProgressEff === undefined ? "—" : `${this._formatNumber(otaProgressEff, 0)}%`;
+    const otaLastStatus = this._config.ota_last_status_entity ? this._state(this._config.ota_last_status_entity) : null;
+    const otaLastMessageRaw = this._config.ota_last_message_entity ? this._state(this._config.ota_last_message_entity) : null;
+    const otaLastMessage = this._isUnknownState(otaLastMessageRaw) ? this._otaUi?.lastMessage : otaLastMessageRaw;
+    const otaError = this._config.ota_error_entity ? this._state(this._config.ota_error_entity) : null;
+    const updateAvailableState = this._config.update_available_entity ? this._state(this._config.update_available_entity) : null;
+    const updateAvailableLabel = this._boolLabelFromState(updateAvailableState, "Yes", "No");
+    const otaStateKnown = !this._isUnknownState(otaState);
+    const otaReconnectState = (!!this._otaUi?.active && !otaStateKnown) || this._otaSessionIsStale(Date.now());
+    const otaStateDisplay = otaReconnectState
+      ? "Rebooting / reconnecting…"
+      : (otaStateKnown ? otaState : (this._otaUi?.lastState || otaState));
+    const otaStateDiag = otaStateKnown ? otaState : (this._otaUi?.lastState || otaState);
+    const fwVersionRaw = this._config.fw_version_entity ? this._state(this._config.fw_version_entity) : null;
+    const targetVersionRaw = this._config.ota_target_version_entity ? this._state(this._config.ota_target_version_entity) : null;
+    const otaDiagEntityIds = [
+      this._config.ota_state_entity,
+      this._config.ota_progress_entity,
+      this._config.ota_last_status_entity,
+      this._config.ota_last_message_entity,
+      this._config.ota_error_entity,
+    ].filter(Boolean);
+    const otaLastUpdatedSeconds = this._latestEntityAgeSeconds(otaDiagEntityIds, Date.now());
+    const otaLastUpdatedLabel = Number.isFinite(otaLastUpdatedSeconds) ? `${otaLastUpdatedSeconds} seconds ago` : "—";
+    const otaButtonDisabled = !online || otaBusy || !this._config.ota_pull_entity;
+    const otaSectionFlash = this._flashOtaSectionUntil > Date.now();
+    const hasOtaSection =
+      !!(this._config.ota_pull_entity ||
+        this._config.ota_state_entity ||
+        this._config.ota_progress_entity ||
+        this._config.ota_last_status_entity ||
+        this._config.ota_last_message_entity ||
+        this._config.ota_error_entity ||
+        this._config.update_available_entity);
+    const otaSection = hasOtaSection ? `
+      <div class="wt-section${otaSectionFlash ? " wt-section--flash" : ""}" id="ota-section">
+        <div class="wt-section-sub" style="margin-bottom:8px;">OTA Update</div>
+        <div class="wt-diag-list">
+          <div class="wt-diag-row"><span>Update available</span><b>${this._safeText(updateAvailableLabel)}</b></div>
+          <div class="wt-diag-row"><span>State</span><b>${this._safeText(otaStateDisplay)}</b></div>
+          <div class="wt-diag-row"><span>Progress</span><b>${otaProgressLabel}</b></div>
+          <div class="wt-diag-row"><span>Last status</span><b>${this._safeText(otaLastStatus)}</b></div>
+          <div class="wt-diag-row"><span>Last message</span><b>${this._safeText(otaLastMessage)}</b></div>
+        </div>
+        <details class="wt-ota-details">
+          <summary>OTA details</summary>
+          <div class="wt-diag-list">
+            <div class="wt-diag-row"><span>ota_state</span><b>${this._safeText(otaStateDiag)}</b></div>
+            <div class="wt-diag-row"><span>ota_progress</span><b>${otaProgressLabel}</b></div>
+            <div class="wt-diag-row"><span>ota_last_status</span><b>${this._safeText(otaLastStatus)}</b></div>
+            <div class="wt-diag-row"><span>ota_last_message</span><b>${this._safeText(otaLastMessage)}</b></div>
+            ${this._config.ota_error_entity ? `<div class="wt-diag-row"><span>ota_error</span><b>${this._safeText(otaError)}</b></div>` : ``}
+            <div class="wt-diag-row"><span>fw_version</span><b>${this._safeText(fwVersionRaw)}</b></div>
+            <div class="wt-diag-row"><span>target_version</span><b>${this._safeText(targetVersionRaw)}</b></div>
+            <div class="wt-diag-row"><span>Last updated</span><b>${this._safeText(otaLastUpdatedLabel)}</b></div>
+          </div>
+          <div class="wt-setup-input" style="margin-top:8px;">
+            <button class="wt-btn" id="btnOtaCopyDiag" type="button">Copy diagnostics</button>
+          </div>
+        </details>
+        <div class="wt-setup-input" style="margin-top:10px;">
+          <button class="wt-btn" id="btnOtaUpdate" data-entity="${this._config.ota_pull_entity || ""}" ${otaButtonDisabled ? "disabled" : ""}>
+            Update now
+          </button>
+        </div>
+        ${otaBusy ? `<div class="wt-note">Do not power off. Device may reboot.</div>` : ``}
+        ${!online ? `<div class="wt-note wt-note-error">Device offline — cannot start OTA</div>` : ``}
+      </div>` : "";
 
     const advancedPage = `
       <div class="wt-modal-header">
@@ -1242,6 +1666,7 @@ class WaterTankCard extends HTMLElement {
         <div class="wt-section-sub" style="margin-bottom:8px;">Diagnostics</div>
         <div class="wt-diag-list">${diagnosticsHtml}</div>
       </div>
+      ${otaSection}
       ${this._config.wipe_wifi_entity ? `
       <div class="wt-section">
         <div class="wt-section-sub" style="margin-bottom:8px;">Maintenance</div>
@@ -1403,6 +1828,30 @@ class WaterTankCard extends HTMLElement {
         if (!ok) return;
         this._showToast("Wiping WiFi credentials…", "warning", TOAST_RESULT_MS);
         pressButton(this._config.wipe_wifi_entity);
+      };
+    }
+    const otaBtn = sr.getElementById("btnOtaUpdate");
+    if (otaBtn) {
+      otaBtn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (otaBtn.disabled) return;
+        const entityId = otaBtn.dataset.entity;
+        if (!entityId) return;
+        this._startOtaUiSession(Date.now());
+        this._showToast("OTA started…", "info", 0, { sticky: true });
+        pressButton(entityId);
+      };
+    }
+    const otaCopyDiagBtn = sr.getElementById("btnOtaCopyDiag");
+    if (otaCopyDiagBtn) {
+      otaCopyDiagBtn.onclick = async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const payload = this._buildOtaDiagnosticsPayload();
+        const text = JSON.stringify(payload, null, 2);
+        const copied = await this._copyTextToClipboard(text);
+        this._showToast(copied ? "Diagnostics copied" : "Failed to copy diagnostics", copied ? "success" : "error", TOAST_RESULT_MS);
       };
     }
 
@@ -1877,6 +2326,145 @@ class WaterTankCard extends HTMLElement {
       : false;
     const probeState = this._state(this._config.probe_entity);
 
+    const now = Date.now();
+    const updateAvailableState = this._config.update_available_entity ? this._state(this._config.update_available_entity) : null;
+    const updateAvailable = this._isTruthyState(updateAvailableState);
+    const otaState = this._config.ota_state_entity ? this._state(this._config.ota_state_entity) : null;
+    const otaProgressVal = this._config.ota_progress_entity ? this._num(this._config.ota_progress_entity) : null;
+    const otaLastMessage = this._config.ota_last_message_entity ? this._state(this._config.ota_last_message_entity) : null;
+    const otaErrorState = this._config.ota_error_entity ? this._state(this._config.ota_error_entity) : null;
+    const otaStateKnown = this._config.ota_state_entity && !this._isUnknownState(otaState);
+    const otaStateLower = otaStateKnown ? String(otaState).trim().toLowerCase() : "";
+    const otaBusyFromDevice = otaStateKnown && (
+      otaStateLower === "downloading" ||
+      otaStateLower === "verifying" ||
+      otaStateLower === "applying" ||
+      otaStateLower === "rebooting"
+    );
+    if (otaBusyFromDevice && !this._otaUi?.active && this._otaUi?.result === null) {
+      this._otaUi.active = true;
+      if (!Number.isFinite(this._otaUi.startedAt) || this._otaUi.startedAt === 0) {
+        this._otaUi.startedAt = now;
+      }
+      this._otaUi.lastSeenAt = now;
+      this._otaUi.lastState = otaStateLower;
+      if (!this._isUnknownState(otaLastMessage)) this._otaUi.lastMessage = String(otaLastMessage);
+    }
+    this._updateOtaUiSession(otaState, otaProgressVal, otaLastMessage, now);
+    const otaSessionActive = !!this._otaUi?.active;
+    const otaPanelActive = otaSessionActive || otaBusyFromDevice;
+    const otaSessionResult = this._otaUi?.result || null;
+    const otaInProgress = otaPanelActive;
+    const otaProgressEff = otaProgressVal === null ? this._otaUi?.lastProgress : otaProgressVal;
+    const otaProgressPct = (otaProgressEff !== null && otaProgressEff !== undefined && otaProgressEff >= 1 && otaProgressEff <= 100)
+      ? Math.round(otaProgressEff)
+      : null;
+    const otaProgressText = otaProgressPct !== null ? `${otaProgressPct}%` : "…";
+    const otaStale = this._otaSessionIsStale(now);
+    const otaReconnectState = (otaSessionActive && !otaStateKnown) || otaStale;
+    const otaStepState = otaReconnectState
+      ? "reconnecting"
+      : (otaStateKnown ? otaStateLower : (this._otaUi?.lastState || null));
+    const otaStepLabel = this._otaStepLabel(otaStepState);
+    const otaSeverity = this._otaSeverity(otaPanelActive ? "info" : otaSessionResult);
+    const otaElapsed = otaPanelActive ? this._formatElapsed(now - (this._otaUi?.startedAt || now)) : "";
+    const otaFooterSource = !this._isUnknownState(this._otaUi?.lastMessage)
+      ? String(this._otaUi.lastMessage)
+      : (!this._isUnknownState(otaLastMessage) ? String(otaLastMessage) : "");
+    const otaFooterMsg = otaFooterSource.length > 96 ? `${otaFooterSource.slice(0, 93)}...` : otaFooterSource;
+    const otaFailureSource = !this._isUnknownState(otaErrorState)
+      ? String(otaErrorState)
+      : (!this._isUnknownState(this._otaUi?.lastMessage)
+        ? String(this._otaUi.lastMessage)
+        : (!this._isUnknownState(otaLastMessage) ? String(otaLastMessage) : "Update failed"));
+    const otaFailureMsg = otaFailureSource.length > 128 ? `${otaFailureSource.slice(0, 125)}...` : otaFailureSource;
+    const currentFw = this._config.fw_version_entity ? this._state(this._config.fw_version_entity) : null;
+    const targetFw = this._config.ota_target_version_entity ? this._state(this._config.ota_target_version_entity) : null;
+    const currentFwKnown = !this._isUnknownState(currentFw);
+    const targetFwKnown = !this._isUnknownState(targetFw);
+    const fwMatchesTarget = currentFwKnown && targetFwKnown && String(currentFw).trim() === String(targetFw).trim();
+    const successAgeMs = (otaSessionResult === "success" && this._otaUi?.resultAt > 0) ? (now - this._otaUi.resultAt) : 0;
+    const successVersionMismatchStale = otaSessionResult === "success" && currentFwKnown && targetFwKnown && !fwMatchesTarget && successAgeMs > 120000;
+    if (otaSessionResult === "success" && currentFwKnown && targetFwKnown && !fwMatchesTarget) {
+      // Keep success diagnostics visible until version confirmation or stale warning condition.
+      if (this._otaUi?.resultTimer) {
+        clearTimeout(this._otaUi.resultTimer);
+        this._otaUi.resultTimer = null;
+      }
+    } else if (otaSessionResult === "success" && fwMatchesTarget && !this._otaUi?.resultTimer) {
+      const resultAt = this._otaUi?.resultAt || now;
+      this._otaUi.resultTimer = setTimeout(() => {
+        if (this._otaUi?.result === "success" && this._otaUi?.resultAt === resultAt) {
+          this._resetOtaUiSession();
+          this._render();
+        }
+      }, 15000);
+    }
+    const successBannerMsg = (() => {
+      if (otaSessionResult !== "success") return "";
+      if (fwMatchesTarget && targetFwKnown) return `Updated to ${String(targetFw).trim()}`;
+      if (successVersionMismatchStale) return "Update reported success, but version has not changed yet.";
+      return this._safeText(this._otaUi?.lastMessage || "Update completed successfully");
+    })();
+    const otaInline = (() => {
+      if (otaPanelActive) {
+        return `
+          <div class="otaPanel otaPanel--${otaSeverity}">
+            <div class="otaPanelHead">
+              <div>
+                <div class="otaPanelTitle">Updating firmware</div>
+                <div class="otaPanelSub">${this._safeText(otaStepLabel)}</div>
+              </div>
+              <div class="otaPanelRight">${otaProgressText}</div>
+            </div>
+            <div class="otaBar">
+              <div class="otaBarFill ${otaProgressPct !== null ? "" : "otaBarFill--ind"}" style="${otaProgressPct !== null ? `width:${otaProgressPct}%;` : ""}"></div>
+            </div>
+            <div class="otaPanelFoot">
+              <span>${this._safeText(otaElapsed)}</span>
+              ${otaFooterMsg ? `<span class="otaDivider">•</span><span class="otaMsg">${this._safeText(otaFooterMsg, "")}</span>` : ``}
+            </div>
+          </div>
+        `;
+      }
+      if (otaSessionResult === "success") {
+        return `
+          <div class="otaBanner otaBanner--success">
+            <ha-icon icon="mdi:check-circle"></ha-icon>
+            <div class="otaBannerBody">
+              <div class="otaBannerTitle">Firmware updated</div>
+              <div class="otaBannerMsg">${this._safeText(successBannerMsg)}</div>
+            </div>
+          </div>
+        `;
+      }
+      if (otaSessionResult === "failed") {
+        return `
+          <div class="otaBanner otaBanner--error">
+            <ha-icon icon="mdi:alert-circle"></ha-icon>
+            <div class="otaBannerBody">
+              <div class="otaBannerTitle">Update failed</div>
+              <div class="otaBannerMsg">${this._safeText(otaFailureMsg)}</div>
+            </div>
+            <button class="otaViewDetailsBtn" id="otaViewDetailsBtn" type="button">View details</button>
+          </div>
+        `;
+      }
+      return "";
+    })();
+    const showUpdateBanner = updateAvailable && !otaInProgress;
+    const showVersionLine = !this._isUnknownState(currentFw) && !this._isUnknownState(targetFw);
+    const versionLine = showVersionLine ? `${this._safeText(currentFw, "")} → ${this._safeText(targetFw, "")}` : "";
+    const updateBanner = showUpdateBanner ? `
+      <div class="notice" id="otaBanner" role="button" tabindex="0" style="cursor:pointer;">
+        <div>
+          <div class="msg">Update available</div>
+          ${versionLine ? `<div style="font-size:12px;opacity:0.7;">${versionLine}</div>` : ``}
+        </div>
+        <ha-icon icon="mdi:chevron-right" style="margin-left:auto;"></ha-icon>
+      </div>
+    ` : "";
+
     const css = `
       :host { display:block; }
       ha-card {
@@ -2078,6 +2666,112 @@ class WaterTankCard extends HTMLElement {
         font-weight: 800;
         font-size: 16px;
       }
+      .otaPanel,
+      .otaBanner {
+        margin-top: 10px;
+        padding: 10px 12px;
+        border-radius: 12px;
+        background: rgba(0,0,0,0.06);
+        border: 1px solid rgba(0,0,0,0.08);
+      }
+      .otaPanel--info {
+        background: rgba(0,0,0,0.06);
+      }
+      .otaPanel--success,
+      .otaBanner--success {
+        background: rgba(0,150,0,0.12);
+        border-color: rgba(0,150,0,0.3);
+      }
+      .otaPanel--error,
+      .otaBanner--error {
+        background: rgba(255,64,64,0.14);
+        border-color: rgba(255,64,64,0.35);
+      }
+      .otaPanelHead {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .otaPanelTitle,
+      .otaBannerTitle {
+        font-size: 13px;
+        font-weight: 800;
+        line-height: 1.2;
+      }
+      .otaPanelSub,
+      .otaBannerMsg {
+        font-size: 12px;
+        opacity: 0.8;
+        margin-top: 2px;
+      }
+      .otaPanelRight {
+        font-size: 13px;
+        font-weight: 800;
+        opacity: 0.9;
+      }
+      .otaPanelFoot {
+        margin-top: 8px;
+        font-size: 12px;
+        opacity: 0.85;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+      }
+      .otaMsg {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
+        flex: 1;
+      }
+      .otaDivider {
+        opacity: 0.65;
+      }
+      .otaBanner {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .otaBanner ha-icon {
+        --mdc-icon-size: 18px;
+      }
+      .otaBannerBody {
+        min-width: 0;
+        flex: 1;
+      }
+      .otaViewDetailsBtn {
+        border: none;
+        border-radius: 8px;
+        padding: 6px 10px;
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+        background: rgba(0,0,0,0.12);
+        color: inherit;
+      }
+      .otaBar {
+        height: 4px;
+        border-radius: 999px;
+        background: rgba(0,0,0,0.08);
+        overflow: hidden;
+        margin-top: 6px;
+      }
+      .otaBarFill {
+        height: 100%;
+        background: var(--primary-color);
+        width: 0;
+        transition: width 0.2s ease;
+      }
+      .otaBarFill--ind {
+        width: 40%;
+        animation: otaIndeterminate 1.2s infinite;
+      }
+      @keyframes otaIndeterminate {
+        0% { transform: translateX(-60%); }
+        100% { transform: translateX(160%); }
+      }
       .rawLine {
         font-size: 13px;
         opacity: 0.85;
@@ -2251,6 +2945,23 @@ class WaterTankCard extends HTMLElement {
         margin-top: 8px;
         font-size: 12px;
         opacity: 0.75;
+      }
+      .wt-note-error {
+        color: var(--error-color, #c00);
+        opacity: 0.95;
+      }
+      .wt-section--flash {
+        animation: wtOtaSectionFlash 1.5s ease-out;
+      }
+      @keyframes wtOtaSectionFlash {
+        0% {
+          background: rgba(255, 170, 0, 0.24);
+          box-shadow: 0 0 0 2px rgba(255, 170, 0, 0.35) inset;
+        }
+        100% {
+          background: transparent;
+          box-shadow: 0 0 0 0 rgba(255, 170, 0, 0) inset;
+        }
       }
       .wt-cal-values {
         display: grid;
@@ -2517,7 +3228,11 @@ class WaterTankCard extends HTMLElement {
           </div>
         </div>
 
+        ${updateBanner}
+
         <div class="rawLine">Raw: ${this._safeText(raw)}</div>
+
+        ${otaInline}
 
         <div class="footer">
           <div class="warn">
@@ -2574,6 +3289,35 @@ class WaterTankCard extends HTMLElement {
       };
     }
 
+    const otaBanner = this.shadowRoot.getElementById("otaBanner");
+    if (otaBanner) {
+      otaBanner.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this._scrollToOta = true;
+        this._flashOtaSectionUntil = Date.now() + 1500;
+        this._openModal("advanced");
+      };
+      otaBanner.onkeydown = (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          this._scrollToOta = true;
+          this._flashOtaSectionUntil = Date.now() + 1500;
+          this._openModal("advanced");
+        }
+      };
+    }
+
+    const otaViewDetailsBtn = this.shadowRoot.getElementById("otaViewDetailsBtn");
+    if (otaViewDetailsBtn) {
+      otaViewDetailsBtn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this._scrollToOta = true;
+        this._openModal("advanced");
+      };
+    }
+
     this._bindModalHandlers();
 
     if (this._modalOpen && this.shadowRoot) {
@@ -2589,6 +3333,13 @@ class WaterTankCard extends HTMLElement {
         const focusId = this._focusAfterRender || modalFocusId;
         const selection = focusId === modalFocusId ? modalFocusSelection : null;
         this._focusAfterRender = null;
+        if (this._scrollToOta) {
+          this._scrollToOta = false;
+          const otaAnchor = this.shadowRoot.getElementById("ota-section");
+          if (otaAnchor && typeof otaAnchor.scrollIntoView === "function") {
+            otaAnchor.scrollIntoView({ behavior: "auto", block: "start" });
+          }
+        }
         if (focusId) {
           const focusEl = this.shadowRoot.getElementById(focusId);
           if (focusEl && typeof focusEl.focus === "function") {

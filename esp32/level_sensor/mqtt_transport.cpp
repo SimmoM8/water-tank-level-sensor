@@ -35,6 +35,8 @@ struct Topics
     char cmd[96];
     char ack[96];
     char avail[96];
+    char otaProgress[128];
+    char otaStatus[128];
 };
 static Topics s_topics{};
 
@@ -77,6 +79,38 @@ static void buildTopics()
     buildTopic(s_topics.cmd, sizeof(s_topics.cmd), "cmd");
     buildTopic(s_topics.ack, sizeof(s_topics.ack), "ack");
     buildTopic(s_topics.avail, sizeof(s_topics.avail), "availability");
+    buildTopic(s_topics.otaProgress, sizeof(s_topics.otaProgress), "ota/progress");
+    buildTopic(s_topics.otaStatus, sizeof(s_topics.otaStatus), "ota/status");
+}
+
+static const char *otaStatusTopicValue(const DeviceState &state)
+{
+    switch (state.ota.status)
+    {
+    case OtaStatus::IDLE:
+        return "idle";
+    case OtaStatus::DOWNLOADING:
+        return "downloading";
+    case OtaStatus::VERIFYING:
+        return "verifying";
+    case OtaStatus::APPLYING:
+        return "applying";
+    case OtaStatus::REBOOTING:
+        return "rebooting";
+    case OtaStatus::SUCCESS:
+        return "success";
+    case OtaStatus::ERROR:
+        return "failed";
+    }
+    return "idle";
+}
+
+static void publishOtaShadowTopics(const DeviceState &state)
+{
+    char progressBuf[8];
+    snprintf(progressBuf, sizeof(progressBuf), "%u", (unsigned int)state.ota_progress);
+    mqtt.publish(s_topics.otaProgress, progressBuf, true);
+    mqtt.publish(s_topics.otaStatus, otaStatusTopicValue(state), true);
 }
 
 // MQTT callback for incoming messages
@@ -187,6 +221,7 @@ static bool mqtt_ensureConnected()
                 .deviceName = s_cfg.deviceName,
                 .deviceModel = s_cfg.deviceModel,
                 .deviceSw = s_cfg.deviceSw,
+                .deviceHw = s_cfg.deviceHw,
                 .publish = mqtt_publishRaw};
             ha_discovery_begin(haCfg);
             s_haDiscoveryBegun = true;
@@ -256,6 +291,7 @@ static bool publishState(const DeviceState &state)
                     "Publish state topic=%s retained=%s bytes=%u", s_topics.state, retained ? "true" : "false", (unsigned)payloadLen);
     if (ok)
     {
+        publishOtaShadowTopics(state);
         s_statePublishRequested = false;
         s_lastStatePublishMs = millis();
     }
@@ -321,7 +357,7 @@ void mqtt_requestStatePublish()
     s_statePublishRequested = true;
 }
 
-bool mqtt_publishAck(const char *reqId, const char *type, CmdStatus status, const char *msg)
+bool mqtt_publishAck(const char *reqId, const char *type, const char *status, const char *msg)
 {
     if (!mqtt.connected())
         return false;
@@ -329,7 +365,7 @@ bool mqtt_publishAck(const char *reqId, const char *type, CmdStatus status, cons
     StaticJsonDocument<256> doc;
     doc["request_id"] = reqId ? reqId : "";
     doc["type"] = type ? type : "";
-    doc["status"] = toString(status);
+    doc["status"] = status ? status : "";
     doc["message"] = msg ? msg : "";
 
     char buf[256];

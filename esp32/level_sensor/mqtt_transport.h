@@ -18,6 +18,7 @@ struct MqttConfig
     const char *deviceName;
     const char *deviceModel;
     const char *deviceSw;
+    const char *deviceHw;
 };
 
 using CommandHandlerFn = void (*)(const uint8_t *payload, size_t len);
@@ -32,7 +33,7 @@ void mqtt_tick(const DeviceState &state);
 void mqtt_requestStatePublish();
 
 // Publish ACK on the dedicated ack topic (not retained).
-bool mqtt_publishAck(const char *reqId, const char *type, CmdStatus status, const char *msg);
+bool mqtt_publishAck(const char *reqId, const char *type, const char *status, const char *msg);
 
 // Publish a raw payload to a topic under baseTopic.
 bool mqtt_publishLog(const char *topicSuffix, const char *payload, bool retained = false);
