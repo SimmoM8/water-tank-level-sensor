@@ -102,7 +102,11 @@ DeviceState g_state;
 // =============================================================================
 
 // --------- MQTT credentials (secrets.h) ---------
+#ifdef __has_include
+#if __has_include("secrets.h")
 #include "secrets.h"
+#endif
+#endif
 
 #ifndef MQTT_USER
 #define MQTT_USER ""
@@ -116,8 +120,15 @@ DeviceState g_state;
 // -------------------------------------------
 
 // ===== MQTT config =====
-static const char *MQTT_HOST = "192.168.0.198";
-static const int MQTT_PORT = 1883;
+#ifndef MQTT_HOST
+#define MQTT_HOST "192.168.0.198"
+#endif
+#ifndef MQTT_PORT
+#define MQTT_PORT 1883
+#endif
+
+static const char *MQTT_HOST_VALUE = MQTT_HOST;
+static const int MQTT_PORT_VALUE = MQTT_PORT;
 
 // Use a stable client id (unique per device). If you add more ESP32 devices later,
 // change this string so they don't clash.
@@ -1383,8 +1394,8 @@ void appSetup()
   commands_begin(cmdCtx);
 
   MqttConfig mqttCfg{
-      .host = MQTT_HOST,
-      .port = MQTT_PORT,
+      .host = MQTT_HOST_VALUE,
+      .port = MQTT_PORT_VALUE,
       .clientId = MQTT_CLIENT_ID,
       .user = MQTT_USER,
       .pass = MQTT_PASS,
