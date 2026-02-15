@@ -143,7 +143,7 @@ static const uint32_t PERCENT_SAMPLE_MS = CFG_PERCENT_SAMPLE_MS;
 static const float PERCENT_EMA_ALPHA = CFG_PERCENT_EMA_ALPHA;
 static constexpr uint8_t SIM_MODE_MAX = 5;
 static constexpr float LEVEL_CHANGE_EPS = 0.01f;
-static constexpr size_t SERIAL_CMD_BUF = 192;
+static constexpr size_t SERIAL_CMD_BUF = 256;
 static constexpr char SERIAL_CMD_DELIMS[] = " \t";
 
 static_assert(TOUCH_SAMPLES > 0, "TOUCH_SAMPLES must be > 0");
@@ -335,7 +335,7 @@ static void printHelpMenu()
   LOG_INFO(LogDomain::SYSTEM, "  sim <0-5> -> set simulation mode and enable sim backend");
   LOG_INFO(LogDomain::SYSTEM, "  mode touch -> use touchRead()");
   LOG_INFO(LogDomain::SYSTEM, "  mode sim   -> use simulation backend");
-  LOG_INFO(LogDomain::SYSTEM, "  ota <url> <sha256> -> start force pull-OTA from serial");
+  LOG_INFO(LogDomain::SYSTEM, "  ota <url> <sha256> <version> -> start force pull-OTA from serial");
   LOG_INFO(LogDomain::SYSTEM, "  help  -> show this menu");
 }
 
@@ -1102,6 +1102,7 @@ static void handleSerialCommands()
   {
     const char *url = strtok_r(nullptr, SERIAL_CMD_DELIMS, &save);
     char *sha256 = strtok_r(nullptr, SERIAL_CMD_DELIMS, &save);
+    const char *version = strtok_r(nullptr, SERIAL_CMD_DELIMS, &save);
     if (sha256)
     {
       while (*sha256 != '\0' && isspace((unsigned char)*sha256))
@@ -1115,14 +1116,13 @@ static void handleSerialCommands()
         shaLen--;
       }
     }
-    if (!url || !sha256 || url[0] == '\0' || sha256[0] == '\0')
+    if (!url || !sha256 || !version || url[0] == '\0' || sha256[0] == '\0' || version[0] == '\0')
     {
-      LOG_WARN(LogDomain::OTA, "OTA serial rejected: missing_url_or_sha256");
+      LOG_WARN(LogDomain::OTA, "OTA serial rejected: missing_url_or_sha256_or_version");
       return;
     }
-    LOG_INFO(LogDomain::OTA, "SHA len=%u last_char=0x%02X",
-             strlen(sha256),
-             (unsigned char)sha256[strlen(sha256)]);
+    LOG_INFO(LogDomain::OTA, "OTA serial parsed: url=%s sha_prefix=%.8s target=%s",
+             url, sha256, version);
     if (!isHex64(sha256))
     {
       LOG_WARN(LogDomain::OTA, "OTA serial rejected: bad_sha256_format");
@@ -1144,7 +1144,7 @@ static void handleSerialCommands()
     const bool ok = ota_pullStart(
         &g_state,
         "serial_test",
-        "dev-test",
+        version,
         url,
         sha256,
         true,
