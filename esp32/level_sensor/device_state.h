@@ -73,7 +73,7 @@ struct DeviceInfo
 struct WifiInfo
 {
     int rssi;       // e.g. -55
-    const char *ip; // "192.168.x.x" (we’ll fill from a buffer)
+    const char *ip; // "192.0.2.x" (we’ll fill from a buffer)
 };
 
 struct MqttInfo

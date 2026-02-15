@@ -1,5 +1,5 @@
 {
   "version": "0.0.0-dev",
-  "url": "https://github.com/SimmoM8/water-tank-level-sensor/releases/download/v0.0.0-dev/firmware-0.0.0-dev.bin",
+  "url": "https://github.com/<org>/<repo>/releases/download/v0.0.0-dev/firmware-0.0.0-dev.bin",
   "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 }

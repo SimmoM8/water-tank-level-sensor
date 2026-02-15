@@ -455,7 +455,7 @@ void ota_handle()
         {
             ArduinoOTA.setHostname(s_hostName);
         }
-        if (s_password)
+        if (s_password && s_password[0] != '\0')
         {
             ArduinoOTA.setPassword(s_password);
         }

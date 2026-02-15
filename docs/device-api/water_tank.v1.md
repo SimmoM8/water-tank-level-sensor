@@ -56,7 +56,7 @@ Notes:
     "name": "Water Tank Sensor",
     "fw": "1.3.0"
   },
-  "wifi": { "rssi": -61, "ip": "192.168.0.50" },
+  "wifi": { "rssi": -61, "ip": "192.0.2.50" },
   "time": {
     "valid": true,
     "status": "valid",
