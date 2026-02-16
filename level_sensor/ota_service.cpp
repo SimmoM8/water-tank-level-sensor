@@ -137,6 +137,7 @@ static void setErr(char *buf, size_t len, const char *msg);
 static inline void ota_requestPublish();
 static void ota_abort(DeviceState *state, const char *reason);
 static uint32_t ota_epochNow();
+static inline const char *ota_configureTlsClient(WiFiClientSecure &client);
 
 static inline bool ota_timeReached(uint32_t now, uint32_t target)
 {
@@ -424,13 +425,14 @@ static void ota_logTlsStatus(const char *phase, const char *endpoint, bool succe
 
 static inline void ota_prepareTlsClient(WiFiClientSecure &client, const char *phase)
 {
-    ota_configureTlsClient(client);
+    const char *trustMode = ota_configureTlsClient(client);
 
-    s_lastTlsTrustMode = "crt_bundle";
+    s_lastTlsTrustMode = (trustMode && trustMode[0] != '\0') ? trustMode : "unknown";
     ota_resetTlsError();
 
     LOG_INFO(LogDomain::OTA,
-             "TLS trust=crt_bundle phase=%s",
+             "TLS trust=%s phase=%s",
+             s_lastTlsTrustMode,
              phase ? phase : "");
 }
 

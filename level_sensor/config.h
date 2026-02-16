@@ -19,6 +19,8 @@
 // #define CFG_ZERO_HIT_COUNT 2u
 // #define CFG_ZERO_WINDOW_MS 5000u
 
+// #define CFG_SERIAL_CMD_BUF 512u // default 256 bytes for incoming serial command buffer
+
 // — Tank Volume Number entity (display/input) —
 #define CFG_TANK_VOLUME_UNIT "L" // "L" or "mL"
 #define CFG_TANK_VOLUME_MAX 30000.0f
@@ -36,6 +38,7 @@
 
 // — OTA —
 #define CFG_OTA_MANIFEST_URL "https://raw.githubusercontent.com/SimmoM8/water-tank-level-sensor/main/manifests/dev.json"
+#define CFG_OTA_TLS_PREFER_CRT_BUNDLE 1 // default 1 uses embedded fallback CA chain
 // — Time sync (non-blocking NTP) —
 // #define CFG_TIME_SYNC_TIMEOUT_MS 20000u
 // #define CFG_TIME_SYNC_RETRY_MIN_MS 5000u

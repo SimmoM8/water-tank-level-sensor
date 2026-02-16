@@ -88,6 +88,9 @@ DeviceState g_state;
 #ifndef CFG_CRASH_GOOD_BOOT_AFTER_MS
 #define CFG_CRASH_GOOD_BOOT_AFTER_MS 90000u
 #endif
+#ifndef CFG_SERIAL_CMD_BUF
+#define CFG_SERIAL_CMD_BUF 256u
+#endif
 
 // =============================================================================
 // Dad's Smart Home — Water Level Sensor (ESP32 touch) → MQTT → Home Assistant
@@ -154,7 +157,7 @@ static const uint32_t PERCENT_SAMPLE_MS = CFG_PERCENT_SAMPLE_MS;
 static const float PERCENT_EMA_ALPHA = CFG_PERCENT_EMA_ALPHA;
 static constexpr uint8_t SIM_MODE_MAX = 5;
 static constexpr float LEVEL_CHANGE_EPS = 0.01f;
-static constexpr size_t SERIAL_CMD_BUF = 256;
+static constexpr size_t SERIAL_CMD_BUF = CFG_SERIAL_CMD_BUF;
 static constexpr char SERIAL_CMD_DELIMS[] = " \t";
 
 static_assert(TOUCH_SAMPLES > 0, "TOUCH_SAMPLES must be > 0");
