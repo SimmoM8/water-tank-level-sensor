@@ -29,6 +29,9 @@
 #define OTA_MIN_BYTES 1024
 #endif
 #ifndef CFG_OTA_MANIFEST_URL
+// Manifest must be uploaded as a GitHub Release asset (latest/download/dev.json).
+// Expected JSON shape: {"version":"...","url":"https://github.com/SimmoM8/water-tank-level-sensor/releases/download/<tag>/level_sensor.ino.bin","sha256":"<64 hex>"}
+// Firmware binary must also be a Release asset with stable name level_sensor.ino.bin.
 #define CFG_OTA_MANIFEST_URL "https://github.com/SimmoM8/water-tank-level-sensor/releases/latest/download/dev.json"
 #endif
 #ifndef CFG_OTA_GUARD_REQUIRE_MQTT_CONNECTED
@@ -169,6 +172,29 @@ static bool ota_manifestUrlHostTrusted(const char *url)
     }
     return (strstr(host, "github.com") != nullptr) ||
            (strstr(host, "release-assets.githubusercontent.com") != nullptr);
+}
+
+static bool ota_urlContainsNoCase(const char *url, const char *needle)
+{
+    if (!url || !needle || needle[0] == '\0')
+    {
+        return false;
+    }
+    const size_t needleLen = strlen(needle);
+    for (const char *p = url; *p != '\0'; ++p)
+    {
+        size_t i = 0;
+        while (i < needleLen && p[i] != '\0' &&
+               tolower((unsigned char)p[i]) == tolower((unsigned char)needle[i]))
+        {
+            ++i;
+        }
+        if (i == needleLen)
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 static void setErr(char *buf, size_t len, const char *msg);
@@ -492,6 +518,7 @@ void ota_begin(const char *hostName, const char *password)
     s_hostName = hostName;
     s_password = password;
     s_started = false;
+    LOG_INFO(LogDomain::OTA, "OTA manifest url configured: %s", CFG_OTA_MANIFEST_URL);
 }
 
 void ota_handle()
@@ -1035,6 +1062,14 @@ bool ota_pullStartFromManifest(DeviceState *state,
         ota_markFailed(state, reason);
         return false;
     }
+    if (ota_urlContainsNoCase(manifestUrl, "raw.githubusercontent.com"))
+    {
+        const char *reason = "manifest_raw_disallowed";
+        LOG_ERROR(LogDomain::OTA, "Manifest pull blocked: %s url=%s", reason, manifestUrl);
+        setErr(errBuf, errBufLen, reason);
+        ota_markFailed(state, reason);
+        return false;
+    }
 
     WiFiClientSecure client;
     ota_prepareTlsClient(client, "manifest_pull", manifestUrl);
@@ -1199,6 +1234,15 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
     {
         const char *reason = "manifest_url_not_https";
         LOG_ERROR(LogDomain::OTA, "Manifest check blocked: %s", reason);
+        setErr(errBuf, errBufLen, reason);
+        ota_recordError(state, reason);
+        ota_requestPublish();
+        return false;
+    }
+    if (ota_urlContainsNoCase(manifestUrl, "raw.githubusercontent.com"))
+    {
+        const char *reason = "manifest_raw_disallowed";
+        LOG_ERROR(LogDomain::OTA, "Manifest check blocked: %s url=%s", reason, manifestUrl);
         setErr(errBuf, errBufLen, reason);
         ota_recordError(state, reason);
         ota_requestPublish();
