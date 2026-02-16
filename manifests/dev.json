@@ -1,7 +1,7 @@
 {
   "channel": "dev",
   "version": "1.0.1-alpha",
-  "url": "https://github.com/SimmoM8/dads-smart-home/releases/download/v1.0.1-alpha/level_sensor.ino.bin",
-  "sha256": "92fd2b298ab8231eaee7fd3eed3801031ac391e7705678abe6705273e9659ffb",
+  "url": "https://github.com/SimmoM8/water-tank-level-sensor/releases/download/v1.0.1-alpha/level_sensor.ino.bin",
+  "sha256": "02db5354977278acfb81917947879626f4c1d4091a4cffe7996634eac92af4d3",
   "notes": "Dry-run OTA test: manifest parsing only"
 }
