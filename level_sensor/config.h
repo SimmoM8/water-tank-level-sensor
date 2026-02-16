@@ -37,7 +37,7 @@
 #define CFG_PERCENT_EMA_ALPHA 1.0f
 
 // — OTA —
-#define CFG_OTA_MANIFEST_URL "https://raw.githubusercontent.com/SimmoM8/water-tank-level-sensor/main/manifests/dev.json"
+#define CFG_OTA_MANIFEST_URL "https://github.com/SimmoM8/water-tank-level-sensor/releases/latest/download/dev.json"
 #define CFG_OTA_TLS_PREFER_CRT_BUNDLE 1 // default 1 uses embedded fallback CA chain
 // — Time sync (non-blocking NTP) —
 // #define CFG_TIME_SYNC_TIMEOUT_MS 20000u

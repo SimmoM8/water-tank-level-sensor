@@ -18,7 +18,6 @@
 #include "mqtt_transport.h"
 #include "wifi_provisioning.h"
 #include "semver.h"
-#include <esp_crt_bundle.h>
 
 #ifdef __has_include
 #if __has_include("config.h")
@@ -30,7 +29,7 @@
 #define OTA_MIN_BYTES 1024
 #endif
 #ifndef CFG_OTA_MANIFEST_URL
-#define CFG_OTA_MANIFEST_URL ""
+#define CFG_OTA_MANIFEST_URL "https://github.com/SimmoM8/water-tank-level-sensor/releases/latest/download/dev.json"
 #endif
 #ifndef CFG_OTA_GUARD_REQUIRE_MQTT_CONNECTED
 #define CFG_OTA_GUARD_REQUIRE_MQTT_CONNECTED 0
@@ -84,9 +83,8 @@ struct PullOtaJob
     uint8_t retryCount = 0;
     uint32_t nextRetryAtMs = 0;
 
-    // Streaming objects
+    // Streaming object
     HTTPClient http;
-    WiFiClientSecure client;
 
     mbedtls_sha256_context shaCtx;
     bool shaInit = false;
@@ -131,6 +129,46 @@ static bool ota_isStrictUpgrade(const char *currentVersion,
 static inline bool ota_isSystemTimeValid()
 {
     return time(nullptr) >= 1600000000;
+}
+
+static bool ota_extractUrlHost(const char *url, char *out, size_t outLen)
+{
+    if (!url || !out || outLen == 0)
+    {
+        return false;
+    }
+
+    out[0] = '\0';
+    const char *host = strstr(url, "://");
+    host = host ? (host + 3) : url;
+    if (!host || host[0] == '\0')
+    {
+        return false;
+    }
+
+    size_t i = 0;
+    while (host[i] != '\0' && host[i] != '/' && host[i] != ':' && host[i] != '?' && host[i] != '#')
+    {
+        if (i + 1 >= outLen)
+        {
+            return false;
+        }
+        out[i] = (char)tolower((unsigned char)host[i]);
+        ++i;
+    }
+    out[i] = '\0';
+    return i > 0;
+}
+
+static bool ota_manifestUrlHostTrusted(const char *url)
+{
+    char host[128] = {0};
+    if (!ota_extractUrlHost(url, host, sizeof(host)))
+    {
+        return false;
+    }
+    return (strstr(host, "github.com") != nullptr) ||
+           (strstr(host, "release-assets.githubusercontent.com") != nullptr);
 }
 
 static void setErr(char *buf, size_t len, const char *msg);
@@ -374,16 +412,19 @@ static void ota_logTlsStatus(const char *phase, const char *endpoint, bool succe
 {
     const char *phaseStr = phase ? phase : "";
     const char *endpointStr = (endpoint && endpoint[0] != '\0') ? endpoint : "<none>";
+    char endpointHost[128] = {0};
+    const bool hostOk = ota_extractUrlHost(endpointStr, endpointHost, sizeof(endpointHost));
     const char *trustMode = s_lastTlsTrustMode ? s_lastTlsTrustMode : "none";
     const bool timeValid = ota_isSystemTimeValid();
     LOG_INFO(LogDomain::OTA,
-             "TLS status phase=%s trust=%s request_ok=%s http_code=%d time_valid=%s endpoint=%s",
+             "TLS status phase=%s trust=%s request_ok=%s http_code=%d time_valid=%s endpoint=%s host=%s",
              phaseStr,
              trustMode,
              success ? "true" : "false",
              httpCode,
              timeValid ? "true" : "false",
-             endpointStr);
+             endpointStr,
+             hostOk ? endpointHost : "<unparsed>");
 
     if (success)
     {
@@ -392,48 +433,53 @@ static void ota_logTlsStatus(const char *phase, const char *endpoint, bool succe
 
     if (!ota_isSystemTimeValid())
     {
-        LOG_ERROR(LogDomain::OTA, "TLS handshake failed: time not set endpoint=%s", endpointStr);
+        LOG_ERROR(LogDomain::OTA, "TLS handshake failed: time not set endpoint=%s host=%s", endpointStr, hostOk ? endpointHost : "<unparsed>");
     }
     else
     {
         if (ota_tlsCertVerifyFailed())
         {
-            LOG_ERROR(LogDomain::OTA, "TLS handshake failed: cert verify failed endpoint=%s", endpointStr);
+            LOG_ERROR(LogDomain::OTA, "TLS handshake failed: cert verify failed endpoint=%s host=%s", endpointStr, hostOk ? endpointHost : "<unparsed>");
         }
         else
         {
             if (httpCode == 0)
             {
-                LOG_ERROR(LogDomain::OTA, "HTTP begin failed endpoint=%s", endpointStr);
+                LOG_ERROR(LogDomain::OTA, "HTTP begin failed endpoint=%s host=%s", endpointStr, hostOk ? endpointHost : "<unparsed>");
             }
             else
             {
-                LOG_ERROR(LogDomain::OTA, "HTTP request failed endpoint=%s", endpointStr);
+                LOG_ERROR(LogDomain::OTA, "HTTP request failed endpoint=%s host=%s", endpointStr, hostOk ? endpointHost : "<unparsed>");
             }
         }
     }
 
     if (s_lastTlsErrCode != 0 || s_lastTlsErrMsg[0] != '\0')
     {
-        LOG_ERROR(LogDomain::OTA, "TLS error detail phase=%s endpoint=%s code=%d msg=%s",
+        LOG_ERROR(LogDomain::OTA, "TLS error detail phase=%s endpoint=%s host=%s code=%d msg=%s",
                   phaseStr,
                   endpointStr,
+                  hostOk ? endpointHost : "<unparsed>",
                   s_lastTlsErrCode,
                   s_lastTlsErrMsg[0] ? s_lastTlsErrMsg : "<none>");
     }
 }
 
-static inline void ota_prepareTlsClient(WiFiClientSecure &client, const char *phase)
+static inline void ota_prepareTlsClient(WiFiClientSecure &client, const char *phase, const char *endpoint)
 {
     const char *trustMode = ota_configureTlsClient(client);
+    char endpointHost[128] = {0};
+    const bool hostOk = ota_extractUrlHost(endpoint, endpointHost, sizeof(endpointHost));
 
     s_lastTlsTrustMode = (trustMode && trustMode[0] != '\0') ? trustMode : "unknown";
     ota_resetTlsError();
 
     LOG_INFO(LogDomain::OTA,
-             "TLS trust=%s phase=%s",
+             "TLS trust=%s phase=%s endpoint=%s host=%s",
              s_lastTlsTrustMode,
-             phase ? phase : "");
+             phase ? phase : "",
+             (endpoint && endpoint[0] != '\0') ? endpoint : "<none>",
+             hostOk ? endpointHost : "<unparsed>");
 }
 
 bool ota_isBusy()
@@ -970,6 +1016,8 @@ bool ota_pullStartFromManifest(DeviceState *state,
         return false;
     }
 
+    // Manifest must be served from GitHub Releases (latest/download) because
+    // raw.githubusercontent.com may use CDN chains that do not match the pinned root CA.
     const char *manifestUrl = CFG_OTA_MANIFEST_URL;
     if (!manifestUrl || manifestUrl[0] == '\0')
     {
@@ -989,11 +1037,11 @@ bool ota_pullStartFromManifest(DeviceState *state,
     }
 
     WiFiClientSecure client;
-    ota_prepareTlsClient(client, "manifest_pull");
+    ota_prepareTlsClient(client, "manifest_pull", manifestUrl);
 
     HTTPClient http;
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-    http.setRedirectLimit(5);
+    http.setRedirectLimit(10);
 
     const bool beginOk = http.begin(client, manifestUrl);
     if (!beginOk)
@@ -1075,6 +1123,12 @@ bool ota_pullStartFromManifest(DeviceState *state,
         ota_markFailed(state, "manifest_missing_url");
         return false;
     }
+    if (!ota_manifestUrlHostTrusted(url))
+    {
+        setErr(errBuf, errBufLen, "manifest_url_untrusted_host");
+        ota_markFailed(state, "manifest_url_untrusted_host");
+        return false;
+    }
     if (!sha256 || sha256[0] == '\0')
     {
         setErr(errBuf, errBufLen, "manifest_missing_sha256");
@@ -1129,6 +1183,8 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
         return false;
     }
 
+    // Manifest must be served from GitHub Releases (latest/download) because
+    // raw.githubusercontent.com may use CDN chains that do not match the pinned root CA.
     const char *manifestUrl = CFG_OTA_MANIFEST_URL;
     if (!manifestUrl || manifestUrl[0] == '\0')
     {
@@ -1150,11 +1206,11 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
     }
 
     WiFiClientSecure client;
-    ota_prepareTlsClient(client, "manifest_check");
+    ota_prepareTlsClient(client, "manifest_check", manifestUrl);
 
     HTTPClient http;
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-    http.setRedirectLimit(5);
+    http.setRedirectLimit(10);
 
     const bool beginOk = http.begin(client, manifestUrl);
     if (!beginOk)
@@ -1230,6 +1286,15 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
     if (!url || url[0] == '\0')
     {
         const char *reason = "manifest_missing_url";
+        LOG_ERROR(LogDomain::OTA, "Manifest check failed reason=%s", reason);
+        setErr(errBuf, errBufLen, reason);
+        ota_recordError(state, reason);
+        ota_requestPublish();
+        return false;
+    }
+    if (!ota_manifestUrlHostTrusted(url))
+    {
+        const char *reason = "manifest_url_untrusted_host";
         LOG_ERROR(LogDomain::OTA, "Manifest check failed reason=%s", reason);
         setErr(errBuf, errBufLen, reason);
         ota_recordError(state, reason);
@@ -1496,59 +1561,55 @@ void ota_tick(DeviceState *state)
         g_job.retryAtMs = 0;
     }
 
-    // Step A: begin HTTP if not begun
+    // Firmware download request: configured TLS client + strict redirect-following.
     if (!g_job.httpBegun)
     {
         const uint32_t connectTimeoutMs = (uint32_t)CFG_OTA_HTTP_CONNECT_TIMEOUT_MS;
         const uint32_t readTimeoutMs = (uint32_t)CFG_OTA_HTTP_READ_TIMEOUT_MS;
         const uint16_t readTimeoutMsClamped = (readTimeoutMs > 65535u) ? 65535u : (uint16_t)readTimeoutMs;
 
-        // Recreate TLS client per attempt so cert bundle + SSL state are always fresh.
-        g_job.http.end();
-        g_job.client.stop();
-        g_job.client = WiFiClientSecure();
-        ota_prepareTlsClient(g_job.client, "firmware_download");
+        WiFiClientSecure client;
+        // Firmware must be fetched as a GitHub Release asset.
+        ota_prepareTlsClient(client, "firmware_download", g_job.url);
 
-        // Follow GitHub redirects (releases/download -> objects.githubusercontent.com)
-        g_job.http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-        g_job.http.setRedirectLimit(5);
-        g_job.http.setConnectTimeout((int32_t)connectTimeoutMs);
-        g_job.http.setTimeout(readTimeoutMsClamped);
+        HTTPClient http;
+        http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+        http.setRedirectLimit(10);
+        http.setConnectTimeout((int32_t)connectTimeoutMs);
+        http.setTimeout(readTimeoutMsClamped);
 
-        // HTTPS: WiFiClientSecure + trusted CA (bundle-preferred) + redirect-following.
         const uint32_t hsStartMs = millis();
-        bool ok = g_job.http.begin(g_job.client, g_job.url);
+        const bool beginOk = http.begin(client, g_job.url);
         const uint32_t hsElapsedMs = millis() - hsStartMs;
-        if (!ok)
+        if (!beginOk)
         {
-            ota_captureTlsError(g_job.client);
+            ota_captureTlsError(client);
             ota_logTlsStatus("firmware_download", g_job.url, false, 0);
             const char *reason = ota_classifyBeginFailure(hsElapsedMs);
             ota_scheduleRetry(state, reason);
             return;
         }
-        g_job.httpBegun = true;
 
         static const char *kHeaders[] = {"Content-Type", "Content-Length", "Location"};
-        g_job.http.collectHeaders(kHeaders, 3);
-
-        g_job.http.setUserAgent("DadsSmartHomeWaterTank/1.0");
-        g_job.http.addHeader("Accept", "application/octet-stream");
-        g_job.http.useHTTP10(false);
+        http.collectHeaders(kHeaders, 3);
+        http.setUserAgent("DadsSmartHomeWaterTank/1.0");
+        http.addHeader("Accept", "application/octet-stream");
+        http.useHTTP10(false);
 
         const uint32_t getStartMs = millis();
-        int code = g_job.http.GET();
+        const int code = http.GET();
         const uint32_t getElapsedMs = millis() - getStartMs;
         const bool requestOk = (code > 0);
         if (!requestOk)
         {
-            ota_captureTlsError(g_job.client);
+            ota_captureTlsError(client);
             ota_logTlsStatus("firmware_download", g_job.url, false, code);
             const char *reason = ota_classifyRequestFailure(code);
             if (getElapsedMs >= readTimeoutMs)
             {
                 reason = "http_timeout";
             }
+            http.end();
             ota_scheduleRetry(state, reason);
             return;
         }
@@ -1557,51 +1618,57 @@ void ota_tick(DeviceState *state)
         {
             char msg[32];
             ota_formatHttpCodeReason(code, msg, sizeof(msg));
+            http.end();
             ota_scheduleRetry(state, msg);
             return;
         }
         g_job.netRetryCount = 0;
         g_job.retryAtMs = 0;
 
-        String ctype = g_job.http.header("Content-Type");
+        String ctype = http.header("Content-Type");
         if (ctype.length() > 0)
         {
             String lower = ctype;
             lower.toLowerCase();
             if (lower.indexOf("text/html") >= 0 || lower.indexOf("application/json") >= 0)
             {
+                http.end();
                 ota_abort(state, "bad_content_type");
                 return;
             }
         }
 
-        int len = g_job.http.getSize();
+        int len = http.getSize();
         LOG_INFO(LogDomain::OTA, "HTTP %d len=%d ctype=%s", code, len, ctype.c_str());
         if (len > 0 && len < OTA_MIN_BYTES)
         {
+            http.end();
             ota_abort(state, "content_too_small");
             return;
         }
         if (len <= 0)
         {
-            // Some servers do chunked transfer; Update can still work.
-            // We'll treat unknown length as 0 and still proceed.
             len = 0;
         }
+
         g_job.bytesTotal = (uint32_t)len;
         g_job.bytesWritten = 0;
+        g_job.zeroReadStreak = 0;
+        g_job.noDataSinceMs = 0;
+        g_job.lastProgressMs = millis();
+        g_job.lastReportMs = g_job.lastProgressMs;
 
-        // Begin update
         Update.setMD5(nullptr);
         if (!Update.begin(len > 0 ? (size_t)len : UPDATE_SIZE_UNKNOWN, U_FLASH))
         {
+            http.end();
             ota_abort(state, "update_begin_failed");
             return;
         }
+        g_job.updateBegun = true;
         mbedtls_sha256_init(&g_job.shaCtx);
         mbedtls_sha256_starts(&g_job.shaCtx, 0);
         g_job.shaInit = true;
-        g_job.updateBegun = true;
 
         if (state)
         {
@@ -1610,198 +1677,199 @@ void ota_tick(DeviceState *state)
             ota_requestPublish();
         }
 
-        g_job.lastProgressMs = millis();
-        g_job.lastReportMs = g_job.lastProgressMs;
-        g_job.zeroReadStreak = 0;
-        g_job.noDataSinceMs = 0;
-        return; // next tick will stream
-    }
-
-    // Step B: stream a bounded chunk per tick
-    WiFiClient *stream = g_job.http.getStreamPtr();
-    if (!stream)
-    {
-        ota_abort(state, "no_stream");
-        return;
-    }
-
-    const size_t kMaxChunk = 4096; // cap work per tick to keep MQTT alive
-    uint8_t buf[512];
-    size_t processed = 0;
-
-    while (processed < kMaxChunk)
-    {
-        int avail = stream->available();
-        if (avail <= 0)
+        WiFiClient *stream = http.getStreamPtr();
+        if (!stream)
         {
-            // No data right now. If finished, finalize.
-            if (g_job.zeroReadStreak == 0)
-                g_job.noDataSinceMs = millis();
-            g_job.zeroReadStreak++;
-            break;
+            http.end();
+            ota_abort(state, "no_stream");
+            return;
         }
 
-        size_t toRead = (size_t)avail;
-        if (toRead > sizeof(buf))
-            toRead = sizeof(buf);
-
-        int n = stream->readBytes(buf, toRead);
-        if (n <= 0)
+        uint8_t buf[512];
+        while (true)
         {
-            if (g_job.zeroReadStreak == 0)
-                g_job.noDataSinceMs = millis();
-            g_job.zeroReadStreak++;
-            break;
+            if (!WiFi.isConnected())
+            {
+                http.end();
+                ota_abort(state, "wifi_disconnected");
+                return;
+            }
+
+            int avail = stream->available();
+            if (avail > 0)
+            {
+                size_t toRead = (size_t)avail;
+                if (toRead > sizeof(buf))
+                {
+                    toRead = sizeof(buf);
+                }
+
+                int n = stream->readBytes(buf, toRead);
+                if (n <= 0)
+                {
+                    if (g_job.zeroReadStreak == 0)
+                    {
+                        g_job.noDataSinceMs = millis();
+                    }
+                    g_job.zeroReadStreak++;
+                }
+                else
+                {
+                    if (g_job.shaInit)
+                    {
+                        mbedtls_sha256_update(&g_job.shaCtx, buf, (size_t)n);
+                    }
+
+                    size_t written = Update.write(buf, (size_t)n);
+                    if (written != (size_t)n)
+                    {
+                        http.end();
+                        ota_abort(state, "flash_write_failed");
+                        return;
+                    }
+
+                    g_job.bytesWritten += (uint32_t)written;
+                    g_job.zeroReadStreak = 0;
+                    g_job.noDataSinceMs = 0;
+                    g_job.lastProgressMs = millis();
+                }
+            }
+            else
+            {
+                if (g_job.zeroReadStreak == 0)
+                {
+                    g_job.noDataSinceMs = millis();
+                }
+                g_job.zeroReadStreak++;
+            }
+
+            uint32_t now = millis();
+            if (state && (now - g_job.lastReportMs) >= 500u)
+            {
+                g_job.lastReportMs = now;
+                if (g_job.bytesTotal > 0)
+                {
+                    uint32_t pct = (g_job.bytesWritten * 100u) / g_job.bytesTotal;
+                    if (pct > 100u)
+                    {
+                        pct = 100u;
+                    }
+                    ota_setProgress(state, (uint8_t)pct);
+                }
+                else
+                {
+                    ota_setProgress(state, 255);
+                }
+                ota_requestPublish();
+            }
+
+            bool finished = false;
+            if (g_job.bytesTotal > 0)
+            {
+                finished = g_job.bytesWritten >= g_job.bytesTotal;
+            }
+            else
+            {
+                finished = !stream->connected() &&
+                           stream->available() == 0 &&
+                           g_job.zeroReadStreak > 0 &&
+                           (now - g_job.noDataSinceMs) > 200u;
+            }
+
+            if (finished)
+            {
+                break;
+            }
+
+            if (g_job.updateBegun && g_job.lastProgressMs > 0 &&
+                (now - g_job.lastProgressMs) > 60000u)
+            {
+                http.end();
+                ota_abort(state, "download_timeout");
+                return;
+            }
+
+            delay(1);
         }
+
+        if (state)
+        {
+            ota_setStatus(state, OtaStatus::VERIFYING);
+            ota_setFlat(state, "verifying", state->ota.progress, nullptr, nullptr, false);
+            ota_requestPublish();
+        }
+
+        if (g_job.bytesWritten < OTA_MIN_BYTES)
+        {
+            http.end();
+            ota_abort(state, "download_too_small");
+            return;
+        }
+
+        uint8_t digest[32];
+        char hex[65];
+        hex[64] = '\0';
 
         if (g_job.shaInit)
         {
-            mbedtls_sha256_update(&g_job.shaCtx, buf, (size_t)n);
-        }
+            mbedtls_sha256_finish(&g_job.shaCtx, digest);
+            mbedtls_sha256_free(&g_job.shaCtx);
+            g_job.shaInit = false;
 
-        size_t written = Update.write(buf, (size_t)n);
-        if (written != (size_t)n)
-        {
-            ota_abort(state, "flash_write_failed");
-            return;
-        }
-
-        g_job.zeroReadStreak = 0;
-        g_job.noDataSinceMs = 0;
-        g_job.bytesWritten += (uint32_t)written;
-        processed += written;
-        g_job.lastProgressMs = millis();
-    }
-
-    // Update progress every ~500ms
-    uint32_t now = millis();
-    if (state && (now - g_job.lastReportMs) >= 500)
-    {
-        g_job.lastReportMs = now;
-
-        if (g_job.bytesTotal > 0)
-        {
-            uint32_t pct = (g_job.bytesWritten * 100u) / g_job.bytesTotal;
-            if (pct > 100u)
-                pct = 100u;
-            ota_setProgress(state, (uint8_t)pct);
-        }
-        else
-        {
-            // unknown total size
-            ota_setProgress(state, 255); // use 255 to indicate indeterminate progress
-        }
-        ota_requestPublish();
-    }
-
-    // Detect end of download
-    bool finished = false;
-
-    if (g_job.bytesTotal > 0)
-    {
-        finished = g_job.bytesWritten >= g_job.bytesTotal;
-    }
-    else
-    {
-        // If server closes connection, available() stays 0 and connected() becomes false
-        finished = !stream->connected() &&
-                   stream->available() == 0 &&
-                   g_job.zeroReadStreak > 0 &&
-                   (now - g_job.noDataSinceMs) > 200;
-    }
-
-    if (!finished)
-    {
-        if (g_job.updateBegun && g_job.lastProgressMs > 0 &&
-            (now - g_job.lastProgressMs) > 60000)
-        {
-            ota_abort(state, "download_timeout");
-            return;
-        }
-        return;
-    }
-
-    // Step C: finalize update
-    if (state)
-    {
-        ota_setStatus(state, OtaStatus::VERIFYING);
-        ota_setFlat(state, "verifying", state->ota.progress, nullptr, nullptr, false);
-        ota_requestPublish();
-    }
-
-    if (g_job.bytesWritten < OTA_MIN_BYTES)
-    {
-        ota_abort(state, "download_too_small");
-        return;
-    }
-
-    // finalize sha
-    uint8_t digest[32];
-    char hex[65];
-    hex[64] = '\0';
-
-    if (g_job.shaInit)
-    {
-        mbedtls_sha256_finish(&g_job.shaCtx, digest);
-        mbedtls_sha256_free(&g_job.shaCtx);
-        g_job.shaInit = false;
-
-        static const char *kHex = "0123456789abcdef";
-        for (int i = 0; i < 32; i++)
-        {
-            hex[i * 2] = kHex[(digest[i] >> 4) & 0xF];
-            hex[i * 2 + 1] = kHex[digest[i] & 0xF];
-        }
-
-        // compare (expected must be exactly 64 hex chars)
-        if (g_job.sha256[0] == '\0')
-        {
-            ota_abort(state, "missing_sha256");
-            return;
-        }
-        if (!isHex64(g_job.sha256))
-        {
-            ota_abort(state, "bad_sha256_format");
-            return;
-        }
-
-        for (int i = 0; i < 64; i++)
-        {
-            if (lowerHexChar(g_job.sha256[i]) != hex[i])
+            static const char *kHex = "0123456789abcdef";
+            for (int i = 0; i < 32; i++)
             {
-                LOG_WARN(LogDomain::OTA, "Pull OTA SHA256 mismatch exp_prefix=%.12s got_prefix=%.12s",
-                         g_job.sha256, hex);
-                ota_abort(state, "sha_mismatch");
+                hex[i * 2] = kHex[(digest[i] >> 4) & 0xF];
+                hex[i * 2 + 1] = kHex[digest[i] & 0xF];
+            }
+
+            if (g_job.sha256[0] == '\0')
+            {
+                http.end();
+                ota_abort(state, "missing_sha256");
                 return;
             }
+            if (!isHex64(g_job.sha256))
+            {
+                http.end();
+                ota_abort(state, "bad_sha256_format");
+                return;
+            }
+
+            for (int i = 0; i < 64; i++)
+            {
+                if (lowerHexChar(g_job.sha256[i]) != hex[i])
+                {
+                    LOG_WARN(LogDomain::OTA, "Pull OTA SHA256 mismatch exp_prefix=%.12s got_prefix=%.12s",
+                             g_job.sha256, hex);
+                    http.end();
+                    ota_abort(state, "sha_mismatch");
+                    return;
+                }
+            }
+            LOG_INFO(LogDomain::OTA, "Pull OTA SHA256 ok (prefix)=%c%c%c%c%c%c%c%c%c%c%c%c",
+                     hex[0], hex[1], hex[2], hex[3], hex[4], hex[5], hex[6], hex[7], hex[8], hex[9], hex[10], hex[11]);
         }
-        LOG_INFO(LogDomain::OTA, "Pull OTA SHA256 ok (prefix)=%c%c%c%c%c%c%c%c%c%c%c%c",
-                 hex[0], hex[1], hex[2], hex[3], hex[4], hex[5], hex[6], hex[7], hex[8], hex[9], hex[10], hex[11]);
-    }
 
-    if (state)
-    {
-        ota_setStatus(state, OtaStatus::APPLYING);
-        ota_setFlat(state, "applying", state->ota.progress, nullptr, nullptr, false);
-        ota_requestPublish();
-    }
+        if (state)
+        {
+            ota_setStatus(state, OtaStatus::APPLYING);
+            ota_setFlat(state, "applying", state->ota.progress, nullptr, nullptr, false);
+            ota_requestPublish();
+        }
 
-    bool okEnd = Update.end(true);
-    if (!okEnd)
-    {
-        char msg[40];
-        snprintf(msg, sizeof(msg), "update_end_failed_%u", (unsigned int)Update.getError());
-        ota_abort(state, msg);
+        bool okEnd = Update.end(true);
+        http.end();
+        g_job.updateBegun = false;
+        if (!okEnd)
+        {
+            char msg[40];
+            snprintf(msg, sizeof(msg), "update_end_failed_%u", (unsigned int)Update.getError());
+            ota_abort(state, msg);
+            return;
+        }
+
+        ota_finishSuccess(state);
         return;
     }
-
-    // Close http
-    if (g_job.httpBegun)
-    {
-        g_job.http.end();
-        g_job.httpBegun = false;
-    }
-    g_job.updateBegun = false;
-
-    ota_finishSuccess(state);
 }

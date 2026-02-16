@@ -8,14 +8,6 @@
 #endif
 #endif
 
-#if defined(ARDUINO_ARCH_ESP32)
-#include <esp_crt_bundle.h>
-#endif
-
-#ifndef CFG_OTA_TLS_PREFER_CRT_BUNDLE
-#define CFG_OTA_TLS_PREFER_CRT_BUNDLE 1
-#endif
-
 // Fallback root CA (DigiCert Global Root G2) for GitHub TLS.
 static const char OTA_FALLBACK_GITHUB_CA[] = R"EOF(
 -----BEGIN CERTIFICATE-----
@@ -42,29 +34,9 @@ MrY=
 -----END CERTIFICATE-----
 )EOF";
 
-#if defined(ARDUINO_ARCH_ESP32) && defined(CONFIG_MBEDTLS_CERTIFICATE_BUNDLE)
-extern "C"
-{
-    extern const uint8_t _binary_x509_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
-    extern const uint8_t _binary_x509_crt_bundle_end[] asm("_binary_x509_crt_bundle_end");
-}
-#endif
-
 static inline const char *ota_configureTlsClient(WiFiClientSecure &client)
 {
     client.setTimeout(12000);
-
-#if defined(ARDUINO_ARCH_ESP32) && CFG_OTA_TLS_PREFER_CRT_BUNDLE && defined(CONFIG_MBEDTLS_CERTIFICATE_BUNDLE)
-    // Use ESP-IDF certificate bundle (Mozilla NSS roots) via binary bundle symbols.
-    const size_t bundleSize = (size_t)(_binary_x509_crt_bundle_end - _binary_x509_crt_bundle_start);
-    if (bundleSize > 0)
-    {
-        client.setCACertBundle(_binary_x509_crt_bundle_start, bundleSize);
-        return "crt_bundle";
-    }
-#endif
-
-    // Fallback: pinned root CA (more fragile long-term)
     client.setCACert(OTA_FALLBACK_GITHUB_CA);
-    return "fallback_ca";
+    return "pinned_root_ca";
 }
