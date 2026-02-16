@@ -1,0 +1,27 @@
+# Firmware binaries - these should NEVER be committed
+# Binaries are distributed via GitHub Releases only
+*.bin
+*.elf
+*.hex
+
+# Build artifacts (if accidentally placed here)
+build/
+dist/
+*.o
+*.a
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+*.log
