@@ -1,3 +1,0 @@
-[submodule "esp32"]
-	path = esp32
-	url = https://github.com/SimmoM8/water-tank-level-sensor

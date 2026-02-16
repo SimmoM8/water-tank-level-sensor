@@ -1,8 +1,0 @@
-            if [[ "${spec}" =~ ^(.+)\ \(([^)]+)\)$ ]]; then
-              name="${BASH_REMATCH[1]}"
-              version="${BASH_REMATCH[2]}"
-              version_nov="${version#v}"
-            else
-              echo "::error::Dependency '${spec}' must be pinned as 'Name (version)'"
-              exit 1
-            fi
