@@ -1,21 +1,12 @@
 #pragma once
 #include <WiFiClientSecure.h>
+#include <stddef.h>
 
-// Prefer the ESP-IDF/Arduino built-in certificate bundle when available.
-// This keeps trust roots current across certificate rotations.
-#if defined(ARDUINO_ARCH_ESP32) && defined(CONFIG_MBEDTLS_CERTIFICATE_BUNDLE)
-#define OTA_HAS_CERT_BUNDLE 1
-extern "C"
-{
-    extern const uint8_t _binary_x509_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
-    extern const uint8_t _binary_x509_crt_bundle_end[] asm("_binary_x509_crt_bundle_end");
-}
-#else
-#define OTA_HAS_CERT_BUNDLE 0
+#if defined(ARDUINO_ARCH_ESP32)
+#include <esp_crt_bundle.h>
 #endif
 
-// Fallback root CA (complete PEM): DigiCert Global Root G2.
-// Used by GitHub domains when certificate bundle support is unavailable.
+// Fallback root CA (DigiCert Global Root G2) for GitHub TLS.
 static const char OTA_FALLBACK_GITHUB_CA[] = R"EOF(
 -----BEGIN CERTIFICATE-----
 MIIDjjCCAnagAwIBAgIQAzrx5qcRqaC7KGSxHQn65TANBgkqhkiG9w0BAQsFADBh
@@ -41,52 +32,24 @@ MrY=
 -----END CERTIFICATE-----
 )EOF";
 
-enum class OtaCaMode : uint8_t
+#if defined(ARDUINO_ARCH_ESP32) && defined(CONFIG_MBEDTLS_CERTIFICATE_BUNDLE)
+extern "C"
 {
-    CertBundle = 0,
-    PinnedPem = 1,
-};
-
-#if OTA_HAS_CERT_BUNDLE
-template <typename ClientT>
-static inline auto ota_setCaBundle(ClientT &client, const uint8_t *bundle, size_t bundleSize, int)
-    -> decltype(client.setCACertBundle(bundle, bundleSize), void())
-{
-    client.setCACertBundle(bundle, bundleSize);
-}
-
-template <typename ClientT>
-static inline auto ota_setCaBundle(ClientT &client, const uint8_t *bundle, size_t, long)
-    -> decltype(client.setCACertBundle(bundle), void())
-{
-    client.setCACertBundle(bundle);
+    extern const uint8_t _binary_x509_crt_bundle_start[] asm("_binary_x509_crt_bundle_start");
+    extern const uint8_t _binary_x509_crt_bundle_end[] asm("_binary_x509_crt_bundle_end");
 }
 #endif
 
-static inline OtaCaMode ota_configureTlsClient(WiFiClientSecure &client)
+static inline void ota_configureTlsClient(WiFiClientSecure &client)
 {
-    client.setTimeout(12000); // ms
-#if OTA_HAS_CERT_BUNDLE
+    client.setTimeout(12000);
+#if defined(ARDUINO_ARCH_ESP32) && defined(CONFIG_MBEDTLS_CERTIFICATE_BUNDLE)
     const size_t bundleSize = (size_t)(_binary_x509_crt_bundle_end - _binary_x509_crt_bundle_start);
     if (bundleSize > 0)
     {
-        ota_setCaBundle(client, _binary_x509_crt_bundle_start, bundleSize, 0);
-        return OtaCaMode::CertBundle;
+        client.setCACertBundle(_binary_x509_crt_bundle_start, bundleSize);
+        return;
     }
-    ota_setCaBundle(client, nullptr, 0, 0);
 #endif
     client.setCACert(OTA_FALLBACK_GITHUB_CA);
-    return OtaCaMode::PinnedPem;
-}
-
-static inline const char *ota_caModeName(OtaCaMode mode)
-{
-    switch (mode)
-    {
-    case OtaCaMode::CertBundle:
-        return "bundle";
-    case OtaCaMode::PinnedPem:
-    default:
-        return "pinned_pem";
-    }
 }

@@ -18,6 +18,7 @@
 #include "mqtt_transport.h"
 #include "wifi_provisioning.h"
 #include "semver.h"
+#include <esp_crt_bundle.h>
 
 #ifdef __has_include
 #if __has_include("config.h")
@@ -368,16 +369,20 @@ static bool ota_checkSafetyGuards(DeviceState *state,
     return true;
 }
 
-static void ota_logTlsStatus(const char *phase, bool success, int httpCode)
+static void ota_logTlsStatus(const char *phase, const char *endpoint, bool success, int httpCode)
 {
     const char *phaseStr = phase ? phase : "";
+    const char *endpointStr = (endpoint && endpoint[0] != '\0') ? endpoint : "<none>";
     const char *trustMode = s_lastTlsTrustMode ? s_lastTlsTrustMode : "none";
+    const bool timeValid = ota_isSystemTimeValid();
     LOG_INFO(LogDomain::OTA,
-             "TLS status phase=%s trust=%s request_ok=%s http_code=%d",
+             "TLS status phase=%s trust=%s request_ok=%s http_code=%d time_valid=%s endpoint=%s",
              phaseStr,
              trustMode,
              success ? "true" : "false",
-             httpCode);
+             httpCode,
+             timeValid ? "true" : "false",
+             endpointStr);
 
     if (success)
     {
@@ -386,43 +391,47 @@ static void ota_logTlsStatus(const char *phase, bool success, int httpCode)
 
     if (!ota_isSystemTimeValid())
     {
-        LOG_ERROR(LogDomain::OTA, "TLS handshake failed: time not set");
+        LOG_ERROR(LogDomain::OTA, "TLS handshake failed: time not set endpoint=%s", endpointStr);
     }
     else
     {
         if (ota_tlsCertVerifyFailed())
         {
-            LOG_ERROR(LogDomain::OTA, "TLS handshake failed: cert verify failed");
+            LOG_ERROR(LogDomain::OTA, "TLS handshake failed: cert verify failed endpoint=%s", endpointStr);
         }
         else
         {
             if (httpCode == 0)
             {
-                LOG_ERROR(LogDomain::OTA, "HTTP begin failed");
+                LOG_ERROR(LogDomain::OTA, "HTTP begin failed endpoint=%s", endpointStr);
             }
             else
             {
-                LOG_ERROR(LogDomain::OTA, "HTTP request failed");
+                LOG_ERROR(LogDomain::OTA, "HTTP request failed endpoint=%s", endpointStr);
             }
         }
     }
 
     if (s_lastTlsErrCode != 0 || s_lastTlsErrMsg[0] != '\0')
     {
-        LOG_ERROR(LogDomain::OTA, "TLS error detail phase=%s code=%d msg=%s",
+        LOG_ERROR(LogDomain::OTA, "TLS error detail phase=%s endpoint=%s code=%d msg=%s",
                   phaseStr,
+                  endpointStr,
                   s_lastTlsErrCode,
                   s_lastTlsErrMsg[0] ? s_lastTlsErrMsg : "<none>");
     }
 }
 
-static inline OtaCaMode ota_prepareTlsClient(WiFiClientSecure &client, const char *phase)
+static inline void ota_prepareTlsClient(WiFiClientSecure &client, const char *phase)
 {
-    const OtaCaMode caMode = ota_configureTlsClient(client);
-    s_lastTlsTrustMode = ota_caModeName(caMode);
+    ota_configureTlsClient(client);
+
+    s_lastTlsTrustMode = "crt_bundle";
     ota_resetTlsError();
-    LOG_INFO(LogDomain::OTA, "TLS trust=%s phase=%s", s_lastTlsTrustMode, phase ? phase : "");
-    return caMode;
+
+    LOG_INFO(LogDomain::OTA,
+             "TLS trust=crt_bundle phase=%s",
+             phase ? phase : "");
 }
 
 bool ota_isBusy()
@@ -988,7 +997,7 @@ bool ota_pullStartFromManifest(DeviceState *state,
     if (!beginOk)
     {
         ota_captureTlsError(client);
-        ota_logTlsStatus("manifest_pull", false, 0);
+        ota_logTlsStatus("manifest_pull", manifestUrl, false, 0);
         const char *reason = ota_tlsFailureReason(0);
         setErr(errBuf, errBufLen, reason);
         ota_markFailed(state, reason);
@@ -1006,14 +1015,14 @@ bool ota_pullStartFromManifest(DeviceState *state,
     if (!requestOk)
     {
         ota_captureTlsError(client);
-        ota_logTlsStatus("manifest_pull", false, code);
+        ota_logTlsStatus("manifest_pull", manifestUrl, false, code);
         const char *reason = ota_tlsFailureReason(code);
         http.end();
         setErr(errBuf, errBufLen, reason);
         ota_markFailed(state, reason);
         return false;
     }
-    ota_logTlsStatus("manifest_pull", true, code);
+    ota_logTlsStatus("manifest_pull", manifestUrl, true, code);
     if (code != HTTP_CODE_OK)
     {
         char msg[32];
@@ -1149,7 +1158,7 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
     if (!beginOk)
     {
         ota_captureTlsError(client);
-        ota_logTlsStatus("manifest_check", false, 0);
+        ota_logTlsStatus("manifest_check", manifestUrl, false, 0);
         const char *reason = ota_tlsFailureReason(0);
         LOG_ERROR(LogDomain::OTA, "Manifest check failed reason=%s", reason);
         setErr(errBuf, errBufLen, reason);
@@ -1169,7 +1178,7 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
     if (!requestOk)
     {
         ota_captureTlsError(client);
-        ota_logTlsStatus("manifest_check", false, code);
+        ota_logTlsStatus("manifest_check", manifestUrl, false, code);
         const char *reason = ota_tlsFailureReason(code);
         http.end();
         LOG_ERROR(LogDomain::OTA, "Manifest check failed reason=%s", reason);
@@ -1178,7 +1187,7 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
         ota_requestPublish();
         return false;
     }
-    ota_logTlsStatus("manifest_check", true, code);
+    ota_logTlsStatus("manifest_check", manifestUrl, true, code);
     if (code != HTTP_CODE_OK)
     {
         char msg[32];
@@ -1492,6 +1501,10 @@ void ota_tick(DeviceState *state)
         const uint32_t readTimeoutMs = (uint32_t)CFG_OTA_HTTP_READ_TIMEOUT_MS;
         const uint16_t readTimeoutMsClamped = (readTimeoutMs > 65535u) ? 65535u : (uint16_t)readTimeoutMs;
 
+        // Recreate TLS client per attempt so cert bundle + SSL state are always fresh.
+        g_job.http.end();
+        g_job.client.stop();
+        g_job.client = WiFiClientSecure();
         ota_prepareTlsClient(g_job.client, "firmware_download");
 
         // Follow GitHub redirects (releases/download -> objects.githubusercontent.com)
@@ -1507,7 +1520,7 @@ void ota_tick(DeviceState *state)
         if (!ok)
         {
             ota_captureTlsError(g_job.client);
-            ota_logTlsStatus("firmware_download", false, 0);
+            ota_logTlsStatus("firmware_download", g_job.url, false, 0);
             const char *reason = ota_classifyBeginFailure(hsElapsedMs);
             ota_scheduleRetry(state, reason);
             return;
@@ -1528,7 +1541,7 @@ void ota_tick(DeviceState *state)
         if (!requestOk)
         {
             ota_captureTlsError(g_job.client);
-            ota_logTlsStatus("firmware_download", false, code);
+            ota_logTlsStatus("firmware_download", g_job.url, false, code);
             const char *reason = ota_classifyRequestFailure(code);
             if (getElapsedMs >= readTimeoutMs)
             {
@@ -1537,7 +1550,7 @@ void ota_tick(DeviceState *state)
             ota_scheduleRetry(state, reason);
             return;
         }
-        ota_logTlsStatus("firmware_download", true, code);
+        ota_logTlsStatus("firmware_download", g_job.url, true, code);
         if (code != HTTP_CODE_OK)
         {
             char msg[32];
