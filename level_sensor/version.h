@@ -4,7 +4,7 @@
 // Build-time firmware version. Override with compiler flags, e.g.:
 //   -DFW_VERSION=\"1.4.0\"
 #ifndef FW_VERSION
-#define FW_VERSION "1.0.1-alpha"
+#define FW_VERSION "0.9.11-dev"
 #endif
 
 // Optional build-time hardware revision/version label.

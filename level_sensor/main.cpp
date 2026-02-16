@@ -1231,6 +1231,7 @@ void appSetup()
   logger_setHighFreqEnabled(false);
   quality_init(probeQualityRt);
   LOG_INFO(LogDomain::SYSTEM, "BOOT water_level_sensor starting...");
+  LOG_INFO(LogDomain::SYSTEM, "FW=%s HW=%s", DEVICE_FW, DEVICE_HW);
   LOG_INFO(LogDomain::SYSTEM, "Reset reason=%s", g_state.reset_reason);
   LOG_INFO(LogDomain::SYSTEM, "TOUCH_PIN=%d", TOUCH_PIN);
 
