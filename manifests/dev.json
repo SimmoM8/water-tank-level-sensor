@@ -1,7 +1,7 @@
 {
   "channel": "dev",
-  "version": "99.0.0-dev",
-  "url": "https://example.com/firmware.bin",
-  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "version": "1.0.1-alpha",
+  "url": "https://github.com/SimmoM8/dads-smart-home/releases/download/v1.0.1-alpha/level_sensor.ino.bin",
+  "sha256": "92fd2b298ab8231eaee7fd3eed3801031ac391e7705678abe6705273e9659ffb",
   "notes": "Dry-run OTA test: manifest parsing only"
 }
