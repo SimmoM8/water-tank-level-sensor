@@ -1,0 +1,608 @@
+name: Release OTA Firmware
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 1.4.0 or v1.4.0)"
+        required: true
+        type: string
+      sketch_dir:
+        description: "Sketch directory"
+        required: false
+        default: "esp32/level_sensor"
+        type: string
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ota-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-ota:
+    runs-on: ubuntu-latest
+    env:
+      REPO_TOKEN: ${{ secrets.REPO_PUSH_TOKEN != '' && secrets.REPO_PUSH_TOKEN || github.token }}
+      DEFAULT_SKETCH_DIR: esp32/level_sensor
+      DEFAULT_BUILD_PROFILE: release
+      MANIFEST_PATH: manifests/dev.json
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ env.REPO_TOKEN }}
+
+      - name: Resolve release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            RAW_VERSION="${{ inputs.version }}"
+            SKETCH_DIR="${{ inputs.sketch_dir }}"
+          else
+            RAW_VERSION="${GITHUB_REF_NAME}"
+            SKETCH_DIR="${DEFAULT_SKETCH_DIR}"
+          fi
+
+          VERSION="${RAW_VERSION#v}"
+          TAG="v${VERSION}"
+          ASSET_NAME="firmware-${VERSION}.bin"
+
+          if [[ -z "${VERSION}" ]]; then
+            echo "Resolved version is empty" >&2
+            exit 1
+          fi
+
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "sketch_dir=${SKETCH_DIR}" >> "${GITHUB_OUTPUT}"
+          echo "asset_name=${ASSET_NAME}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Print Arduino CLI version
+        shell: bash
+        run: |
+          set -euo pipefail
+          arduino-cli version
+
+      - name: Configure Arduino CLI boards manager URLs
+        shell: bash
+        run: |
+          set -euo pipefail
+          ESP32_URL="https://espressif.github.io/arduino-esp32/package_esp32_index.json"
+          arduino-cli config init --overwrite
+          arduino-cli config add board_manager.additional_urls "${ESP32_URL}"
+          if ! arduino-cli config dump | grep -Fq "${ESP32_URL}"; then
+            echo "::error::Failed to configure Arduino CLI with Espressif boards manager URL"
+            exit 1
+          fi
+
+      - name: Refresh Arduino indexes
+        shell: bash
+        run: |
+          set -euo pipefail
+          arduino-cli core update-index
+          arduino-cli lib update-index
+
+      - name: Install pinned core + libraries from sketch.yaml
+        id: deps
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SKETCH_FILE="${{ steps.meta.outputs.sketch_dir }}/sketch.yaml"
+          PROFILE="${DEFAULT_BUILD_PROFILE}"
+
+          if [[ ! -f "${SKETCH_FILE}" ]]; then
+            echo "::error::Missing ${SKETCH_FILE}. Cannot install dependencies."
+            exit 1
+          fi
+
+          mapfile -t DEP_LINES < <(awk -v profile="${PROFILE}" '
+            $0 ~ "^  " profile ":" {in_profile=1; section=""; next}
+            in_profile && $0 ~ "^  [^[:space:]][^:]*:" {in_profile=0; section=""; next}
+            in_profile && $0 ~ "^    fqbn:" {
+              v=$0
+              sub("^    fqbn: ", "", v)
+              print "FQBN|" v
+            }
+            in_profile && $0 ~ "^    platforms:" {section="platforms"; next}
+            in_profile && $0 ~ "^    libraries:" {section="libraries"; next}
+            in_profile && section=="platforms" && $0 ~ "^      - platform: " {
+              v=$0
+              sub("^      - platform: ", "", v)
+              print "PLATFORM|" v
+            }
+            in_profile && section=="libraries" && $0 ~ "^      - " {
+              v=$0
+              sub("^      - ", "", v)
+              print "LIB|" v
+            }
+          ' "${SKETCH_FILE}")
+
+          if [[ ${#DEP_LINES[@]} -eq 0 ]]; then
+            echo "::error::No dependencies found for profile '${PROFILE}' in ${SKETCH_FILE}."
+            exit 1
+          fi
+
+          FQBN=""
+          PLATFORM_COUNT=0
+          LIB_COUNT=0
+          ESP32_CORE_INSTALLED=0
+          ESP32_CORE_EXPECTED_VERSION=""
+
+          for line in "${DEP_LINES[@]}"; do
+            kind="${line%%|*}"
+            spec="${line#*|}"
+
+            if [[ "${kind}" == "FQBN" ]]; then
+              FQBN="${spec}"
+              continue
+            fi
+
+            if [[ ! "${spec}" =~ ^(.+)\ \(([^)]+)\)$ ]]; then
+              echo "::error::Dependency '${spec}' is not pinned as 'Name (version)'."
+              exit 1
+            fi
+
+            name="${BASH_REMATCH[1]}"
+            version="${BASH_REMATCH[2]}"
+
+            if [[ "${kind}" == "PLATFORM" ]]; then
+              PLATFORM_COUNT=$((PLATFORM_COUNT + 1))
+              echo "Installing platform ${name}@${version}"
+              if ! arduino-cli core install "${name}@${version}"; then
+                echo "::error::Failed to install platform ${name}@${version}"
+                exit 1
+              fi
+              if [[ "${name}" == "esp32:esp32" ]]; then
+                ESP32_CORE_INSTALLED=1
+                ESP32_CORE_EXPECTED_VERSION="${version#v}"
+              fi
+            elif [[ "${kind}" == "LIB" ]]; then
+              LIB_COUNT=$((LIB_COUNT + 1))
+              echo "Installing library ${name}@${version} (primary)"
+              if ! arduino-cli lib install "${name}@${version}"; then
+                echo "Primary install failed for ${name}@${version}; retrying with name-only install"
+                if ! arduino-cli lib install "${name}"; then
+                  echo "::error::Failed to install library ${name} using both '${name}@${version}' and '${name}'"
+                  exit 1
+                fi
+              fi
+
+              lib_list="$(arduino-cli lib list)"
+
+              # Match lines like:
+              # WiFiManager          2.0.17   ...
+              # (we anchor the name and grab the first version-looking token after it)
+              actual_version="$(printf '%s\n' "${lib_list}" \
+                | awk -v n="${name}" '
+                    $0 ~ ("^" n "[[:space:]]+") {
+                      if (match($0, /[[:space:]]+v?[0-9]+\.[0-9]+(\.[0-9]+)?([-.+][0-9A-Za-z.]+)?/, m)) {
+                        v=m[0]
+                        sub(/^[[:space:]]+/, "", v)
+                        sub(/^v/, "", v)
+                        print v
+                        exit
+                      }
+                    }
+                  ')"
+
+              expected_version="${version#v}"
+
+              if [[ -z "${actual_version}" ]]; then
+                echo "::error::Library '${name}' appears uninstalled after install attempts; expected version ${expected_version}"
+                exit 1
+              fi
+
+              if [[ "${actual_version}" != "${expected_version}" ]]; then
+                echo "::error::Pinned library version mismatch for '${name}': expected ${expected_version}, got ${actual_version}"
+                exit 1
+              fi
+            fi
+          done
+
+          if [[ -z "${FQBN}" ]]; then
+            echo "::error::Missing fqbn for profile '${PROFILE}' in ${SKETCH_FILE}."
+            exit 1
+          fi
+          if [[ ${PLATFORM_COUNT} -eq 0 ]]; then
+            echo "::error::No platform dependencies found in ${SKETCH_FILE}."
+            exit 1
+          fi
+          if [[ ${ESP32_CORE_INSTALLED} -ne 1 ]]; then
+            echo "::error::Profile '${PROFILE}' does not declare required esp32:esp32 core."
+            exit 1
+          fi
+          if [[ -z "${ESP32_CORE_EXPECTED_VERSION}" ]]; then
+            echo "::error::Failed to resolve expected esp32:esp32 core version from ${SKETCH_FILE}."
+            exit 1
+          fi
+
+          esp32_core_actual_version="$(arduino-cli core list | awk '$1=="esp32:esp32"{print $2; exit}')"
+          if [[ -z "${esp32_core_actual_version}" ]]; then
+            echo "::error::esp32:esp32 core is not installed after install step; expected ${ESP32_CORE_EXPECTED_VERSION}"
+            exit 1
+          fi
+          esp32_core_actual_version="${esp32_core_actual_version#v}"
+          if [[ "${esp32_core_actual_version}" != "${ESP32_CORE_EXPECTED_VERSION}" ]]; then
+            echo "::error::esp32:esp32 core version mismatch: expected ${ESP32_CORE_EXPECTED_VERSION}, got ${esp32_core_actual_version}"
+            exit 1
+          fi
+
+          echo "Resolved FQBN: ${FQBN}"
+          echo "Resolved esp32 core version: ${esp32_core_actual_version}"
+          echo "Installed platform deps: ${PLATFORM_COUNT}"
+          echo "Installed library deps: ${LIB_COUNT}"
+          echo "fqbn=${FQBN}" >> "${GITHUB_OUTPUT}"
+          echo "esp32_core_version=${esp32_core_actual_version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Print installed cores and libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Pinned esp32 core version: ${{ steps.deps.outputs.esp32_core_version }}"
+          echo "Installed cores:"
+          arduino-cli core list
+          echo "Installed pinned libraries:"
+          arduino-cli lib list | awk 'NR==1 || $0 ~ /^(WiFiManager|PubSubClient|ArduinoJson)[[:space:]]+/'
+
+      - name: Ensure jq is available
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y jq
+          fi
+
+      - name: Validate manifests are populated
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/validate_manifests.sh manifests
+
+      - name: Validate sketch inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f "${{ steps.meta.outputs.sketch_dir }}/level_sensor.ino" ]]; then
+            echo "Sketch not found at ${{ steps.meta.outputs.sketch_dir }}/level_sensor.ino" >&2
+            exit 1
+          fi
+          if [[ ! -f "${{ steps.meta.outputs.sketch_dir }}/sketch.yaml" ]]; then
+            echo "Missing sketch.yaml at ${{ steps.meta.outputs.sketch_dir }} (dependency source-of-truth)" >&2
+            exit 1
+          fi
+
+      - name: Pin board options for OTA-safe build
+        id: boardcfg
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE_FQBN="${{ steps.deps.outputs.fqbn }}"
+          PINNED_FLASH_SIZE="4M"
+          PINNED_FLASH_MODE="qio"
+          PINNED_FLASH_FREQ="80"
+          PINNED_PARTITION_SCHEME="default"
+          PINNED_PSRAM="disabled"
+
+          if [[ -z "${BASE_FQBN}" ]]; then
+            echo "::error::Base FQBN is empty; cannot pin board options"
+            exit 1
+          fi
+
+          case "${PINNED_PARTITION_SCHEME}" in
+            default)
+              # esp32 default partition table is dual OTA app slots (ota_0/ota_1), each 0x140000.
+              OTA_SLOT_MAX_BYTES=1310720
+              ;;
+            *)
+              echo "::error::Partition scheme '${PINNED_PARTITION_SCHEME}' is not approved as OTA-capable dual-app layout"
+              exit 1
+              ;;
+          esac
+
+          COMPILE_FQBN="${BASE_FQBN}:FlashMode=${PINNED_FLASH_MODE},FlashFreq=${PINNED_FLASH_FREQ},FlashSize=${PINNED_FLASH_SIZE},PartitionScheme=${PINNED_PARTITION_SCHEME},PSRAM=${PINNED_PSRAM}"
+
+          echo "Pinned compile FQBN: ${COMPILE_FQBN}"
+          echo "Pinned partition scheme: ${PINNED_PARTITION_SCHEME}"
+          echo "Pinned flash size: ${PINNED_FLASH_SIZE}"
+          echo "OTA app slot max bytes: ${OTA_SLOT_MAX_BYTES}"
+
+          echo "compile_fqbn=${COMPILE_FQBN}" >> "${GITHUB_OUTPUT}"
+          echo "partition_scheme=${PINNED_PARTITION_SCHEME}" >> "${GITHUB_OUTPUT}"
+          echo "flash_size=${PINNED_FLASH_SIZE}" >> "${GITHUB_OUTPUT}"
+          echo "ota_slot_max_bytes=${OTA_SLOT_MAX_BYTES}" >> "${GITHUB_OUTPUT}"
+
+      - name: Dry-run compile (pinned profile)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Dry-run target FQBN: ${{ steps.boardcfg.outputs.compile_fqbn }}"
+          arduino-cli compile --clean --fqbn "${{ steps.boardcfg.outputs.compile_fqbn }}" "${{ steps.meta.outputs.sketch_dir }}"
+
+      - name: Compile firmware
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUILD_DIR="build"
+          EXPORT_DIR="${BUILD_DIR}/exported"
+          SKETCH_DIR="${{ steps.meta.outputs.sketch_dir }}"
+          COMPILE_FQBN="${{ steps.boardcfg.outputs.compile_fqbn }}"
+          PINNED_PARTITION_SCHEME="${{ steps.boardcfg.outputs.partition_scheme }}"
+          PINNED_FLASH_SIZE="${{ steps.boardcfg.outputs.flash_size }}"
+          OTA_SLOT_MAX_BYTES="${{ steps.boardcfg.outputs.ota_slot_max_bytes }}"
+          EXPECTED_APP_BASENAME="level_sensor.ino.bin"
+          EXPORTED_APP_BIN="${SKETCH_DIR}/${EXPECTED_APP_BASENAME}"
+
+          mkdir -p "${BUILD_DIR}" "${EXPORT_DIR}"
+          rm -f "${SKETCH_DIR}/level_sensor.ino.bin" "${SKETCH_DIR}/level_sensor.ino.bootloader.bin" "${SKETCH_DIR}/level_sensor.ino.partitions.bin"
+
+          if [[ -z "${COMPILE_FQBN}" ]]; then
+            echo "::error::Pinned compile FQBN is empty"
+            exit 1
+          fi
+          if [[ "${PINNED_PARTITION_SCHEME}" != "default" ]]; then
+            echo "::error::Partition scheme check failed: expected OTA-capable 'default', got '${PINNED_PARTITION_SCHEME}'"
+            exit 1
+          fi
+          if [[ ! "${OTA_SLOT_MAX_BYTES}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Invalid OTA slot max bytes value: ${OTA_SLOT_MAX_BYTES}"
+            exit 1
+          fi
+          if (( OTA_SLOT_MAX_BYTES <= 0 )); then
+            echo "::error::Invalid OTA slot max bytes value: ${OTA_SLOT_MAX_BYTES}"
+            exit 1
+          fi
+
+          arduino-cli compile \
+            --fqbn "${COMPILE_FQBN}" \
+            --build-property "compiler.cpp.extra_flags=-DFW_VERSION=\\\"${{ steps.meta.outputs.version }}\\\"" \
+            --output-dir "${BUILD_DIR}" \
+            --export-binaries \
+            "${SKETCH_DIR}"
+
+          if [[ ! -f "${EXPORTED_APP_BIN}" ]]; then
+            echo "::error::Expected exported app binary not found at ${EXPORTED_APP_BIN}" >&2
+            echo "Sketch directory contents:" >&2
+            ls -la "${SKETCH_DIR}" >&2 || true
+            exit 1
+          fi
+          APP_BIN_BASENAME="$(basename "${EXPORTED_APP_BIN}")"
+          if [[ "${APP_BIN_BASENAME}" != "${EXPECTED_APP_BASENAME}" ]]; then
+            echo "::error::Unexpected exported app binary name: ${APP_BIN_BASENAME} (expected ${EXPECTED_APP_BASENAME})" >&2
+            exit 1
+          fi
+          if [[ "${APP_BIN_BASENAME}" == *bootloader* || "${APP_BIN_BASENAME}" == *partitions* ]]; then
+            echo "::error::Refusing non-application firmware artifact: ${APP_BIN_BASENAME}" >&2
+            exit 1
+          fi
+
+          RELEASE_ASSET_PATH="${EXPORT_DIR}/${{ steps.meta.outputs.asset_name }}"
+          cp "${EXPORTED_APP_BIN}" "${RELEASE_ASSET_PATH}"
+          if [[ ! -s "${RELEASE_ASSET_PATH}" ]]; then
+            echo "::error::Release asset is missing or empty at ${RELEASE_ASSET_PATH}" >&2
+            exit 1
+          fi
+          MIN_RELEASE_ASSET_BYTES=131072
+          MAX_RELEASE_ASSET_BYTES=1400000
+          RELEASE_ASSET_SIZE="$(wc -c < "${RELEASE_ASSET_PATH}" | tr -d '[:space:]')"
+          if [[ ! "${RELEASE_ASSET_SIZE}" =~ ^[0-9]+$ ]]; then
+            echo "::error::Failed to determine release asset size for ${RELEASE_ASSET_PATH}" >&2
+            exit 1
+          fi
+          if (( RELEASE_ASSET_SIZE < MIN_RELEASE_ASSET_BYTES )); then
+            echo "::error::Release asset is suspiciously small (${RELEASE_ASSET_SIZE} bytes, minimum ${MIN_RELEASE_ASSET_BYTES})" >&2
+            exit 1
+          fi
+          if (( RELEASE_ASSET_SIZE > MAX_RELEASE_ASSET_BYTES )); then
+            echo "::error::Firmware too large for OTA slot (${RELEASE_ASSET_SIZE} bytes)" >&2
+            exit 1
+          fi
+          if (( RELEASE_ASSET_SIZE > OTA_SLOT_MAX_BYTES )); then
+            echo "::error::Firmware does not fit OTA app slot: size=${RELEASE_ASSET_SIZE} bytes slot_max=${OTA_SLOT_MAX_BYTES} partition_scheme=${PINNED_PARTITION_SCHEME} flash_size=${PINNED_FLASH_SIZE}" >&2
+            exit 1
+          fi
+
+          RELEASE_ASSET_NAME="$(basename "${RELEASE_ASSET_PATH}")"
+          if [[ -z "${RELEASE_ASSET_NAME}" ]]; then
+            echo "::error::Failed to resolve release asset name from ${RELEASE_ASSET_PATH}" >&2
+            exit 1
+          fi
+
+          SHA256="$(sha256sum "${RELEASE_ASSET_PATH}" | awk '{print $1}')"
+          if [[ -z "${SHA256}" ]]; then
+            echo "::error::Computed SHA256 is empty for ${RELEASE_ASSET_PATH}" >&2
+            exit 1
+          fi
+          if [[ ! "${SHA256}" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            echo "::error::Computed SHA256 has unexpected format: ${SHA256}" >&2
+            exit 1
+          fi
+
+          echo "release_asset_path=${RELEASE_ASSET_PATH}" >> "${GITHUB_OUTPUT}"
+          echo "release_asset_name=${RELEASE_ASSET_NAME}" >> "${GITHUB_OUTPUT}"
+          echo "sha256=${SHA256}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create GitHub Release and upload .bin
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ env.REPO_TOKEN }}
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          files: ${{ steps.build.outputs.release_asset_path }}
+          generate_release_notes: true
+
+      - name: Verify uploaded release asset SHA256
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RELEASE_ASSET_NAME="${{ steps.build.outputs.release_asset_name }}"
+          EXPECTED_SHA256="${{ steps.build.outputs.sha256 }}"
+          RELEASE_URL="https://github.com/${{ github.repository }}/releases/download/${{ steps.meta.outputs.tag }}/${RELEASE_ASSET_NAME}"
+
+          if [[ -z "${RELEASE_ASSET_NAME}" ]]; then
+            echo "::error::Build output 'release_asset_name' is empty; cannot verify uploaded asset" >&2
+            exit 1
+          fi
+          if [[ -z "${EXPECTED_SHA256}" ]]; then
+            echo "::error::Build output 'sha256' is empty; cannot verify uploaded asset" >&2
+            exit 1
+          fi
+          if [[ -z "${RELEASE_URL}" ]]; then
+            echo "::error::Release URL is empty; cannot verify uploaded asset" >&2
+            exit 1
+          fi
+
+          TMP_ASSET="$(mktemp)"
+          cleanup() {
+            rm -f "${TMP_ASSET}"
+          }
+          trap cleanup EXIT
+
+          # Follow GitHub release redirects to fetch the exact uploaded asset bytes.
+          if ! curl -fL --retry 5 --retry-delay 2 --retry-connrefused -o "${TMP_ASSET}" "${RELEASE_URL}"; then
+            echo "::error::Failed to download uploaded asset from ${RELEASE_URL}" >&2
+            exit 1
+          fi
+          if [[ ! -s "${TMP_ASSET}" ]]; then
+            echo "::error::Downloaded uploaded asset is empty: ${RELEASE_URL}" >&2
+            exit 1
+          fi
+
+          DOWNLOADED_SHA256="$(sha256sum "${TMP_ASSET}" | awk '{print $1}')"
+          if [[ -z "${DOWNLOADED_SHA256}" ]]; then
+            echo "::error::Failed to compute SHA256 for downloaded uploaded asset" >&2
+            exit 1
+          fi
+          if [[ "${DOWNLOADED_SHA256}" != "${EXPECTED_SHA256}" ]]; then
+            echo "::error::Uploaded asset SHA256 mismatch for ${RELEASE_URL}. expected=${EXPECTED_SHA256} actual=${DOWNLOADED_SHA256}" >&2
+            exit 1
+          fi
+
+          echo "Uploaded asset SHA256 verified (${DOWNLOADED_SHA256})."
+
+      - name: Update manifests/dev.json
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch origin main
+          git checkout main
+          git pull --ff-only origin main
+
+          mkdir -p "$(dirname "${MANIFEST_PATH}")"
+          RELEASE_ASSET_NAME="${{ steps.build.outputs.release_asset_name }}"
+          EXPECTED_ASSET_NAME="${{ steps.meta.outputs.asset_name }}"
+          if [[ -z "${RELEASE_ASSET_NAME}" ]]; then
+            echo "::error::Build output 'release_asset_name' is empty; refusing to update manifest" >&2
+            exit 1
+          fi
+          if [[ "${RELEASE_ASSET_NAME}" != "${EXPECTED_ASSET_NAME}" ]]; then
+            echo "::error::Release asset name mismatch: expected ${EXPECTED_ASSET_NAME}, got ${RELEASE_ASSET_NAME}" >&2
+            exit 1
+          fi
+
+          RELEASE_URL="https://github.com/${{ github.repository }}/releases/download/${{ steps.meta.outputs.tag }}/${RELEASE_ASSET_NAME}"
+          BUILD_SHA256="${{ steps.build.outputs.sha256 }}"
+          if [[ -z "${RELEASE_URL}" ]]; then
+            echo "::error::Release URL resolved empty; refusing to update manifest" >&2
+            exit 1
+          fi
+          if [[ -z "${BUILD_SHA256}" ]]; then
+            echo "::error::Build SHA256 output is empty; refusing to update manifest" >&2
+            exit 1
+          fi
+          if [[ ! "${BUILD_SHA256}" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            echo "::error::Build SHA256 output is not a 64-char hex string: ${BUILD_SHA256}" >&2
+            exit 1
+          fi
+
+          jq -n \
+            --arg version "${{ steps.meta.outputs.version }}" \
+            --arg url "${RELEASE_URL}" \
+            --arg sha256 "${BUILD_SHA256}" \
+            '{version: $version, url: $url, sha256: $sha256}' > "${MANIFEST_PATH}"
+
+          ./scripts/validate_manifests.sh manifests
+
+      - name: Final manifest self-check
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f "${MANIFEST_PATH}" ]]; then
+            echo "::error::Manifest file missing after update: ${MANIFEST_PATH}" >&2
+            exit 1
+          fi
+
+          MANIFEST_VERSION="$(jq -r '.version // ""' "${MANIFEST_PATH}")"
+          MANIFEST_URL="$(jq -r '.url // ""' "${MANIFEST_PATH}")"
+          MANIFEST_SHA256="$(jq -r '.sha256 // ""' "${MANIFEST_PATH}")"
+          EXPECTED_VERSION="${{ steps.meta.outputs.version }}"
+          EXPECTED_URL="https://github.com/${{ github.repository }}/releases/download/${{ steps.meta.outputs.tag }}/${{ steps.build.outputs.release_asset_name }}"
+          EXPECTED_SHA256="${{ steps.build.outputs.sha256 }}"
+
+          if [[ -z "${MANIFEST_URL}" ]]; then
+            echo "::error::Manifest self-check failed: url is empty in ${MANIFEST_PATH}" >&2
+            exit 1
+          fi
+          if [[ -z "${MANIFEST_SHA256}" ]]; then
+            echo "::error::Manifest self-check failed: sha256 is empty in ${MANIFEST_PATH}" >&2
+            exit 1
+          fi
+          if [[ ! "${MANIFEST_SHA256}" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            echo "::error::Manifest self-check failed: sha256 is not 64-char hex (${MANIFEST_SHA256})" >&2
+            exit 1
+          fi
+          if [[ "${MANIFEST_VERSION}" != "${EXPECTED_VERSION}" ]]; then
+            echo "::error::Manifest self-check failed: version mismatch (expected ${EXPECTED_VERSION}, got ${MANIFEST_VERSION})" >&2
+            exit 1
+          fi
+          if [[ "${MANIFEST_URL}" != "${EXPECTED_URL}" ]]; then
+            echo "::error::Manifest self-check failed: url mismatch (expected ${EXPECTED_URL}, got ${MANIFEST_URL})" >&2
+            exit 1
+          fi
+          if [[ "${MANIFEST_SHA256}" != "${EXPECTED_SHA256}" ]]; then
+            echo "::error::Manifest self-check failed: sha256 mismatch (expected ${EXPECTED_SHA256}, got ${MANIFEST_SHA256})" >&2
+            exit 1
+          fi
+
+      - name: Commit and push manifest changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$(git branch --show-current)" != "main" ]]; then
+            echo "::error::Expected to be on 'main' before committing manifest changes" >&2
+            exit 1
+          fi
+
+          git add "${MANIFEST_PATH}"
+          if git diff --cached --quiet; then
+            echo "No manifest changes to commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore(manifest): update dev.json for ${{ steps.meta.outputs.tag }} [skip ci]"
+          git push origin HEAD:main
