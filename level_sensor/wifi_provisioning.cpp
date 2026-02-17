@@ -1,6 +1,7 @@
 #include <WiFi.h>
 #include <WiFiManager.h>
 #include <Arduino.h>
+#include <esp_wifi.h>
 
 #include "wifi_provisioning.h"
 #include <Preferences.h>
@@ -58,6 +59,18 @@ static uint32_t s_timeSyncBackoffMs = CFG_TIME_SYNC_RETRY_MIN_MS;
 static bool s_timeWasValid = false;
 static bool s_loggedMissingCredentials = false;
 static bool s_runtimePortalRequested = false;
+
+static bool wifi_hasSavedCredentials()
+{
+    // Use esp_wifi_get_config() so we don't rely on WiFi.SSID(), which can be empty
+    // before WiFi is initialized/put into STA mode.
+    wifi_config_t conf{};
+    if (esp_wifi_get_config(WIFI_IF_STA, &conf) != ESP_OK)
+    {
+        return false;
+    }
+    return conf.sta.ssid[0] != 0;
+}
 
 bool wifi_timeIsValid()
 {
@@ -201,7 +214,7 @@ static void startPortal()
     // and a short disconnect settle delay before launching WiFiManager.
     WiFi.mode(WIFI_AP_STA);
     WiFi.setSleep(false);
-    WiFi.disconnect(true, true);
+    WiFi.disconnect(true, false);
     delay(200);
 
     WiFiManager wm;
@@ -246,6 +259,15 @@ void wifi_ensureConnected(uint32_t wifiTimeoutMs)
 
     // Keep time sync state fresh even while disconnected.
     wifi_timeSyncTick();
+
+    // Ensure WiFi stack is initialized consistently before checking stored creds.
+    // This prevents false "no saved credentials" on fresh boot.
+    WiFi.persistent(true);
+    if (WiFi.getMode() == WIFI_MODE_NULL)
+    {
+        WiFi.mode(WIFI_STA);
+        delay(10);
+    }
 
     if (WiFi.status() == WL_CONNECTED)
     {
@@ -298,7 +320,7 @@ void wifi_ensureConnected(uint32_t wifiTimeoutMs)
         return;
     }
 
-    if (WiFi.SSID().length() == 0)
+    if (!wifi_hasSavedCredentials())
     {
         if (!s_loggedMissingCredentials)
         {
@@ -326,7 +348,6 @@ void wifi_ensureConnected(uint32_t wifiTimeoutMs)
 
     WiFi.mode(WIFI_STA); // station mode
     LOG_INFO(LogDomain::WIFI, "Connecting to saved WiFi");
-    LOG_INFO(LogDomain::WIFI, "SSID=%s", WiFi.SSID().c_str());
 
     WiFi.begin(); // use stored credentials
     s_wifiConnectInFlight = true;
@@ -350,7 +371,7 @@ void wifi_requestPortal()
     // Runtime request should not persist across reboot.
     s_runtimePortalRequested = true;
     wifiPrefs.putBool(PREF_KEY_FORCE_PORTAL, false);
-    WiFi.disconnect(true, true);
+    WiFi.disconnect(true, false);
     s_wifiConnectInFlight = false;
     s_wifiConnectStartMs = 0;
     s_wifiConnectRetryAtMs = 0;
