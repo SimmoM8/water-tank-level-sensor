@@ -16,6 +16,7 @@ bool ota_events_pushFlatState(const char *stateStr,
                               const char *errorText,
                               const char *targetVersion,
                               bool stamp);
+bool ota_events_pushDiag(const char *text);
 bool ota_events_pushResult(const char *status, const char *message, uint32_t completedTs);
 bool ota_events_pushClearActive();
 bool ota_events_pushUpdateAvailable(bool value);

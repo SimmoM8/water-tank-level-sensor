@@ -23,6 +23,7 @@
 #include "storage_nvs.h"
 #include "wifi_provisioning.h"
 #include "semver.h"
+#include "version.h"
 #include <freertos/task.h>
 
 #ifdef __has_include
@@ -72,6 +73,7 @@ static const char *s_hostName = nullptr;
 static const char *s_password = nullptr;
 static bool s_started = false;
 static DeviceState *s_serviceState = nullptr;
+static bool s_bootDiagPublished = false;
 
 struct PullOtaJob
 {
@@ -106,6 +108,7 @@ struct PullOtaJob
 
     bool httpBegun = false;
     bool updateBegun = false;
+    const esp_partition_t *targetPartition = nullptr;
 };
 
 static PullOtaJob g_job;
@@ -252,6 +255,8 @@ static void ota_setFlat(DeviceState *state,
                         bool stamp);
 static void ota_clearActive(DeviceState *state);
 static void ota_emitCancelledResult(const char *reason);
+static const char *ota_imgStateToString(esp_ota_img_states_t state);
+static void ota_emitPartitionDiag(const char *phase);
 
 static inline bool ota_timeReached(uint32_t now, uint32_t target)
 {
@@ -302,6 +307,124 @@ static void ota_logPartitionSnapshot(const char *phase)
              (unsigned long)(boot ? boot->address : 0u),
              (next && next->label) ? next->label : "<null>",
              (unsigned long)(next ? next->address : 0u));
+}
+
+static const char *ota_imgStateToString(esp_ota_img_states_t state)
+{
+    switch (state)
+    {
+    case ESP_OTA_IMG_NEW:
+        return "new";
+    case ESP_OTA_IMG_PENDING_VERIFY:
+        return "pending_verify";
+    case ESP_OTA_IMG_VALID:
+        return "valid";
+    case ESP_OTA_IMG_INVALID:
+        return "invalid";
+    case ESP_OTA_IMG_ABORTED:
+        return "aborted";
+    case ESP_OTA_IMG_UNDEFINED:
+    default:
+        return "undefined";
+    }
+}
+
+static const char *ota_resetReasonToString(esp_reset_reason_t reason)
+{
+    switch (reason)
+    {
+    case ESP_RST_POWERON:
+        return "power_on";
+    case ESP_RST_EXT:
+        return "ext_reset";
+    case ESP_RST_SW:
+        return "software_reset";
+#ifdef ESP_RST_PANIC
+    case ESP_RST_PANIC:
+        return "panic";
+#endif
+    case ESP_RST_INT_WDT:
+        return "int_wdt";
+#ifdef ESP_RST_TASK_WDT
+    case ESP_RST_TASK_WDT:
+        return "task_wdt";
+#endif
+    case ESP_RST_WDT:
+        return "wdt";
+    case ESP_RST_DEEPSLEEP:
+        return "deep_sleep";
+#ifdef ESP_RST_BROWNOUT
+    case ESP_RST_BROWNOUT:
+        return "brownout";
+#endif
+#ifdef ESP_RST_SDIO
+    case ESP_RST_SDIO:
+        return "sdio";
+#endif
+    default:
+        return "other";
+    }
+}
+
+static void ota_emitPartitionDiag(const char *phase)
+{
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_partition_t *boot = esp_ota_get_boot_partition();
+    const esp_partition_t *next = esp_ota_get_next_update_partition(nullptr);
+    const esp_reset_reason_t resetReason = esp_reset_reason();
+
+    char runningStateBuf[24] = "n/a";
+    int runningStateErr = -1;
+    if (running)
+    {
+        esp_ota_img_states_t runningState = ESP_OTA_IMG_UNDEFINED;
+        const esp_err_t err = esp_ota_get_state_partition(running, &runningState);
+        runningStateErr = (int)err;
+        if (err == ESP_OK)
+        {
+            strncpy(runningStateBuf, ota_imgStateToString(runningState), sizeof(runningStateBuf));
+            runningStateBuf[sizeof(runningStateBuf) - 1] = '\0';
+        }
+        else
+        {
+            snprintf(runningStateBuf, sizeof(runningStateBuf), "err_%d", (int)err);
+        }
+    }
+
+    char payload[512];
+    const int n = snprintf(
+        payload,
+        sizeof(payload),
+        "phase=%s running=%s@0x%08lx boot=%s@0x%08lx next=%s@0x%08lx run_state=%s run_state_err=%d reset_reason=%s(%d) fw=%s build=%s %s",
+        phase ? phase : "",
+        (running && running->label) ? running->label : "<null>",
+        (unsigned long)(running ? running->address : 0u),
+        (boot && boot->label) ? boot->label : "<null>",
+        (unsigned long)(boot ? boot->address : 0u),
+        (next && next->label) ? next->label : "<null>",
+        (unsigned long)(next ? next->address : 0u),
+        runningStateBuf,
+        runningStateErr,
+        ota_resetReasonToString(resetReason),
+        (int)resetReason,
+        FW_VERSION,
+        __DATE__,
+        __TIME__);
+    if (n < 0)
+    {
+        return;
+    }
+    payload[sizeof(payload) - 1] = '\0';
+
+    LOG_INFO(LogDomain::OTA, "OTA diag %s", payload);
+    if (ota_isInOtaTaskContext())
+    {
+        ota_events_pushDiag(payload);
+    }
+    else
+    {
+        (void)mqtt_publishLog("ota/diag", payload, false);
+    }
 }
 
 static bool ota_detachCurrentTaskWdt(const char *phase)
@@ -618,6 +741,7 @@ void ota_begin(DeviceState *state, const char *hostName, const char *password)
     s_hostName = hostName;
     s_password = password;
     s_started = false;
+    s_bootDiagPublished = false;
     if (!ota_taskBegin(state))
     {
         LOG_ERROR(LogDomain::OTA, "Failed to start otaTask worker");
@@ -627,6 +751,12 @@ void ota_begin(DeviceState *state, const char *hostName, const char *password)
 
 void ota_handle()
 {
+    if (!s_bootDiagPublished && mqtt_isConnected())
+    {
+        ota_emitPartitionDiag("boot_post_mqtt");
+        s_bootDiagPublished = true;
+    }
+
     if (ota_isBusy())
     {
         return; // avoid concurrent flash access during pull-OTA
@@ -940,6 +1070,7 @@ static void ota_resetRuntimeJob()
     g_job.retryAtMs = 0;
     g_job.retryCount = 0;
     g_job.nextRetryAtMs = 0;
+    g_job.targetPartition = nullptr;
     g_job.request_id[0] = '\0';
     g_job.version[0] = '\0';
     g_job.url[0] = '\0';
@@ -1949,7 +2080,9 @@ static void ota_tick(DeviceState *state)
 
         LOG_INFO(LogDomain::OTA, "HTTP len=%d -> bytesTotal=%lu", len, (unsigned long)g_job.bytesTotal);
 
+        g_job.targetPartition = esp_ota_get_next_update_partition(nullptr);
         ota_logPartitionSnapshot("before_update_begin");
+        ota_emitPartitionDiag("before_update_begin");
         const size_t updateSize =
             (g_job.bytesTotal > 0) ? (size_t)g_job.bytesTotal : (size_t)UPDATE_SIZE_UNKNOWN;
 
@@ -2215,6 +2348,19 @@ static void ota_tick(DeviceState *state)
         ota_abort(state, msg);
         return;
     }
+
+    const esp_partition_t *setBootTarget = g_job.targetPartition;
+    if (setBootTarget == nullptr)
+    {
+        setBootTarget = esp_ota_get_boot_partition();
+    }
+    const esp_err_t setBootErr = setBootTarget ? esp_ota_set_boot_partition(setBootTarget) : ESP_ERR_INVALID_ARG;
+    LOG_INFO(LogDomain::OTA, "esp_ota_set_boot_partition target=%s@0x%08lx err=%d",
+             (setBootTarget && setBootTarget->label) ? setBootTarget->label : "<null>",
+             (unsigned long)(setBootTarget ? setBootTarget->address : 0u),
+             (int)setBootErr);
+    ota_logPartitionSnapshot("after_set_boot_partition");
+    ota_emitPartitionDiag("after_set_boot_partition");
 
     if (g_job.httpBegun)
     {

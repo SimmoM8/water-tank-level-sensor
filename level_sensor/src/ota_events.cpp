@@ -14,12 +14,15 @@ enum class OtaEventType : uint8_t
     PROGRESS,
     ERROR_TEXT,
     FLAT_STATE,
+    DIAG_TEXT,
     RESULT,
     CLEAR_ACTIVE,
     SET_UPDATE_AVAILABLE,
     SET_LAST_SUCCESS_TS,
     REQUEST_PUBLISH
 };
+
+static constexpr size_t OTA_DIAG_TEXT_MAX = 320;
 
 struct OtaEventFlatPayload
 {
@@ -52,6 +55,10 @@ struct OtaEvent
             char error[OTA_ERROR_MAX];
         } error;
         OtaEventFlatPayload flat;
+        struct
+        {
+            char text[OTA_DIAG_TEXT_MAX];
+        } diag;
         OtaEventResultPayload result;
         struct
         {
@@ -193,6 +200,15 @@ bool ota_events_pushFlatState(const char *stateStr,
     return pushEventDropOldest(ev);
 }
 
+bool ota_events_pushDiag(const char *text)
+{
+    OtaEvent ev{};
+    ev.type = OtaEventType::DIAG_TEXT;
+    strncpy(ev.data.diag.text, text ? text : "", sizeof(ev.data.diag.text));
+    ev.data.diag.text[sizeof(ev.data.diag.text) - 1] = '\0';
+    return pushEventDropOldest(ev);
+}
+
 bool ota_events_pushResult(const char *status, const char *message, uint32_t completedTs)
 {
     OtaEvent ev{};
@@ -246,6 +262,8 @@ struct PendingApply
     OtaEventFlatPayload flat{};
     bool hasError = false;
     char error[OTA_ERROR_MAX] = {0};
+    bool hasDiag = false;
+    char diag[OTA_DIAG_TEXT_MAX] = {0};
     bool hasResult = false;
     OtaEventResultPayload result{};
     bool clearActive = false;
@@ -277,6 +295,11 @@ static void collectPending(PendingApply &pending, const OtaEvent &ev)
     case OtaEventType::FLAT_STATE:
         pending.hasFlat = true;
         pending.flat = ev.data.flat;
+        break;
+    case OtaEventType::DIAG_TEXT:
+        pending.hasDiag = true;
+        strncpy(pending.diag, ev.data.diag.text, sizeof(pending.diag));
+        pending.diag[sizeof(pending.diag) - 1] = '\0';
         break;
     case OtaEventType::RESULT:
         pending.hasResult = true;
@@ -397,6 +420,10 @@ bool ota_events_drainAndApply(DeviceState *state)
         state->ota.last_status[sizeof(state->ota.last_status) - 1] = '\0';
         strncpy(state->ota.last_message, pending.error, sizeof(state->ota.last_message));
         state->ota.last_message[sizeof(state->ota.last_message) - 1] = '\0';
+    }
+    if (pending.hasDiag)
+    {
+        (void)mqtt_publishLog("ota/diag", pending.diag, false);
     }
     if (pending.hasResult)
     {
