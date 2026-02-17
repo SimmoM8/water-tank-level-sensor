@@ -128,6 +128,37 @@ bool ota_taskRequestCancel(const char *reason)
     return true;
 }
 
+bool ota_taskClearQueue()
+{
+    if (s_otaQueue == nullptr)
+    {
+        return false;
+    }
+
+    bool clearedAny = false;
+    OtaTaskMsg dropped{};
+    while (xQueueReceive(s_otaQueue, &dropped, 0) == pdTRUE)
+    {
+        clearedAny = true;
+    }
+    return clearedAny;
+}
+
+bool ota_taskCancelAll(const char *reason)
+{
+    bool wasCancelRequested = false;
+    portENTER_CRITICAL(&s_cancelMux);
+    wasCancelRequested = s_cancelRequested;
+    s_cancelRequested = true;
+    strncpy(s_cancelReason, (reason && reason[0] != '\0') ? reason : "cancelled", sizeof(s_cancelReason));
+    s_cancelReason[sizeof(s_cancelReason) - 1] = '\0';
+    portEXIT_CRITICAL(&s_cancelMux);
+
+    const bool hadQueued = ota_taskClearQueue();
+    const bool hadRunning = s_jobRunning;
+    return hadRunning || hadQueued || wasCancelRequested;
+}
+
 bool ota_taskTakeCancelReason(char *reasonBuf, size_t reasonBufLen)
 {
     bool wasRequested = false;

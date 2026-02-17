@@ -658,11 +658,7 @@ void ota_handle()
 
 bool ota_cancel(const char *reason)
 {
-    if (!g_job.active)
-    {
-        return false;
-    }
-    return ota_taskRequestCancel((reason && reason[0] != '\0') ? reason : "cancelled");
+    return ota_taskCancelAll((reason && reason[0] != '\0') ? reason : "cancelled");
 }
 
 static void setErr(char *buf, size_t len, const char *msg)
