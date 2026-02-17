@@ -1471,3 +1471,17 @@ void appLoop()
     mqtt_requestStatePublish();
   }
 }
+
+// -----------------------------------------------------------------------------
+// Arduino framework entrypoints (required by PlatformIO/Arduino core)
+// -----------------------------------------------------------------------------
+
+void setup()
+{
+  appSetup();
+}
+
+void loop()
+{
+  appLoop();
+}
