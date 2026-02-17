@@ -132,6 +132,7 @@ bool ota_events_pushProgress(uint8_t progress)
         // Fresh queued progress supersedes stale coalesced fallback.
         portENTER_CRITICAL(&s_eventsMux);
         s_progressCoalescedPending = false;
+        s_progressCoalescedValue = 0;
         portEXIT_CRITICAL(&s_eventsMux);
         return true;
     }
@@ -325,6 +326,7 @@ bool ota_events_drainAndApply(DeviceState *state)
         // Ignore stale coalesced value if this drain already got queued progress.
         portENTER_CRITICAL(&s_eventsMux);
         s_progressCoalescedPending = false;
+        s_progressCoalescedValue = 0;
         portEXIT_CRITICAL(&s_eventsMux);
     }
 
