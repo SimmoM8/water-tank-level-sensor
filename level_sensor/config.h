@@ -20,6 +20,9 @@
 // #define CFG_ZERO_WINDOW_MS 5000u
 
 // #define CFG_SERIAL_CMD_BUF 512u // default 256 bytes for incoming serial command buffer
+#ifndef CFG_LOG_COLOR
+#define CFG_LOG_COLOR 0 // ANSI colorized Serial logs (0=off, 1=on)
+#endif
 
 // — Tank Volume Number entity (display/input) —
 #define CFG_TANK_VOLUME_UNIT "L" // "L" or "mL"

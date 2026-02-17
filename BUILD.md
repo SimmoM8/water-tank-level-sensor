@@ -81,3 +81,9 @@ Reports are written to:
 - `build/firmware_audit/reports/size.txt`
 - `build/firmware_audit/reports/size_sections.txt`
 - `build/firmware_audit/reports/symbols_objdump.txt`
+
+## Serial Log Colors
+
+- ANSI log colors are controlled by `CFG_LOG_COLOR` in `level_sensor/config.h`.
+- Arduino IDE Serial Monitor does not render ANSI color escape sequences.
+- Use an ANSI-capable terminal/monitor (for example VS Code Serial Monitor, `screen`, or `minicom`) to view colored logs.

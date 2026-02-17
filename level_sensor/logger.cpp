@@ -4,6 +4,11 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include "config.h"
+
+#ifndef CFG_LOG_COLOR
+#define CFG_LOG_COLOR 0
+#endif
 
 static const char *s_baseTopic = nullptr;
 static bool s_serialEnabled = true;
@@ -17,6 +22,34 @@ static constexpr size_t kKeyTagLen = 12;
 static constexpr size_t kMsgBufSize = 256;
 static constexpr size_t kJsonBufSize = 512;
 static constexpr const char *kLogTopicSuffix = "event/log";
+
+enum class AnsiColor : uint8_t
+{
+    RESET = 0,
+    RED,
+    YELLOW,
+    GREEN,
+    CYAN,
+    BLUE,
+    MAGENTA,
+    GRAY
+};
+
+static constexpr const char *kAnsiCodes[] = {
+    "\x1B[0m",  // RESET
+    "\x1B[31m", // RED
+    "\x1B[33m", // YELLOW
+    "\x1B[32m", // GREEN
+    "\x1B[36m", // CYAN
+    "\x1B[34m", // BLUE
+    "\x1B[35m", // MAGENTA
+    "\x1B[90m"  // GRAY
+};
+
+static const char *ansiCode(AnsiColor color)
+{
+    return kAnsiCodes[(uint8_t)color];
+}
 
 struct ThrottleEntry
 {
@@ -91,6 +124,23 @@ static const char *domainToString(LogDomain dom)
         return "OTA";
     default:
         return "UNK";
+    }
+}
+
+static const char *levelToAnsiColor(LogLevel lvl)
+{
+    switch (lvl)
+    {
+    case LogLevel::ERROR:
+        return ansiCode(AnsiColor::RED);
+    case LogLevel::WARN:
+        return ansiCode(AnsiColor::YELLOW);
+    case LogLevel::INFO:
+        return ansiCode(AnsiColor::GREEN);
+    case LogLevel::DEBUG:
+        return ansiCode(AnsiColor::CYAN);
+    default:
+        return ansiCode(AnsiColor::GRAY);
     }
 }
 
@@ -251,6 +301,9 @@ static void logToSerial(uint32_t tsSec, LogLevel lvl, LogDomain dom, const char 
     if (!s_serialEnabled)
         return;
 
+#if CFG_LOG_COLOR
+    Serial.print(levelToAnsiColor(lvl));
+#endif
     Serial.print("[");
     Serial.print(tsSec);
     Serial.print("] ");
@@ -258,7 +311,13 @@ static void logToSerial(uint32_t tsSec, LogLevel lvl, LogDomain dom, const char 
     Serial.print(" ");
     Serial.print(domainToString(dom));
     Serial.print(": ");
+#if CFG_LOG_COLOR
+    Serial.print(msg);
+    Serial.print(ansiCode(AnsiColor::RESET));
+    Serial.println();
+#else
     Serial.println(msg);
+#endif
 }
 
 static void logToMqtt(uint32_t tsSec, LogLevel lvl, LogDomain dom, const char *msg)
