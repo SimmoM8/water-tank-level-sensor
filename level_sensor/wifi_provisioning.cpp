@@ -32,7 +32,10 @@ static const time_t VALID_TIME_EPOCH = 1600000000;
 #define CFG_WIFI_CONNECT_RETRY_MAX_MS 300000u
 #endif
 #ifndef CFG_WIFI_AUTO_PORTAL_ON_MISSING_CREDS
-#define CFG_WIFI_AUTO_PORTAL_ON_MISSING_CREDS 0
+#define CFG_WIFI_AUTO_PORTAL_ON_MISSING_CREDS 1
+#endif
+#ifndef CFG_WIFI_PORTAL_DEBUG
+#define CFG_WIFI_PORTAL_DEBUG 0
 #endif
 
 static Preferences wifiPrefs; // WiFi-related preferences
@@ -192,17 +195,26 @@ static void startPortal()
     s_runtimePortalRequested = false;
     wifiPrefs.putBool(PREF_KEY_FORCE_PORTAL, false);
 
-    WiFi.mode(WIFI_STA);
+    LOG_DEBUG(LogDomain::WIFI, "Heap before portal free=%lu min=%lu", (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMinFreeHeap());
+
+    // ESP32-S3 portal bring-up is most reliable with AP+STA, modem sleep disabled,
+    // and a short disconnect settle delay before launching WiFiManager.
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.setSleep(false);
     WiFi.disconnect(true, true);
+    delay(200);
 
     WiFiManager wm;
+    wm.setDebugOutput(CFG_WIFI_PORTAL_DEBUG ? true : false);
     wm.setConfigPortalTimeout(180); // seconds
     wm.setConnectTimeout(20);
     wm.setConnectRetries(2);
 
     wm.setHostname("water-tank-esp32");
 
+    LOG_INFO(LogDomain::WIFI, "Entering WiFiManager startConfigPortal(ssid=WaterTank-Setup) ...");
     bool ok = wm.startConfigPortal("WaterTank-Setup");
+    LOG_INFO(LogDomain::WIFI, "WiFiManager startConfigPortal returned ok=%s", ok ? "true" : "false");
 
     if (!ok)
     {
@@ -211,10 +223,12 @@ static void startPortal()
         s_wifiConnectStartMs = 0;
         s_wifiConnectRetryAtMs = 0;
         s_wifiConnectBackoffMs = CFG_WIFI_CONNECT_RETRY_MIN_MS;
+        LOG_DEBUG(LogDomain::WIFI, "Heap after portal fail free=%lu min=%lu", (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMinFreeHeap());
         return;
     }
 
     LOG_INFO(LogDomain::WIFI, "WiFi configured and connected ip=%s", WiFi.localIP().toString().c_str());
+    LOG_DEBUG(LogDomain::WIFI, "Heap after portal success free=%lu min=%lu", (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMinFreeHeap());
     s_wifiConnectInFlight = false;
     s_wifiConnectStartMs = 0;
     s_wifiConnectRetryAtMs = 0;

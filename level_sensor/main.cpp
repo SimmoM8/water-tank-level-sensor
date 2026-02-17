@@ -240,6 +240,8 @@ static const char *mapResetReason(esp_reset_reason_t reason)
   {
   case ESP_RST_POWERON:
     return "power_on";
+  case ESP_RST_EXT:
+    return "ext_reset";
   case ESP_RST_SW:
     return "software_reset";
 #ifdef ESP_RST_PANIC
@@ -254,6 +256,14 @@ static const char *mapResetReason(esp_reset_reason_t reason)
 #endif
   case ESP_RST_WDT:
     return "watchdog";
+#ifdef ESP_RST_BROWNOUT
+  case ESP_RST_BROWNOUT:
+    return "brownout";
+#endif
+#ifdef ESP_RST_SDIO
+  case ESP_RST_SDIO:
+    return "sdio";
+#endif
   default:
     return "other";
   }
@@ -299,7 +309,7 @@ static BootClassification classifyBoot(const char *resetReason, uint8_t rebootIn
   {
     return BootClassification::NEUTRAL;
   }
-  if (strcmp(resetReason, "watchdog") == 0 || strcmp(resetReason, "panic") == 0)
+  if (strcmp(resetReason, "watchdog") == 0 || strcmp(resetReason, "panic") == 0 || strcmp(resetReason, "brownout") == 0)
   {
     return BootClassification::BAD;
   }
@@ -1247,6 +1257,10 @@ void appSetup()
 
   LOG_INFO(LogDomain::SYSTEM, "FW=%s HW=%s", DEVICE_FW, DEVICE_HW);
   LOG_INFO(LogDomain::SYSTEM, "Reset reason=%s (code=%d)", g_state.reset_reason, (int)resetReasonCode);
+  if (strcmp(g_state.reset_reason, "brownout") == 0)
+  {
+    LOG_WARN(LogDomain::SYSTEM, "Detected brownout resets; captive portal / WiFi radio can trigger this. Check USB cable/port, power supply, and external loads.");
+  }
   LOG_INFO(LogDomain::SYSTEM, "TOUCH_PIN=%d", TOUCH_PIN);
 
   storage_begin();
