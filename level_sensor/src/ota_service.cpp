@@ -71,6 +71,7 @@ static constexpr uint32_t BASE_RETRY_DELAY_MS = 5000u;
 static const char *s_hostName = nullptr;
 static const char *s_password = nullptr;
 static bool s_started = false;
+static DeviceState *s_serviceState = nullptr;
 
 struct PullOtaJob
 {
@@ -241,6 +242,15 @@ static void ota_abort(DeviceState *state, const char *reason);
 static uint32_t ota_epochNow();
 static inline const char *ota_configureTlsClient(WiFiClientSecure &client);
 static void ota_tick(DeviceState *state);
+static void ota_setResult(DeviceState *state, const char *status, const char *message);
+static inline void ota_setStatus(DeviceState *state, OtaStatus status);
+static void ota_setFlat(DeviceState *state,
+                        const char *stateStr,
+                        uint8_t progress,
+                        const char *error,
+                        const char *targetVersion,
+                        bool stamp);
+static void ota_clearActive(DeviceState *state);
 
 static inline bool ota_timeReached(uint32_t now, uint32_t target)
 {
@@ -603,6 +613,7 @@ bool ota_isBusy()
 
 void ota_begin(DeviceState *state, const char *hostName, const char *password)
 {
+    s_serviceState = state;
     s_hostName = hostName;
     s_password = password;
     s_started = false;
@@ -658,7 +669,33 @@ void ota_handle()
 
 bool ota_cancel(const char *reason)
 {
-    return ota_taskCancelAll((reason && reason[0] != '\0') ? reason : "cancelled");
+    const char *cancelReason = (reason && reason[0] != '\0') ? reason : "cancelled";
+    const bool hadWork = ota_taskCancelAll(cancelReason);
+
+    if (s_serviceState)
+    {
+        ota_setStatus(s_serviceState, OtaStatus::IDLE);
+        ota_setFlat(s_serviceState, "cancelled", 0, cancelReason, "", true);
+        ota_clearActive(s_serviceState);
+        if (hadWork)
+        {
+            ota_setResult(s_serviceState, "cancelled", cancelReason);
+        }
+    }
+    else
+    {
+        ota_events_pushStatus(OtaStatus::IDLE);
+        ota_events_pushFlatState("cancelled", 0, cancelReason, "", true);
+        ota_events_pushClearActive();
+        if (hadWork)
+        {
+            ota_events_pushResult("cancelled", cancelReason, ota_epochNow());
+        }
+    }
+
+    // Bridge publish request through ota_events so MQTT signaling stays on main loop.
+    ota_events_requestPublish();
+    return hadWork;
 }
 
 static void setErr(char *buf, size_t len, const char *msg)
