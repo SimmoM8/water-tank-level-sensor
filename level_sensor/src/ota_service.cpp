@@ -19,9 +19,11 @@
 #include <ctype.h>
 #include <time.h>
 #include "domain_strings.h"
+#include "mqtt_transport.h"
 #include "storage_nvs.h"
 #include "wifi_provisioning.h"
 #include "semver.h"
+#include <freertos/task.h>
 
 #ifdef __has_include
 #if __has_include("config.h")
@@ -111,7 +113,16 @@ static const char *s_lastTlsTrustMode = "none";
 static int s_lastTlsErrCode = 0;
 static char s_lastTlsErrMsg[128] = {0};
 static bool s_otaHeartbeatEnabled = true;
-static volatile bool s_inOtaTaskContext = false;
+static TaskHandle_t s_otaTaskHandle = nullptr;
+
+static inline bool ota_isInOtaTaskContext()
+{
+    if (s_otaTaskHandle == nullptr)
+    {
+        return false;
+    }
+    return xTaskGetCurrentTaskHandle() == s_otaTaskHandle;
+}
 
 void ota_confirmRunningApp()
 {
@@ -455,7 +466,7 @@ static void ota_formatHttpCodeReason(int httpCode, char *buf, size_t len)
 static inline void ota_recordError(DeviceState *state, const char *reason)
 {
     const char *msg = (reason && reason[0] != '\0') ? reason : "error";
-    if (s_inOtaTaskContext)
+    if (ota_isInOtaTaskContext())
     {
         ota_events_pushError(msg);
         return;
@@ -688,7 +699,7 @@ static inline char lowerHexChar(char c)
 
 static void ota_setResult(DeviceState *state, const char *status, const char *message)
 {
-    if (s_inOtaTaskContext)
+    if (ota_isInOtaTaskContext())
     {
         ota_events_pushResult(status ? status : "", message ? message : "", ota_epochNow());
         return;
@@ -707,12 +718,17 @@ static void ota_setResult(DeviceState *state, const char *status, const char *me
 
 static inline void ota_requestPublish()
 {
-    ota_events_requestPublish();
+    if (ota_isInOtaTaskContext())
+    {
+        ota_events_requestPublish();
+        return;
+    }
+    mqtt_requestStatePublish();
 }
 
 static inline void ota_setStatus(DeviceState *state, OtaStatus status)
 {
-    if (s_inOtaTaskContext)
+    if (ota_isInOtaTaskContext())
     {
         ota_events_pushStatus(status);
         return;
@@ -724,7 +740,7 @@ static inline void ota_setStatus(DeviceState *state, OtaStatus status)
 
 static inline void ota_setProgress(DeviceState *state, uint8_t progress)
 {
-    if (s_inOtaTaskContext)
+    if (ota_isInOtaTaskContext())
     {
         ota_events_pushProgress(progress);
         return;
@@ -737,7 +753,7 @@ static inline void ota_setProgress(DeviceState *state, uint8_t progress)
 
 static void ota_clearActive(DeviceState *state)
 {
-    if (s_inOtaTaskContext)
+    if (ota_isInOtaTaskContext())
     {
         ota_events_pushClearActive();
         return;
@@ -768,7 +784,7 @@ static void ota_setFlat(DeviceState *state,
                         const char *targetVersion,
                         bool stamp)
 {
-    if (s_inOtaTaskContext)
+    if (ota_isInOtaTaskContext())
     {
         ota_events_pushFlatState(stateStr, progress, error, targetVersion, stamp);
         return;
@@ -1618,7 +1634,7 @@ static void ota_finishSuccess(DeviceState *state)
         ota_setStatus(state, OtaStatus::SUCCESS);
         ota_setResult(state, "success", "applied");
         ota_setFlat(state, "success", 100, "", state->ota.version, true);
-        if (s_inOtaTaskContext)
+        if (ota_isInOtaTaskContext())
         {
             ota_events_pushUpdateAvailable(false);
         }
@@ -1629,7 +1645,7 @@ static void ota_finishSuccess(DeviceState *state)
         const uint32_t epochNow = ota_epochNow();
         if (epochNow > 0)
         {
-            if (s_inOtaTaskContext)
+            if (ota_isInOtaTaskContext())
             {
                 ota_events_pushLastSuccessTs(epochNow);
             }
@@ -1683,7 +1699,10 @@ void ota_processPullJobInTask(DeviceState *state, const OtaTaskJob &job)
     }
 
     ota_primeRuntimeJob(job);
-    s_inOtaTaskContext = true;
+    if (s_otaTaskHandle == nullptr)
+    {
+        s_otaTaskHandle = xTaskGetCurrentTaskHandle();
+    }
     LOG_INFO(LogDomain::OTA,
              "otaTask processing request_id=%s target=%s force=%s reboot=%s",
              g_job.request_id[0] ? g_job.request_id : "<none>",
@@ -1697,7 +1716,6 @@ void ota_processPullJobInTask(DeviceState *state, const OtaTaskJob &job)
         const char *reason = "guard_rejected";
         ota_markFailed(state, reason);
         ota_resetRuntimeJob();
-        s_inOtaTaskContext = false;
         return;
     }
 
@@ -1726,7 +1744,6 @@ void ota_processPullJobInTask(DeviceState *state, const OtaTaskJob &job)
             vTaskDelay(pdMS_TO_TICKS(20));
         }
     }
-    s_inOtaTaskContext = false;
 }
 
 static void ota_tick(DeviceState *state)

@@ -31,6 +31,7 @@ void mqtt_tick(const DeviceState &state);
 
 // Force re-publish state (useful on reconnect or after mutation).
 void mqtt_requestStatePublish();
+bool mqtt_takeStatePublishRequested();
 
 // Publish ACK on the dedicated ack topic (not retained).
 bool mqtt_publishAck(const char *reqId, const char *type, const char *status, const char *msg);

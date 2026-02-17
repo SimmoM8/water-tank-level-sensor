@@ -5,6 +5,7 @@
 #include <string.h>
 #include <cstring>
 #include <ctype.h>
+#include <freertos/FreeRTOS.h>
 
 #include "mqtt_transport.h"
 #include "ha_discovery.h"
@@ -28,6 +29,7 @@ bool mqtt_publishRaw(const char *topic, const char *payload, bool retained)
 }
 static bool s_initialized = false;
 static bool s_statePublishRequested = true;
+static portMUX_TYPE s_statePublishMux = portMUX_INITIALIZER_UNLOCKED;
 
 struct Topics
 {
@@ -242,7 +244,7 @@ static bool mqtt_ensureConnected()
             {
                 mqtt.publish(s_topics.avail, AVAIL_ONLINE, true);
                 mqtt_subscribe();
-                s_statePublishRequested = true; // force fresh retained snapshot after reconnect
+                mqtt_requestStatePublish(); // force fresh retained snapshot after reconnect
                 LOG_INFO(LogDomain::MQTT, "MQTT connected; attempting HA discovery publish");
             }
             else
@@ -294,7 +296,6 @@ static bool publishState(const DeviceState &state)
     if (ok)
     {
         publishOtaShadowTopics(state);
-        s_statePublishRequested = false;
         s_lastStatePublishMs = millis();
     }
     return ok;
@@ -347,16 +348,37 @@ void mqtt_tick(const DeviceState &state)
     const uint32_t sinceLast = now - s_lastStatePublishMs;
     const bool heartbeatDue = sinceLast >= STATE_HEARTBEAT_MS;
     const bool intervalOk = sinceLast >= STATE_MIN_INTERVAL_MS;
+    const bool requested = mqtt_takeStatePublishRequested();
 
-    if ((s_statePublishRequested || heartbeatDue) && intervalOk)
+    if ((requested || heartbeatDue) && intervalOk)
     {
-        publishState(state);
+        if (!publishState(state) && requested)
+        {
+            // Retry on next loop if this explicit request failed.
+            mqtt_requestStatePublish();
+        }
+    }
+    else if (requested)
+    {
+        // Keep explicit requests pending until publish interval permits sending.
+        mqtt_requestStatePublish();
     }
 }
 
 void mqtt_requestStatePublish()
 {
+    portENTER_CRITICAL(&s_statePublishMux);
     s_statePublishRequested = true;
+    portEXIT_CRITICAL(&s_statePublishMux);
+}
+
+bool mqtt_takeStatePublishRequested()
+{
+    portENTER_CRITICAL(&s_statePublishMux);
+    const bool requested = s_statePublishRequested;
+    s_statePublishRequested = false;
+    portEXIT_CRITICAL(&s_statePublishMux);
+    return requested;
 }
 
 bool mqtt_publishAck(const char *reqId, const char *type, const char *status, const char *msg)
