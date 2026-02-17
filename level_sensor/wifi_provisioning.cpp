@@ -31,6 +31,9 @@ static const time_t VALID_TIME_EPOCH = 1600000000;
 #ifndef CFG_WIFI_CONNECT_RETRY_MAX_MS
 #define CFG_WIFI_CONNECT_RETRY_MAX_MS 300000u
 #endif
+#ifndef CFG_WIFI_AUTO_PORTAL_ON_MISSING_CREDS
+#define CFG_WIFI_AUTO_PORTAL_ON_MISSING_CREDS 0
+#endif
 
 static Preferences wifiPrefs; // WiFi-related preferences
 
@@ -285,10 +288,16 @@ void wifi_ensureConnected(uint32_t wifiTimeoutMs)
     {
         if (!s_loggedMissingCredentials)
         {
-            LOG_WARN(LogDomain::WIFI, "No saved WiFi credentials; entering captive portal");
+            LOG_WARN(LogDomain::WIFI, "No saved WiFi credentials");
             s_loggedMissingCredentials = true;
         }
+#if CFG_WIFI_AUTO_PORTAL_ON_MISSING_CREDS
+        LOG_WARN(LogDomain::WIFI, "Auto portal enabled; entering captive portal");
         startPortal();
+#else
+        logger_logEvery("wifi_no_creds", 15000, LogLevel::INFO, LogDomain::WIFI,
+                        "Setup portal not auto-started; run serial command 'wifi' to provision");
+#endif
         return;
     }
 
