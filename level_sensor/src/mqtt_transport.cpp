@@ -307,7 +307,19 @@ bool mqtt_publishLog(const char *topicSuffix, const char *payload, bool retained
         return false;
 
     char topic[128];
-    snprintf(topic, sizeof(topic), "%s/%s", s_cfg.baseTopic, topicSuffix ? topicSuffix : "");
+    int n = 0;
+    if (topicSuffix == nullptr || topicSuffix[0] == '\0')
+    {
+        n = snprintf(topic, sizeof(topic), "%s", s_cfg.baseTopic);
+    }
+    else
+    {
+        n = snprintf(topic, sizeof(topic), "%s/%s", s_cfg.baseTopic, topicSuffix);
+    }
+    if (n < 0 || n >= (int)sizeof(topic))
+    {
+        return false;
+    }
     return mqtt.publish(topic, payload, retained);
 }
 

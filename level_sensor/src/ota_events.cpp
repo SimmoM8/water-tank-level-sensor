@@ -88,7 +88,11 @@ static bool pushEventDropOldest(const OtaEvent &ev)
 
 bool ota_events_begin()
 {
-    if (s_queue != nullptr)
+    bool alreadyInitialized = false;
+    portENTER_CRITICAL(&s_eventsMux);
+    alreadyInitialized = (s_queue != nullptr);
+    portEXIT_CRITICAL(&s_eventsMux);
+    if (alreadyInitialized)
     {
         return true;
     }
@@ -105,13 +109,14 @@ bool ota_events_begin()
         s_queue = created;
         created = nullptr;
     }
+    const bool initialized = (s_queue != nullptr);
     portEXIT_CRITICAL(&s_eventsMux);
 
     if (created != nullptr)
     {
         vQueueDelete(created);
     }
-    return s_queue != nullptr;
+    return initialized;
 }
 
 bool ota_events_pushStatus(OtaStatus status)
@@ -167,6 +172,9 @@ bool ota_events_pushFlatState(const char *stateStr,
     ev.data.flat.hasState = (stateStr != nullptr);
     ev.data.flat.hasError = (errorText != nullptr);
     ev.data.flat.hasTargetVersion = (targetVersion != nullptr);
+    memset(ev.data.flat.state, 0, sizeof(ev.data.flat.state));
+    memset(ev.data.flat.error, 0, sizeof(ev.data.flat.error));
+    memset(ev.data.flat.targetVersion, 0, sizeof(ev.data.flat.targetVersion));
     if (stateStr)
     {
         strncpy(ev.data.flat.state, stateStr, sizeof(ev.data.flat.state));

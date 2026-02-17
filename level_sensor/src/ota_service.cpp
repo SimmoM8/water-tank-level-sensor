@@ -251,6 +251,7 @@ static void ota_setFlat(DeviceState *state,
                         const char *targetVersion,
                         bool stamp);
 static void ota_clearActive(DeviceState *state);
+static void ota_emitCancelledResult(const char *reason);
 
 static inline bool ota_timeReached(uint32_t now, uint32_t target)
 {
@@ -672,35 +673,29 @@ bool ota_cancel(const char *reason)
     const char *cancelReason = (reason && reason[0] != '\0') ? reason : "cancelled";
     const bool hadWork = ota_taskCancelAll(cancelReason);
 
-    if (s_serviceState)
-    {
-        ota_setStatus(s_serviceState, OtaStatus::IDLE);
-        ota_setFlat(s_serviceState, "cancelled", 0, cancelReason, "", true);
-        if (hadWork)
-        {
-            ota_setResult(s_serviceState, "cancelled", cancelReason);
-        }
-    }
-    else
-    {
-        ota_events_pushStatus(OtaStatus::IDLE);
-        ota_events_pushFlatState("cancelled", 0, cancelReason, "", true);
-        if (hadWork)
-        {
-            ota_events_pushResult("cancelled", cancelReason, ota_epochNow());
-        }
-    }
-
     if (hadWork)
     {
         // Clear active identity fields through the OTA event bridge so state mutation
         // stays serialized on main-loop drain.
         ota_events_pushClearActive();
+        ota_emitCancelledResult(cancelReason);
+    }
+    return hadWork;
+}
+
+static void ota_emitCancelledResult(const char *reason)
+{
+    const char *msg = (reason && reason[0] != '\0') ? reason : "cancelled";
+    uint8_t progress = 0;
+    if (s_serviceState)
+    {
+        progress = s_serviceState->ota_progress;
     }
 
-    // Bridge publish request through ota_events so MQTT signaling stays on main loop.
+    ota_events_pushStatus(OtaStatus::IDLE);
+    ota_events_pushFlatState("cancelled", progress, msg, nullptr, true);
+    ota_events_pushResult("cancelled", msg, ota_epochNow());
     ota_events_requestPublish();
-    return hadWork;
 }
 
 static void setErr(char *buf, size_t len, const char *msg)
