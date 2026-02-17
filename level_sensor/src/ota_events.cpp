@@ -129,6 +129,10 @@ bool ota_events_pushProgress(uint8_t progress)
     ev.data.progress = progress;
     if (s_queue != nullptr && xQueueSend(s_queue, &ev, 0) == pdTRUE)
     {
+        // Fresh queued progress supersedes stale coalesced fallback.
+        portENTER_CRITICAL(&s_eventsMux);
+        s_progressCoalescedPending = false;
+        portEXIT_CRITICAL(&s_eventsMux);
         return true;
     }
 
@@ -227,6 +231,7 @@ struct PendingApply
     bool hasStatus = false;
     OtaStatus status = OtaStatus::IDLE;
     bool hasProgress = false;
+    bool hasProgressFromQueue = false;
     uint8_t progress = 0;
     bool hasFlat = false;
     OtaEventFlatPayload flat{};
@@ -252,6 +257,7 @@ static void collectPending(PendingApply &pending, const OtaEvent &ev)
         break;
     case OtaEventType::PROGRESS:
         pending.hasProgress = true;
+        pending.hasProgressFromQueue = true;
         pending.progress = ev.data.progress;
         break;
     case OtaEventType::ERROR_TEXT:
@@ -303,14 +309,25 @@ bool ota_events_drainAndApply(DeviceState *state)
 
     bool coalescedProgressPending = false;
     uint8_t coalescedProgress = 0;
-    portENTER_CRITICAL(&s_eventsMux);
-    if (s_progressCoalescedPending)
+    if (!pending.hasProgressFromQueue)
     {
-        coalescedProgressPending = true;
-        coalescedProgress = s_progressCoalescedValue;
-        s_progressCoalescedPending = false;
+        portENTER_CRITICAL(&s_eventsMux);
+        if (s_progressCoalescedPending)
+        {
+            coalescedProgressPending = true;
+            coalescedProgress = s_progressCoalescedValue;
+            s_progressCoalescedPending = false;
+        }
+        portEXIT_CRITICAL(&s_eventsMux);
     }
-    portEXIT_CRITICAL(&s_eventsMux);
+    else
+    {
+        // Ignore stale coalesced value if this drain already got queued progress.
+        portENTER_CRITICAL(&s_eventsMux);
+        s_progressCoalescedPending = false;
+        portEXIT_CRITICAL(&s_eventsMux);
+    }
+
     if (coalescedProgressPending)
     {
         pending.hasProgress = true;
@@ -343,10 +360,18 @@ bool ota_events_drainAndApply(DeviceState *state)
             strncpy(state->ota_error, pending.flat.error, sizeof(state->ota_error));
             state->ota_error[sizeof(state->ota_error) - 1] = '\0';
         }
+        else
+        {
+            state->ota_error[0] = '\0';
+        }
         if (pending.flat.hasTargetVersion)
         {
             strncpy(state->ota_target_version, pending.flat.targetVersion, sizeof(state->ota_target_version));
             state->ota_target_version[sizeof(state->ota_target_version) - 1] = '\0';
+        }
+        else
+        {
+            state->ota_target_version[0] = '\0';
         }
     }
     if (pending.hasError)
