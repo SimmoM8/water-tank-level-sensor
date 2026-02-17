@@ -355,8 +355,13 @@ bool ota_events_drainAndApply(DeviceState *state)
             strncpy(state->ota_state, pending.flat.state, sizeof(state->ota_state));
             state->ota_state[sizeof(state->ota_state) - 1] = '\0';
         }
-        state->ota.progress = pending.flat.progress;
-        state->ota_progress = pending.flat.progress;
+        uint8_t newProgress = pending.flat.progress;
+        if (pending.hasProgress && pending.progress > newProgress)
+        {
+            newProgress = pending.progress;
+        }
+        state->ota.progress = newProgress;
+        state->ota_progress = newProgress;
         if (pending.flat.hasError)
         {
             strncpy(state->ota_error, pending.flat.error, sizeof(state->ota_error));
