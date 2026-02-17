@@ -30,6 +30,15 @@ static volatile bool s_cancelRequested = false;
 static char s_cancelReason[OTA_ERROR_MAX] = {0};
 static portMUX_TYPE s_cancelMux = portMUX_INITIALIZER_UNLOCKED;
 
+static bool ota_taskIsCancelRequested()
+{
+    bool cancelRequested = false;
+    portENTER_CRITICAL(&s_cancelMux);
+    cancelRequested = s_cancelRequested;
+    portEXIT_CRITICAL(&s_cancelMux);
+    return cancelRequested;
+}
+
 // Dedicated OTA worker task:
 // - Owns the firmware download/flash lifecycle.
 // - Uses a 16KB stack because TLS + HTTP + Update paths are stack-heavy on ESP32.
@@ -56,10 +65,6 @@ static void otaTask(void * /*arg*/)
         }
 
         s_jobRunning = true;
-        portENTER_CRITICAL(&s_cancelMux);
-        s_cancelRequested = false;
-        s_cancelReason[0] = '\0';
-        portEXIT_CRITICAL(&s_cancelMux);
 
         ota_processPullJobInTask(s_state, msg.job);
         s_jobRunning = false;
@@ -109,6 +114,11 @@ bool ota_taskEnqueue(const OtaTaskJob &job)
 {
     if (s_otaQueue == nullptr)
     {
+        return false;
+    }
+    if (ota_taskIsCancelRequested())
+    {
+        LOG_WARN(LogDomain::OTA, "reject enqueue: cancel pending");
         return false;
     }
 
