@@ -860,23 +860,6 @@ static void applyConfigFromCache(bool logValues)
     return;
   }
 
-  LOG_INFO(LogDomain::CONFIG, "[CFG] Tank volume (L): %s", isnan(cfg.tankVolumeLiters) ? "unset" : "set");
-  if (!isnan(cfg.tankVolumeLiters))
-  {
-    LOG_INFO(LogDomain::CONFIG, "[CFG] Tank volume (L) value=%.2f", cfg.tankVolumeLiters);
-  }
-
-  LOG_INFO(LogDomain::CONFIG, "[CFG] Rod length (cm): %s", isnan(cfg.rodLengthCm) ? "unset" : "set");
-  if (!isnan(cfg.rodLengthCm))
-  {
-    LOG_INFO(LogDomain::CONFIG, "[CFG] Rod length (cm) value=%.2f", cfg.rodLengthCm);
-  }
-
-  LOG_INFO(LogDomain::CONFIG, "[CFG] Sense mode: %s", cfg.senseMode == SenseMode::SIM ? "SIM" : "TOUCH");
-  LOG_INFO(LogDomain::CONFIG, "[CFG] Simulation mode: %u", cfg.simulationMode);
-
-  LOG_INFO(LogDomain::CAL, "[CAL] Dry=%ld Wet=%ld Inverted=%s", (long)calDry, (long)calWet, calInverted ? "true" : "false");
-
   if (!hasCalibrationValues())
   {
     LOG_WARN(LogDomain::CAL, "[CAL] Calibration missing or too close. Use 'dry' and 'wet' commands.");
@@ -1366,7 +1349,6 @@ void appSetup()
   probe_begin({(uint8_t)TOUCH_PIN, TOUCH_SAMPLES, TOUCH_SAMPLE_DELAY_MS});
   applyConfigFromCache(true);
   refreshStateSnapshot();
-  printHelpMenu();
 
   ota_begin(DEVICE_ID, OTA_PASS);
 
