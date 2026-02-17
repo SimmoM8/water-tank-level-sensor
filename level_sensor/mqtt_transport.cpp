@@ -228,7 +228,8 @@ static bool mqtt_ensureConnected()
         }
         if ((uint32_t)(now - s_lastAttemptMs) >= RETRY_INTERVAL_MS)
         {
-            LOG_INFO(LogDomain::MQTT, "MQTT connecting host=%s port=%d clientId=%s", s_cfg.host, s_cfg.port, s_cfg.clientId);
+            logger_logEvery("mqtt_connecting", 30000, LogLevel::INFO, LogDomain::MQTT,
+                            "MQTT connecting host=%s port=%d clientId=%s", s_cfg.host, s_cfg.port, s_cfg.clientId);
             const bool ok = mqtt.connect(
                 s_cfg.clientId,
                 s_cfg.user,
@@ -246,7 +247,8 @@ static bool mqtt_ensureConnected()
             }
             else
             {
-                LOG_WARN(LogDomain::MQTT, "MQTT connect failed state=%d", mqtt.state());
+                logger_logEvery("mqtt_connect_fail", 30000, LogLevel::WARN, LogDomain::MQTT,
+                                "MQTT connect failed state=%d", mqtt.state());
             }
         }
     }
