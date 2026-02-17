@@ -7,7 +7,7 @@
 #include "config.h"
 
 #ifndef CFG_LOG_COLOR
-#define CFG_LOG_COLOR 0
+#define CFG_LOG_COLOR 1
 #endif
 
 static const char *s_baseTopic = nullptr;
