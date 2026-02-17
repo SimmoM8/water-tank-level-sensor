@@ -676,7 +676,6 @@ bool ota_cancel(const char *reason)
     {
         ota_setStatus(s_serviceState, OtaStatus::IDLE);
         ota_setFlat(s_serviceState, "cancelled", 0, cancelReason, "", true);
-        ota_clearActive(s_serviceState);
         if (hadWork)
         {
             ota_setResult(s_serviceState, "cancelled", cancelReason);
@@ -686,11 +685,17 @@ bool ota_cancel(const char *reason)
     {
         ota_events_pushStatus(OtaStatus::IDLE);
         ota_events_pushFlatState("cancelled", 0, cancelReason, "", true);
-        ota_events_pushClearActive();
         if (hadWork)
         {
             ota_events_pushResult("cancelled", cancelReason, ota_epochNow());
         }
+    }
+
+    if (hadWork)
+    {
+        // Clear active identity fields through the OTA event bridge so state mutation
+        // stays serialized on main-loop drain.
+        ota_events_pushClearActive();
     }
 
     // Bridge publish request through ota_events so MQTT signaling stays on main loop.
