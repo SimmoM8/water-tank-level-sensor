@@ -50,6 +50,8 @@ static uint32_t s_lastTimeSyncSuccessMs = 0;
 static uint32_t s_nextTimeSyncRetryMs = 0;
 static uint32_t s_timeSyncBackoffMs = CFG_TIME_SYNC_RETRY_MIN_MS;
 static bool s_timeWasValid = false;
+static bool s_loggedMissingCredentials = false;
+static bool s_runtimePortalRequested = false;
 
 bool wifi_timeIsValid()
 {
@@ -182,6 +184,11 @@ void wifi_begin()
 static void startPortal()
 {
     LOG_INFO(LogDomain::WIFI, "Starting captive portal (setup mode)...");
+    // Clear one-shot portal latches before entering portal so failure cannot
+    // trap the device in reboot/setup loops.
+    s_runtimePortalRequested = false;
+    wifiPrefs.putBool(PREF_KEY_FORCE_PORTAL, false);
+
     WiFi.mode(WIFI_STA);
     WiFi.disconnect(true, true);
 
@@ -196,8 +203,12 @@ static void startPortal()
 
     if (!ok)
     {
-        LOG_WARN(LogDomain::WIFI, "Portal timed out or failed. Rebooting...");
-        ESP.restart();
+        LOG_WARN(LogDomain::WIFI, "Portal timed out or failed; continuing without reboot");
+        s_wifiConnectInFlight = false;
+        s_wifiConnectStartMs = 0;
+        s_wifiConnectRetryAtMs = 0;
+        s_wifiConnectBackoffMs = CFG_WIFI_CONNECT_RETRY_MIN_MS;
+        return;
     }
 
     LOG_INFO(LogDomain::WIFI, "WiFi configured and connected ip=%s", WiFi.localIP().toString().c_str());
@@ -208,7 +219,7 @@ static void startPortal()
     s_nextTimeSyncRetryMs = 0;
     wifi_timeSyncTick();
 
-    wifiPrefs.putBool(PREF_KEY_FORCE_PORTAL, false);
+    s_loggedMissingCredentials = false;
 }
 
 // Ensure WiFi is connected, otherwise start captive portal
@@ -233,6 +244,7 @@ void wifi_ensureConnected(uint32_t wifiTimeoutMs)
         s_wifiConnectStartMs = 0;
         s_wifiConnectRetryAtMs = 0;
         s_wifiConnectBackoffMs = CFG_WIFI_CONNECT_RETRY_MIN_MS;
+        s_loggedMissingCredentials = false;
         return;
     }
 
@@ -263,9 +275,20 @@ void wifi_ensureConnected(uint32_t wifiTimeoutMs)
     }
 
     // Check if we need to force the portal
-    if (wifiPrefs.getBool(PREF_KEY_FORCE_PORTAL, false))
+    if (s_runtimePortalRequested || wifiPrefs.getBool(PREF_KEY_FORCE_PORTAL, false))
     {
         startPortal(); // explicit user-driven setup mode
+        return;
+    }
+
+    if (WiFi.SSID().length() == 0)
+    {
+        if (!s_loggedMissingCredentials)
+        {
+            LOG_WARN(LogDomain::WIFI, "No saved WiFi credentials; entering captive portal");
+            s_loggedMissingCredentials = true;
+        }
+        startPortal();
         return;
     }
 
@@ -279,11 +302,8 @@ void wifi_ensureConnected(uint32_t wifiTimeoutMs)
     }
 
     WiFi.mode(WIFI_STA); // station mode
-    LOG_INFO(LogDomain::WIFI, "Connecting to saved WiFi%s", WiFi.SSID().length() ? "" : " (no saved SSID)");
-    if (WiFi.SSID().length())
-    {
-        LOG_INFO(LogDomain::WIFI, "SSID=%s", WiFi.SSID().c_str());
-    }
+    LOG_INFO(LogDomain::WIFI, "Connecting to saved WiFi");
+    LOG_INFO(LogDomain::WIFI, "SSID=%s", WiFi.SSID().c_str());
 
     WiFi.begin(); // use stored credentials
     s_wifiConnectInFlight = true;
@@ -304,7 +324,9 @@ void wifi_getTimeSyncStatus(WifiTimeSyncStatus &out)
 void wifi_requestPortal()
 {
     LOG_INFO(LogDomain::WIFI, "Forcing captive portal");
-    wifiPrefs.putBool(PREF_KEY_FORCE_PORTAL, true);
+    // Runtime request should not persist across reboot.
+    s_runtimePortalRequested = true;
+    wifiPrefs.putBool(PREF_KEY_FORCE_PORTAL, false);
     WiFi.disconnect(true, true);
     s_wifiConnectInFlight = false;
     s_wifiConnectStartMs = 0;
