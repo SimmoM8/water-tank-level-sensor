@@ -7,6 +7,7 @@
 #include "config.h"
 
 #ifndef CFG_LOG_COLOR
+// Serial logger emits ANSI escape codes when enabled; terminal should support ANSI colors/styles.
 #define CFG_LOG_COLOR 1
 #endif
 
@@ -22,11 +23,12 @@ static constexpr size_t kKeyTagLen = 12;
 static constexpr size_t kMsgBufSize = 256;
 static constexpr size_t kJsonBufSize = 512;
 static constexpr const char *kLogTopicSuffix = "event/log";
+static constexpr const char *kAnsiReset = "\x1B[0m";
+static constexpr const char *kAnsiDim = "\x1B[2m";
 
 enum class AnsiColor : uint8_t
 {
-    RESET = 0,
-    RED,
+    RED = 0,
     YELLOW,
     GREEN,
     CYAN,
@@ -36,7 +38,6 @@ enum class AnsiColor : uint8_t
 };
 
 static constexpr const char *kAnsiCodes[] = {
-    "\x1B[0m",  // RESET
     "\x1B[31m", // RED
     "\x1B[33m", // YELLOW
     "\x1B[32m", // GREEN
@@ -102,6 +103,23 @@ static const char *levelToString(LogLevel lvl)
     }
 }
 
+static const char *levelToStringSerial(LogLevel lvl)
+{
+    switch (lvl)
+    {
+    case LogLevel::DEBUG:
+        return "DEBUG";
+    case LogLevel::INFO:
+        return "INFO";
+    case LogLevel::WARN:
+        return "WARNING";
+    case LogLevel::ERROR:
+        return "ERROR";
+    default:
+        return "UNK";
+    }
+}
+
 static const char *domainToString(LogDomain dom)
 {
     switch (dom)
@@ -127,21 +145,64 @@ static const char *domainToString(LogDomain dom)
     }
 }
 
-static const char *levelToAnsiColor(LogLevel lvl)
+static const char *levelToStyle(LogLevel lvl)
 {
     switch (lvl)
     {
     case LogLevel::ERROR:
-        return ansiCode(AnsiColor::RED);
+        return "\x1B[1m\x1B[31m";
     case LogLevel::WARN:
-        return ansiCode(AnsiColor::YELLOW);
+        return "\x1B[1m\x1B[33m";
     case LogLevel::INFO:
-        return ansiCode(AnsiColor::GREEN);
+        return "";
     case LogLevel::DEBUG:
+        return "\x1B[2m\x1B[36m";
+    default:
+        return "\x1B[2m\x1B[90m";
+    }
+}
+
+static const char *domainToAnsiColor(LogDomain dom)
+{
+    switch (dom)
+    {
+    case LogDomain::SYSTEM:
+        return "\x1B[2m\x1B[90m";
+    case LogDomain::WIFI:
+        return ansiCode(AnsiColor::BLUE);
+    case LogDomain::MQTT:
+        return ansiCode(AnsiColor::MAGENTA);
+    case LogDomain::PROBE:
+        return "\x1B[2m\x1B[32m";
+    case LogDomain::CAL:
+        return "\x1B[2m\x1B[33m";
+    case LogDomain::CONFIG:
+        return ansiCode(AnsiColor::CYAN);
+    case LogDomain::COMMAND:
+        return ansiCode(AnsiColor::BLUE);
+    case LogDomain::OTA:
         return ansiCode(AnsiColor::CYAN);
     default:
-        return ansiCode(AnsiColor::GRAY);
+        return "\x1B[2m\x1B[90m";
     }
+}
+
+static void printPadded(const char *s, int width, bool leftAlign = true)
+{
+    if (width <= 0)
+        return;
+
+    char buf[24];
+    const char *text = s ? s : "";
+    if (leftAlign)
+    {
+        snprintf(buf, sizeof(buf), "%-*.*s", width, width, text);
+    }
+    else
+    {
+        snprintf(buf, sizeof(buf), "%*.*s", width, width, text);
+    }
+    Serial.print(buf);
 }
 
 static void appendTruncMarker(char *buf, size_t bufSize)
@@ -301,22 +362,36 @@ static void logToSerial(uint32_t tsSec, LogLevel lvl, LogDomain dom, const char 
     if (!s_serialEnabled)
         return;
 
+    char tsBuf[16];
+    snprintf(tsBuf, sizeof(tsBuf), "[%6lu]", (unsigned long)tsSec);
+
 #if CFG_LOG_COLOR
-    Serial.print(levelToAnsiColor(lvl));
-#endif
-    Serial.print("[");
-    Serial.print(tsSec);
-    Serial.print("] ");
-    Serial.print(levelToString(lvl));
+    Serial.print(kAnsiDim);
+    Serial.print(ansiCode(AnsiColor::GRAY));
+    Serial.print(tsBuf);
+    Serial.print(kAnsiReset);
     Serial.print(" ");
-    Serial.print(domainToString(dom));
+
+    Serial.print(levelToStyle(lvl));
+    printPadded(levelToStringSerial(lvl), 7, true);
+    Serial.print(kAnsiReset);
+    Serial.print(" ");
+
+    Serial.print(domainToAnsiColor(dom));
+    printPadded(domainToString(dom), 8, true);
+    Serial.print(kAnsiReset);
     Serial.print(": ");
-#if CFG_LOG_COLOR
-    Serial.print(msg);
-    Serial.print(ansiCode(AnsiColor::RESET));
-    Serial.println();
+
+    Serial.print(kAnsiReset);
+    Serial.println(msg ? msg : "");
 #else
-    Serial.println(msg);
+    Serial.print(tsBuf);
+    Serial.print(" ");
+    printPadded(levelToStringSerial(lvl), 7, true);
+    Serial.print(" ");
+    printPadded(domainToString(dom), 8, true);
+    Serial.print(": ");
+    Serial.println(msg ? msg : "");
 #endif
 }
 

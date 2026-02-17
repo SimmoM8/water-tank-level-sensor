@@ -9,6 +9,7 @@ enum class LogLevel : uint8_t
 {
     DEBUG = 0,
     INFO,
+    // Keep WARN for API/JSON compatibility; serial formatting may render "WARNING".
     WARN,
     ERROR
 };
