@@ -1,4 +1,5 @@
 #include "ota_service.h"
+#include "ota_task.h"
 #include <WiFiClientSecure.h>
 #include "ota_ca_cert.h"
 #include "mbedtls/sha256.h"
@@ -229,6 +230,7 @@ static inline void ota_requestPublish();
 static void ota_abort(DeviceState *state, const char *reason);
 static uint32_t ota_epochNow();
 static inline const char *ota_configureTlsClient(WiFiClientSecure &client);
+static void ota_tick(DeviceState *state);
 
 static inline bool ota_timeReached(uint32_t now, uint32_t target)
 {
@@ -581,20 +583,24 @@ static inline void ota_prepareTlsClient(WiFiClientSecure &client, const char *ph
 
 bool ota_isBusy()
 {
-    return g_job.active;
+    return g_job.active || ota_taskHasPendingWork();
 }
 
-void ota_begin(const char *hostName, const char *password)
+void ota_begin(DeviceState *state, const char *hostName, const char *password)
 {
     s_hostName = hostName;
     s_password = password;
     s_started = false;
+    if (!ota_taskBegin(state))
+    {
+        LOG_ERROR(LogDomain::OTA, "Failed to start otaTask worker");
+    }
     LOG_INFO(LogDomain::OTA, "OTA manifest url configured: %s", CFG_OTA_MANIFEST_URL);
 }
 
 void ota_handle()
 {
-    if (g_job.active)
+    if (ota_isBusy())
     {
         return; // avoid concurrent flash access during pull-OTA
     }
@@ -633,6 +639,15 @@ void ota_handle()
     }
 
     ArduinoOTA.handle();
+}
+
+bool ota_cancel(const char *reason)
+{
+    if (!g_job.active)
+    {
+        return false;
+    }
+    return ota_taskRequestCancel((reason && reason[0] != '\0') ? reason : "cancelled");
 }
 
 static void setErr(char *buf, size_t len, const char *msg)
@@ -847,6 +862,68 @@ static void ota_markFailed(DeviceState *state, const char *reason)
     ota_requestPublish();
 }
 
+static void ota_releaseJobResources()
+{
+    if (g_job.updateBegun)
+    {
+        Update.abort();
+        g_job.updateBegun = false;
+    }
+    if (g_job.httpBegun)
+    {
+        g_job.http.end();
+        g_job.httpBegun = false;
+    }
+    g_job.client.stop();
+    if (g_job.shaInit)
+    {
+        mbedtls_sha256_free(&g_job.shaCtx);
+        g_job.shaInit = false;
+    }
+}
+
+static void ota_resetRuntimeJob()
+{
+    ota_releaseJobResources();
+
+    g_job.active = false;
+    g_job.reboot = true;
+    g_job.force = false;
+    g_job.lastProgressMs = 0;
+    g_job.lastReportMs = 0;
+    g_job.lastDiagMs = 0;
+    g_job.bytesTotal = 0;
+    g_job.bytesWritten = 0;
+    g_job.noDataSinceMs = 0;
+    g_job.zeroReadStreak = 0;
+    g_job.netRetryCount = 0;
+    g_job.retryAtMs = 0;
+    g_job.retryCount = 0;
+    g_job.nextRetryAtMs = 0;
+    g_job.request_id[0] = '\0';
+    g_job.version[0] = '\0';
+    g_job.url[0] = '\0';
+    g_job.sha256[0] = '\0';
+}
+
+static void ota_primeRuntimeJob(const OtaTaskJob &job)
+{
+    ota_resetRuntimeJob();
+
+    g_job.active = true;
+    g_job.reboot = job.reboot;
+    g_job.force = job.force;
+
+    strncpy(g_job.request_id, job.request_id, sizeof(g_job.request_id));
+    g_job.request_id[sizeof(g_job.request_id) - 1] = '\0';
+    strncpy(g_job.version, job.version, sizeof(g_job.version));
+    g_job.version[sizeof(g_job.version) - 1] = '\0';
+    strncpy(g_job.url, job.url, sizeof(g_job.url));
+    g_job.url[sizeof(g_job.url) - 1] = '\0';
+    strncpy(g_job.sha256, job.sha256, sizeof(g_job.sha256));
+    g_job.sha256[sizeof(g_job.sha256) - 1] = '\0';
+}
+
 bool ota_pullStart(DeviceState *state,
                    const char *request_id,
                    const char *version,
@@ -863,25 +940,11 @@ bool ota_pullStart(DeviceState *state,
         return false;
     }
 
-    if (g_job.active)
+    if (ota_isBusy())
     {
         setErr(errBuf, errBufLen, "busy");
         ota_recordError(state, "busy");
         ota_requestPublish();
-        return false;
-    }
-
-    if (!ota_checkSafetyGuards(state, "pull_start", errBuf, errBufLen))
-    {
-        return false;
-    }
-
-    if (!wifi_timeIsValid())
-    {
-        const char *reason = "time_not_set";
-        LOG_ERROR(LogDomain::OTA, "Pull OTA blocked: %s", reason);
-        setErr(errBuf, errBufLen, reason);
-        ota_markFailed(state, reason);
         return false;
     }
 
@@ -991,62 +1054,34 @@ bool ota_pullStart(DeviceState *state,
         }
     }
 
-    // Reset job state safely (do not memset C++ objects)
-    if (g_job.updateBegun)
-    {
-        Update.abort();
-        g_job.updateBegun = false;
-    }
-    if (g_job.httpBegun)
-    {
-        g_job.http.end();
-        g_job.httpBegun = false;
-    }
-    if (g_job.shaInit)
-    {
-        mbedtls_sha256_free(&g_job.shaCtx);
-        g_job.shaInit = false;
-    }
+    OtaTaskJob taskJob{};
+    strncpy(taskJob.request_id, request_id ? request_id : "", sizeof(taskJob.request_id));
+    taskJob.request_id[sizeof(taskJob.request_id) - 1] = '\0';
+    strncpy(taskJob.version, version ? version : "", sizeof(taskJob.version));
+    taskJob.version[sizeof(taskJob.version) - 1] = '\0';
+    strncpy(taskJob.url, url, sizeof(taskJob.url));
+    taskJob.url[sizeof(taskJob.url) - 1] = '\0';
+    strncpy(taskJob.sha256, sha256 ? sha256 : "", sizeof(taskJob.sha256));
+    taskJob.sha256[sizeof(taskJob.sha256) - 1] = '\0';
+    taskJob.force = force;
+    taskJob.reboot = reboot;
 
-    // Clear primitive fields / buffers
-    g_job.active = false;
-    g_job.reboot = true;
-    g_job.force = false;
-    g_job.lastProgressMs = 0;
-    g_job.lastReportMs = 0;
-    g_job.lastDiagMs = 0;
-    g_job.bytesTotal = 0;
-    g_job.bytesWritten = 0;
-    g_job.noDataSinceMs = 0;
-    g_job.zeroReadStreak = 0;
-    g_job.netRetryCount = 0;
-    g_job.retryAtMs = 0;
-    g_job.retryCount = 0;
-    g_job.nextRetryAtMs = 0;
-    g_job.request_id[0] = '\0';
-    g_job.version[0] = '\0';
-    g_job.url[0] = '\0';
-    g_job.sha256[0] = '\0';
-
-    g_job.active = true;
-    g_job.reboot = reboot;
-    g_job.force = force;
-
-    strncpy(g_job.request_id, request_id ? request_id : "", sizeof(g_job.request_id));
-    g_job.request_id[sizeof(g_job.request_id) - 1] = '\0';
-    strncpy(g_job.version, version ? version : "", sizeof(g_job.version));
-    g_job.version[sizeof(g_job.version) - 1] = '\0';
-    strncpy(g_job.url, url, sizeof(g_job.url));
-    g_job.url[sizeof(g_job.url) - 1] = '\0';
-    strncpy(g_job.sha256, sha256 ? sha256 : "", sizeof(g_job.sha256));
-    g_job.sha256[sizeof(g_job.sha256) - 1] = '\0';
+    if (!ota_taskEnqueue(taskJob))
+    {
+        const char *reason = "queue_full";
+        LOG_WARN(LogDomain::OTA, "Pull OTA queue rejected reason=%s", reason);
+        setErr(errBuf, errBufLen, reason);
+        ota_recordError(state, reason);
+        ota_requestPublish();
+        return false;
+    }
 
     // Mirror into device-owned state
     ota_setStatus(state, OtaStatus::DOWNLOADING);
-    strncpy(state->ota.request_id, g_job.request_id, sizeof(state->ota.request_id));
-    strncpy(state->ota.version, g_job.version, sizeof(state->ota.version));
-    strncpy(state->ota.url, g_job.url, sizeof(state->ota.url));
-    strncpy(state->ota.sha256, g_job.sha256, sizeof(state->ota.sha256));
+    strncpy(state->ota.request_id, taskJob.request_id, sizeof(state->ota.request_id));
+    strncpy(state->ota.version, taskJob.version, sizeof(state->ota.version));
+    strncpy(state->ota.url, taskJob.url, sizeof(state->ota.url));
+    strncpy(state->ota.sha256, taskJob.sha256, sizeof(state->ota.sha256));
     state->ota.request_id[sizeof(state->ota.request_id) - 1] = '\0';
     state->ota.version[sizeof(state->ota.version) - 1] = '\0';
     state->ota.url[sizeof(state->ota.url) - 1] = '\0';
@@ -1057,18 +1092,18 @@ bool ota_pullStart(DeviceState *state,
     state->ota.last_status[0] = '\0';
     state->ota.last_message[0] = '\0';
     state->ota.completed_ts = 0;
-    ota_setFlat(state, "downloading", 0, "", g_job.version, true);
+    ota_setFlat(state, "downloading", 0, "", taskJob.version, true);
     int queuedCmp = 0;
-    state->update_available = ota_isStrictUpgrade(state->device.fw, g_job.version, &queuedCmp);
+    state->update_available = ota_isStrictUpgrade(state->device.fw, taskJob.version, &queuedCmp);
     LOG_INFO(LogDomain::OTA,
              "OTA queued version relation current=%s target=%s cmp=%d update_available=%s",
              (state->device.fw && state->device.fw[0]) ? state->device.fw : "<empty>",
-             g_job.version[0] ? g_job.version : "<empty>",
+             taskJob.version[0] ? taskJob.version : "<empty>",
              queuedCmp,
              state->update_available ? "true" : "false");
 
     setErr(errBuf, errBufLen, "");
-    LOG_INFO(LogDomain::OTA, "Pull OTA queued url=%s version=%s", g_job.url, g_job.version);
+    LOG_INFO(LogDomain::OTA, "Pull OTA queued url=%s version=%s", taskJob.url, taskJob.version);
     return true;
 }
 
@@ -1085,7 +1120,7 @@ bool ota_pullStartFromManifest(DeviceState *state,
         return false;
     }
 
-    if (g_job.active)
+    if (ota_isBusy())
     {
         setErr(errBuf, errBufLen, "busy");
         ota_recordError(state, "busy");
@@ -1264,7 +1299,7 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
         setErr(errBuf, errBufLen, "missing_state");
         return false;
     }
-    if (g_job.active)
+    if (ota_isBusy())
     {
         setErr(errBuf, errBufLen, "busy");
         ota_recordError(state, "busy");
@@ -1635,7 +1670,58 @@ static void ota_finishSuccess(DeviceState *state)
     }
 }
 
-void ota_tick(DeviceState *state)
+void ota_processPullJobInTask(DeviceState *state, const OtaTaskJob &job)
+{
+    if (!state)
+    {
+        return;
+    }
+
+    ota_primeRuntimeJob(job);
+    LOG_INFO(LogDomain::OTA,
+             "otaTask processing request_id=%s target=%s force=%s reboot=%s",
+             g_job.request_id[0] ? g_job.request_id : "<none>",
+             g_job.version[0] ? g_job.version : "<none>",
+             g_job.force ? "true" : "false",
+             g_job.reboot ? "true" : "false");
+
+    // Validate runtime guards in task context before the pull starts.
+    if (!ota_checkSafetyGuards(state, "pull_task_start", nullptr, 0))
+    {
+        const char *reason = state->ota_error[0] ? state->ota_error : "guard_rejected";
+        ota_markFailed(state, reason);
+        ota_resetRuntimeJob();
+        return;
+    }
+
+    if (!WiFi.isConnected())
+    {
+        ota_abort(state, "wifi_disconnected");
+    }
+    else if (!wifi_timeIsValid())
+    {
+        ota_abort(state, "time_not_set");
+    }
+
+    while (g_job.active)
+    {
+        char cancelReason[OTA_ERROR_MAX] = {0};
+        if (ota_taskTakeCancelReason(cancelReason, sizeof(cancelReason)))
+        {
+            g_job.retryCount = MAX_OTA_RETRIES;
+            ota_abort(state, cancelReason[0] ? cancelReason : "cancelled");
+            continue;
+        }
+
+        ota_tick(state);
+        if (g_job.active)
+        {
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+    }
+}
+
+static void ota_tick(DeviceState *state)
 {
     if (!g_job.active)
         return;

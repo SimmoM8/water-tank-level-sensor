@@ -889,7 +889,6 @@ static bool reloadConfigIfDirty(bool logValues)
 static void windowFast()
 {
   ota_handle();
-  ota_tick(&g_state); // NEW pull-OTA
   wifi_ensureConnected(WIFI_TIMEOUT_MS);
 
   if (reloadConfigIfDirty(true))
@@ -1364,7 +1363,7 @@ void appSetup()
   applyConfigFromCache(true);
   refreshStateSnapshot();
 
-  ota_begin(DEVICE_ID, OTA_PASS);
+  ota_begin(&g_state, DEVICE_ID, OTA_PASS);
 
   g_state.lastCmd.requestId = s_emptyStr;
   g_state.lastCmd.type = s_emptyStr;

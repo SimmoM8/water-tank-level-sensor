@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include "device_state.h"
 
-void ota_begin(const char *hostName, const char *password);
+void ota_begin(DeviceState *state, const char *hostName, const char *password);
 void ota_handle();
 
 // Pull-OTA (device pulls firmware from URL)
@@ -31,6 +31,6 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen);
 
 void ota_confirmRunningApp();
 
-void ota_tick(DeviceState *state);
+bool ota_cancel(const char *reason);
 
 bool ota_isBusy();
