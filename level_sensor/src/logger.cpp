@@ -24,7 +24,6 @@ static constexpr size_t kMsgBufSize = 256;
 static constexpr size_t kJsonBufSize = 512;
 static constexpr const char *kLogTopicSuffix = "event/log";
 static constexpr const char *kAnsiReset = "\x1B[0m";
-static constexpr const char *kAnsiDim = "\x1B[2m";
 
 enum class AnsiColor : uint8_t
 {
@@ -44,7 +43,7 @@ static constexpr const char *kAnsiCodes[] = {
     "\x1B[36m", // CYAN
     "\x1B[34m", // BLUE
     "\x1B[35m", // MAGENTA
-    "\x1B[90m"  // GRAY
+    "\x1B[37m"  // GRAY (brighter for readability)
 };
 
 static const char *ansiCode(AnsiColor color)
@@ -158,7 +157,7 @@ static const char *levelToStyle(LogLevel lvl)
     case LogLevel::DEBUG:
         return "\x1B[2m\x1B[36m";
     default:
-        return "\x1B[2m\x1B[90m";
+        return ansiCode(AnsiColor::GRAY);
     }
 }
 
@@ -167,7 +166,7 @@ static const char *domainToAnsiColor(LogDomain dom)
     switch (dom)
     {
     case LogDomain::SYSTEM:
-        return "\x1B[2m\x1B[90m";
+        return ansiCode(AnsiColor::GRAY);
     case LogDomain::WIFI:
         return ansiCode(AnsiColor::BLUE);
     case LogDomain::MQTT:
@@ -175,7 +174,7 @@ static const char *domainToAnsiColor(LogDomain dom)
     case LogDomain::PROBE:
         return "\x1B[2m\x1B[32m";
     case LogDomain::CAL:
-        return "\x1B[2m\x1B[33m";
+        return ansiCode(AnsiColor::GREEN);
     case LogDomain::CONFIG:
         return ansiCode(AnsiColor::CYAN);
     case LogDomain::COMMAND:
@@ -183,7 +182,19 @@ static const char *domainToAnsiColor(LogDomain dom)
     case LogDomain::OTA:
         return ansiCode(AnsiColor::CYAN);
     default:
-        return "\x1B[2m\x1B[90m";
+        return ansiCode(AnsiColor::GRAY);
+    }
+}
+
+static const char *levelToMessageStyle(LogLevel lvl)
+{
+    switch (lvl)
+    {
+    case LogLevel::ERROR:
+    case LogLevel::WARN:
+        return levelToStyle(lvl);
+    default:
+        return "";
     }
 }
 
@@ -366,7 +377,6 @@ static void logToSerial(uint32_t tsSec, LogLevel lvl, LogDomain dom, const char 
     snprintf(tsBuf, sizeof(tsBuf), "[%6lu]", (unsigned long)tsSec);
 
 #if CFG_LOG_COLOR
-    Serial.print(kAnsiDim);
     Serial.print(ansiCode(AnsiColor::GRAY));
     Serial.print(tsBuf);
     Serial.print(kAnsiReset);
@@ -382,8 +392,18 @@ static void logToSerial(uint32_t tsSec, LogLevel lvl, LogDomain dom, const char 
     Serial.print(kAnsiReset);
     Serial.print(": ");
 
+    const char *msgStyle = levelToMessageStyle(lvl);
+    if (msgStyle[0] != '\0')
+    {
+        Serial.print(msgStyle);
+    }
+    else
+    {
+        Serial.print(kAnsiReset);
+    }
+    Serial.print(msg ? msg : "");
     Serial.print(kAnsiReset);
-    Serial.println(msg ? msg : "");
+    Serial.println();
 #else
     Serial.print(tsBuf);
     Serial.print(" ");
