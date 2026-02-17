@@ -16,6 +16,7 @@ dist/
 *.swp
 *.swo
 *~
+.pio
 
 # OS files
 .DS_Store
