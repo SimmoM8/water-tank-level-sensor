@@ -10,6 +10,7 @@
 #include "probe_reader.h"
 #include "wifi_provisioning.h"
 #include "device_state.h"
+#include "ota_events.h"
 #include "ota_service.h"
 #include "mqtt_transport.h"
 #include "storage_nvs.h"
@@ -888,6 +889,7 @@ static bool reloadConfigIfDirty(bool logValues)
 
 static void windowFast()
 {
+  ota_events_drainAndApply(&g_state);
   ota_handle();
   wifi_ensureConnected(WIFI_TIMEOUT_MS);
 
@@ -1363,6 +1365,10 @@ void appSetup()
   applyConfigFromCache(true);
   refreshStateSnapshot();
 
+  if (!ota_events_begin())
+  {
+    LOG_ERROR(LogDomain::OTA, "Failed to initialize ota events queue");
+  }
   ota_begin(&g_state, DEVICE_ID, OTA_PASS);
 
   g_state.lastCmd.requestId = s_emptyStr;
