@@ -34,6 +34,6 @@ bool ota_taskBegin(DeviceState *state);
 bool ota_taskEnqueue(const OtaTaskJob &job);
 bool ota_taskRequestCancel(const char *reason);
 bool ota_taskCancelAll(const char *reason);
-bool ota_taskClearQueue();
+uint32_t ota_taskClearQueue();
 bool ota_taskTakeCancelReason(char *reasonBuf, size_t reasonBufLen);
 bool ota_taskHasPendingWork();

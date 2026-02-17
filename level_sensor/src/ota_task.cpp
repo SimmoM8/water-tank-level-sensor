@@ -128,20 +128,20 @@ bool ota_taskRequestCancel(const char *reason)
     return true;
 }
 
-bool ota_taskClearQueue()
+uint32_t ota_taskClearQueue()
 {
     if (s_otaQueue == nullptr)
     {
-        return false;
+        return 0u;
     }
 
-    bool clearedAny = false;
+    uint32_t drainedCount = 0u;
     OtaTaskMsg dropped{};
     while (xQueueReceive(s_otaQueue, &dropped, 0) == pdTRUE)
     {
-        clearedAny = true;
+        ++drainedCount;
     }
-    return clearedAny;
+    return drainedCount;
 }
 
 bool ota_taskCancelAll(const char *reason)
@@ -154,9 +154,9 @@ bool ota_taskCancelAll(const char *reason)
     s_cancelReason[sizeof(s_cancelReason) - 1] = '\0';
     portEXIT_CRITICAL(&s_cancelMux);
 
-    const bool hadQueued = ota_taskClearQueue();
+    const uint32_t drainedCount = ota_taskClearQueue();
     const bool hadRunning = s_jobRunning;
-    return hadRunning || hadQueued || wasCancelRequested;
+    return hadRunning || (drainedCount > 0u) || wasCancelRequested;
 }
 
 bool ota_taskTakeCancelReason(char *reasonBuf, size_t reasonBufLen)
