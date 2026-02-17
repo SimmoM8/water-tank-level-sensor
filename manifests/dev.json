@@ -2,7 +2,7 @@
   "channel": "dev",
   "version": "1.0.1-alpha",
   "url": "https://github.com/SimmoM8/water-tank-level-sensor/releases/download/v1.0.1-alpha/level_sensor.ino.bin",
-  "sha256": "02db5354977278acfb81917947879626f4c1d4091a4cffe7996634eac92af4d3",
+  "sha256": "ebac9123dedb99ad3f13bf6ebe6db66b9de5066f8dc89d5996dc6f1dc67fd58e",
   "notes": "Dry-run OTA test: manifest parsing only"
 }
 

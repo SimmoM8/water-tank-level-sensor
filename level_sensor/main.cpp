@@ -1,3 +1,4 @@
+#include <esp_ota_ops.h>
 #include <WiFi.h>
 #include <math.h>
 #include <Arduino.h>
@@ -202,16 +203,28 @@ static void windowMqtt();
 static void setCalibrationDryValue(int32_t value, const char *sourceMsg = nullptr);
 static void setCalibrationWetValue(int32_t value, const char *sourceMsg = nullptr);
 
+enum class WindowPolicy : uint8_t
+{
+  ALWAYS,
+  SKIP_DURING_OTA
+};
+
 struct LoopWindow
 {
   const char *name;
   uint32_t intervalMs;
   uint32_t lastMs;
+  WindowPolicy policy;
   void (*fn)();
 };
 
 static void runWindow(LoopWindow &w, uint32_t now)
 {
+  if (w.policy == WindowPolicy::SKIP_DURING_OTA && ota_isBusy())
+  {
+    return;
+  }
+
   if (w.intervalMs == 0 || (uint32_t)(now - w.lastMs) >= w.intervalMs)
   {
     w.fn();
@@ -921,7 +934,7 @@ static void maybeCheckManifest()
     return;
   }
 
-  if (!WiFi.isConnected() || ota_isBusy())
+  if (!WiFi.isConnected())
     return;
 
   const uint32_t now = millis();
@@ -1213,18 +1226,19 @@ static void refreshStateSnapshot()
 }
 
 static LoopWindow g_windows[] = {
-    {"FAST", 0u, 0u, windowFast},
-    {"SENSOR", RAW_SAMPLE_MS, 0u, windowSensor},
-    {"COMPUTE", PERCENT_SAMPLE_MS, 0u, windowCompute},
-    {"STATE_META", 1000u, 0u, windowStateMeta},
-    {"MQTT", 0u, 0u, windowMqtt}};
+    {"FAST", 0u, 0u, WindowPolicy::ALWAYS, windowFast},
+    {"SENSOR", RAW_SAMPLE_MS, 0u, WindowPolicy::SKIP_DURING_OTA, windowSensor},
+    {"COMPUTE", PERCENT_SAMPLE_MS, 0u, WindowPolicy::SKIP_DURING_OTA, windowCompute},
+    {"STATE_META", 1000u, 0u, WindowPolicy::SKIP_DURING_OTA, windowStateMeta},
+    {"MQTT", 0u, 0u, WindowPolicy::SKIP_DURING_OTA, windowMqtt}};
 
 // ---------------- Arduino lifecycle ----------------
 
 // Contract: call once after boot. Initializes subsystems, state, and MQTT/OTA handlers.
 void appSetup()
 {
-  const char *bootReason = mapResetReason(esp_reset_reason());
+  const esp_reset_reason_t resetReasonCode = esp_reset_reason();
+  const char *bootReason = mapResetReason(resetReasonCode);
   strncpy(g_state.reset_reason, bootReason, sizeof(g_state.reset_reason));
   g_state.reset_reason[sizeof(g_state.reset_reason) - 1] = '\0';
 
@@ -1234,8 +1248,22 @@ void appSetup()
   logger_setHighFreqEnabled(false);
   quality_init(probeQualityRt);
   LOG_INFO(LogDomain::SYSTEM, "BOOT water_level_sensor starting...");
+
+  const esp_partition_t *running = esp_ota_get_running_partition();
+  const esp_partition_t *boot = esp_ota_get_boot_partition();
+
+  LOG_INFO(LogDomain::OTA, "Running partition=%s addr=0x%08lx",
+           running ? running->label : "<null>",
+           running ? (unsigned long)running->address : 0);
+
+  LOG_INFO(LogDomain::OTA, "Boot partition=%s addr=0x%08lx",
+           boot ? boot->label : "<null>",
+           boot ? (unsigned long)boot->address : 0);
+
+  ota_confirmRunningApp();
+
   LOG_INFO(LogDomain::SYSTEM, "FW=%s HW=%s", DEVICE_FW, DEVICE_HW);
-  LOG_INFO(LogDomain::SYSTEM, "Reset reason=%s", g_state.reset_reason);
+  LOG_INFO(LogDomain::SYSTEM, "Reset reason=%s (code=%d)", g_state.reset_reason, (int)resetReasonCode);
   LOG_INFO(LogDomain::SYSTEM, "TOUCH_PIN=%d", TOUCH_PIN);
 
   storage_begin();
@@ -1247,6 +1275,7 @@ void appSetup()
 
     uint8_t rebootIntent = (uint8_t)RebootIntent::NONE;
     storage_loadRebootIntent(rebootIntent);
+    const uint8_t rebootIntentRaw = rebootIntent;
     rebootIntent = normalizeRebootIntent(rebootIntent);
     if (rebootIntent != (uint8_t)RebootIntent::NONE)
     {
@@ -1267,9 +1296,12 @@ void appSetup()
     const BootClassification cls = classifyBoot(g_state.reset_reason, rebootIntent);
     const bool badBoot = (cls == BootClassification::BAD);
     LOG_INFO(LogDomain::SYSTEM,
-             "Boot classification reset_reason=%s reboot_intent=%s class=%s bad_boot=%s",
+             "Boot classification reset_reason=%s(code=%d) reboot_intent=%s(raw=%u norm=%u) class=%s bad_boot=%s",
              g_state.reset_reason,
+             (int)resetReasonCode,
              g_state.reboot_intent_label,
+             (unsigned int)rebootIntentRaw,
+             (unsigned int)rebootIntent,
              bootClassificationLabel(cls),
              badBoot ? "true" : "false");
 

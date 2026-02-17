@@ -4,6 +4,9 @@
 #include "mbedtls/sha256.h"
 #include "mbedtls/ssl.h"
 #include "mbedtls/x509.h"
+#include <esp_ota_ops.h>
+#include <esp_task_wdt.h>
+#include "esp_app_format.h"
 #include <ArduinoOTA.h>
 #include <WiFi.h>
 #include "logger.h"
@@ -55,6 +58,9 @@
 #ifndef CFG_OTA_HTTP_RETRY_MAX_BACKOFF_MS
 #define CFG_OTA_HTTP_RETRY_MAX_BACKOFF_MS 10000u
 #endif
+#ifndef CFG_OTA_DOWNLOAD_HEARTBEAT_MS
+#define CFG_OTA_DOWNLOAD_HEARTBEAT_MS 1000u
+#endif
 
 static constexpr uint8_t MAX_OTA_RETRIES = 3u;
 static constexpr uint32_t BASE_RETRY_DELAY_MS = 5000u;
@@ -77,6 +83,7 @@ struct PullOtaJob
 
     uint32_t lastProgressMs = 0;
     uint32_t lastReportMs = 0;
+    uint32_t lastDiagMs = 0;
     uint32_t bytesTotal = 0;
     uint32_t bytesWritten = 0;
     uint32_t noDataSinceMs = 0;
@@ -88,6 +95,7 @@ struct PullOtaJob
 
     // Streaming object
     HTTPClient http;
+    WiFiClientSecure client;
 
     mbedtls_sha256_context shaCtx;
     bool shaInit = false;
@@ -101,8 +109,27 @@ static PullOtaJob g_job;
 static const char *s_lastTlsTrustMode = "none";
 static int s_lastTlsErrCode = 0;
 static char s_lastTlsErrMsg[128] = {0};
+static bool s_otaHeartbeatEnabled = true;
 static const char *OTA_PROGRESS_TOPIC_SUFFIX = "ota/progress";
 static const char *OTA_STATUS_TOPIC_SUFFIX = "ota/status";
+
+void ota_confirmRunningApp()
+{
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (!running)
+    {
+        LOG_WARN(LogDomain::OTA, "OTA confirm: running partition is null");
+        return;
+    }
+
+    // If rollback is enabled in the bootloader config, this is the critical call:
+    esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+    LOG_INFO(LogDomain::OTA,
+             "OTA confirm: mark_app_valid_cancel_rollback() err=%d running=%s@0x%08lx",
+             (int)err,
+             running->label,
+             (unsigned long)running->address);
+}
 
 static bool ota_isStrictUpgrade(const char *currentVersion,
                                 const char *targetVersion,
@@ -235,6 +262,50 @@ static inline void ota_resetTlsError()
 {
     s_lastTlsErrCode = 0;
     s_lastTlsErrMsg[0] = '\0';
+}
+
+static void ota_logPartitionSnapshot(const char *phase)
+{
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_partition_t *boot = esp_ota_get_boot_partition();
+    const esp_partition_t *next = esp_ota_get_next_update_partition(nullptr);
+
+    LOG_INFO(LogDomain::OTA,
+             "OTA partition snapshot phase=%s running=%s@0x%08lx boot=%s@0x%08lx next=%s@0x%08lx",
+             phase ? phase : "",
+             (running && running->label) ? running->label : "<null>",
+             (unsigned long)(running ? running->address : 0u),
+             (boot && boot->label) ? boot->label : "<null>",
+             (unsigned long)(boot ? boot->address : 0u),
+             (next && next->label) ? next->label : "<null>",
+             (unsigned long)(next ? next->address : 0u));
+}
+
+static bool ota_detachCurrentTaskWdt(const char *phase)
+{
+    const esp_err_t err = esp_task_wdt_delete(nullptr);
+    if (err == ESP_OK)
+    {
+        LOG_INFO(LogDomain::OTA, "WDT detached for phase=%s", phase ? phase : "");
+        return true;
+    }
+    LOG_WARN(LogDomain::OTA, "WDT detach skipped phase=%s err=%d", phase ? phase : "", (int)err);
+    return false;
+}
+
+static void ota_reattachCurrentTaskWdt(bool detached, const char *phase)
+{
+    if (!detached)
+    {
+        return;
+    }
+    const esp_err_t err = esp_task_wdt_add(nullptr);
+    if (err == ESP_OK)
+    {
+        LOG_INFO(LogDomain::OTA, "WDT reattached for phase=%s", phase ? phase : "");
+        return;
+    }
+    LOG_ERROR(LogDomain::OTA, "WDT reattach failed phase=%s err=%d", phase ? phase : "", (int)err);
 }
 
 static inline void ota_captureTlsError(WiFiClientSecure &client)
@@ -943,6 +1014,7 @@ bool ota_pullStart(DeviceState *state,
     g_job.force = false;
     g_job.lastProgressMs = 0;
     g_job.lastReportMs = 0;
+    g_job.lastDiagMs = 0;
     g_job.bytesTotal = 0;
     g_job.bytesWritten = 0;
     g_job.noDataSinceMs = 0;
@@ -1420,6 +1492,17 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
 
 static void ota_abort(DeviceState *state, const char *reason)
 {
+    LOG_WARN(LogDomain::OTA,
+             "OTA abort detail reason=%s bytes_written=%lu bytes_total=%lu update_begun=%s http_begun=%s update_error=%u free_heap=%lu",
+             reason ? reason : "",
+             (unsigned long)g_job.bytesWritten,
+             (unsigned long)g_job.bytesTotal,
+             g_job.updateBegun ? "true" : "false",
+             g_job.httpBegun ? "true" : "false",
+             (unsigned int)Update.getError(),
+             (unsigned long)ESP.getFreeHeap());
+    ota_logPartitionSnapshot("abort");
+
     if (g_job.retryCount < MAX_OTA_RETRIES)
     {
         const uint8_t nextRetryCount = (uint8_t)(g_job.retryCount + 1u);
@@ -1446,6 +1529,7 @@ static void ota_abort(DeviceState *state, const char *reason)
         g_job.bytesWritten = 0;
         g_job.lastProgressMs = 0;
         g_job.lastReportMs = 0;
+        g_job.lastDiagMs = 0;
         g_job.noDataSinceMs = 0;
         g_job.zeroReadStreak = 0;
         g_job.netRetryCount = 0;
@@ -1501,6 +1585,8 @@ static void ota_abort(DeviceState *state, const char *reason)
 
 static void ota_finishSuccess(DeviceState *state)
 {
+    ota_logPartitionSnapshot("finish_success_pre_state");
+
     if (state)
     {
         ota_setStatus(state, OtaStatus::SUCCESS);
@@ -1524,6 +1610,15 @@ static void ota_finishSuccess(DeviceState *state)
 
     g_job.active = false;
     LOG_INFO(LogDomain::OTA, "Pull OTA success");
+    s_otaHeartbeatEnabled = false;
+    LOG_INFO(LogDomain::OTA, "OTA heartbeat diagnostics auto-disabled after successful apply");
+    LOG_INFO(LogDomain::OTA,
+             "OTA finalize summary bytes_written=%lu bytes_total=%lu update_error=%u free_heap=%lu",
+             (unsigned long)g_job.bytesWritten,
+             (unsigned long)g_job.bytesTotal,
+             (unsigned int)Update.getError(),
+             (unsigned long)ESP.getFreeHeap());
+    ota_logPartitionSnapshot("finish_success_post_state");
 
     if (g_job.reboot)
     {
@@ -1532,7 +1627,10 @@ static void ota_finishSuccess(DeviceState *state)
             ota_setStatus(state, OtaStatus::REBOOTING);
         }
         storage_saveRebootIntent((uint8_t)RebootIntent::OTA);
+        LOG_INFO(LogDomain::OTA, "Saved reboot intent=ota");
         delay(250);
+        LOG_INFO(LogDomain::OTA, "Restarting into new firmware...");
+        delay(2000);
         ESP.restart();
     }
 }
@@ -1569,6 +1667,7 @@ void ota_tick(DeviceState *state)
         g_job.bytesWritten = 0;
         g_job.lastProgressMs = 0;
         g_job.lastReportMs = 0;
+        g_job.lastDiagMs = 0;
         g_job.noDataSinceMs = 0;
         g_job.zeroReadStreak = 0;
         g_job.netRetryCount = 0;
@@ -1605,55 +1704,55 @@ void ota_tick(DeviceState *state)
         g_job.retryAtMs = 0;
     }
 
-    // Firmware download request: configured TLS client + strict redirect-following.
+    // Step A: begin HTTP if not begun
     if (!g_job.httpBegun)
     {
         const uint32_t connectTimeoutMs = (uint32_t)CFG_OTA_HTTP_CONNECT_TIMEOUT_MS;
         const uint32_t readTimeoutMs = (uint32_t)CFG_OTA_HTTP_READ_TIMEOUT_MS;
         const uint16_t readTimeoutMsClamped = (readTimeoutMs > 65535u) ? 65535u : (uint16_t)readTimeoutMs;
 
-        WiFiClientSecure client;
-        // Firmware must be fetched as a GitHub Release asset.
-        ota_prepareTlsClient(client, "firmware_download", g_job.url);
+        g_job.http.end();
+        g_job.client.stop();
+        g_job.client = WiFiClientSecure();
+        ota_prepareTlsClient(g_job.client, "firmware_download", g_job.url);
 
-        HTTPClient http;
-        http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-        http.setRedirectLimit(10);
-        http.setConnectTimeout((int32_t)connectTimeoutMs);
-        http.setTimeout(readTimeoutMsClamped);
+        g_job.http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+        g_job.http.setRedirectLimit(10);
+        g_job.http.setConnectTimeout((int32_t)connectTimeoutMs);
+        g_job.http.setTimeout(readTimeoutMsClamped);
 
         const uint32_t hsStartMs = millis();
-        const bool beginOk = http.begin(client, g_job.url);
+        const bool beginOk = g_job.http.begin(g_job.client, g_job.url);
         const uint32_t hsElapsedMs = millis() - hsStartMs;
         if (!beginOk)
         {
-            ota_captureTlsError(client);
+            ota_captureTlsError(g_job.client);
             ota_logTlsStatus("firmware_download", g_job.url, false, 0);
             const char *reason = ota_classifyBeginFailure(hsElapsedMs);
             ota_scheduleRetry(state, reason);
             return;
         }
+        g_job.httpBegun = true;
 
         static const char *kHeaders[] = {"Content-Type", "Content-Length", "Location"};
-        http.collectHeaders(kHeaders, 3);
-        http.setUserAgent("DadsSmartHomeWaterTank/1.0");
-        http.addHeader("Accept", "application/octet-stream");
-        http.useHTTP10(false);
+        g_job.http.collectHeaders(kHeaders, 3);
+        g_job.http.setUserAgent("DadsSmartHomeWaterTank/1.0");
+        g_job.http.addHeader("Accept", "application/octet-stream");
+        g_job.http.useHTTP10(false);
 
         const uint32_t getStartMs = millis();
-        const int code = http.GET();
+        const int code = g_job.http.GET();
         const uint32_t getElapsedMs = millis() - getStartMs;
         const bool requestOk = (code > 0);
         if (!requestOk)
         {
-            ota_captureTlsError(client);
+            ota_captureTlsError(g_job.client);
             ota_logTlsStatus("firmware_download", g_job.url, false, code);
             const char *reason = ota_classifyRequestFailure(code);
             if (getElapsedMs >= readTimeoutMs)
             {
                 reason = "http_timeout";
             }
-            http.end();
             ota_scheduleRetry(state, reason);
             return;
         }
@@ -1662,57 +1761,77 @@ void ota_tick(DeviceState *state)
         {
             char msg[32];
             ota_formatHttpCodeReason(code, msg, sizeof(msg));
-            http.end();
             ota_scheduleRetry(state, msg);
             return;
         }
         g_job.netRetryCount = 0;
         g_job.retryAtMs = 0;
 
-        String ctype = http.header("Content-Type");
+        String ctype = g_job.http.header("Content-Type");
         if (ctype.length() > 0)
         {
             String lower = ctype;
             lower.toLowerCase();
             if (lower.indexOf("text/html") >= 0 || lower.indexOf("application/json") >= 0)
             {
-                http.end();
                 ota_abort(state, "bad_content_type");
                 return;
             }
         }
 
-        int len = http.getSize();
+        int len = g_job.http.getSize();
         LOG_INFO(LogDomain::OTA, "HTTP %d len=%d ctype=%s", code, len, ctype.c_str());
-        if (len > 0 && len < OTA_MIN_BYTES)
-        {
-            http.end();
-            ota_abort(state, "content_too_small");
-            return;
-        }
+        LOG_INFO(LogDomain::OTA, "Partition free space approx=%u", (unsigned)ESP.getFreeSketchSpace());
+
         if (len <= 0)
         {
-            len = 0;
+            g_job.bytesTotal = 0; // unknown
+        }
+        else
+        {
+            g_job.bytesTotal = (uint32_t)len;
+            if (len > 0 && len < OTA_MIN_BYTES)
+            {
+                ota_abort(state, "content_too_small");
+                return;
+            }
+
+            if (g_job.bytesTotal > ESP.getFreeSketchSpace())
+            {
+                ota_abort(state, "not_enough_space");
+                return;
+            }
         }
 
-        g_job.bytesTotal = (uint32_t)len;
-        g_job.bytesWritten = 0;
-        g_job.zeroReadStreak = 0;
-        g_job.noDataSinceMs = 0;
-        g_job.lastProgressMs = millis();
-        g_job.lastReportMs = g_job.lastProgressMs;
+        LOG_INFO(LogDomain::OTA, "HTTP len=%d -> bytesTotal=%lu", len, (unsigned long)g_job.bytesTotal);
+
+        ota_logPartitionSnapshot("before_update_begin");
+        const size_t updateSize =
+            (g_job.bytesTotal > 0) ? (size_t)g_job.bytesTotal : (size_t)UPDATE_SIZE_UNKNOWN;
+
+        LOG_INFO(LogDomain::OTA, "Update.begin size=%s (%lu)",
+                 (g_job.bytesTotal > 0) ? "known" : "unknown",
+                 (unsigned long)updateSize);
 
         Update.setMD5(nullptr);
-        if (!Update.begin(len > 0 ? (size_t)len : UPDATE_SIZE_UNKNOWN, U_FLASH))
+        const bool wdtDetachedBegin = ota_detachCurrentTaskWdt("update_begin");
+        const bool updateBeginOk = Update.begin(updateSize, U_FLASH);
+        ota_reattachCurrentTaskWdt(wdtDetachedBegin, "update_begin");
+        if (!updateBeginOk)
         {
-            http.end();
             ota_abort(state, "update_begin_failed");
             return;
         }
-        g_job.updateBegun = true;
+        LOG_INFO(LogDomain::OTA,
+                 "Update.begin ok expected_len=%lu update_error=%u free_heap=%lu",
+                 (unsigned long)g_job.bytesTotal,
+                 (unsigned int)Update.getError(),
+                 (unsigned long)ESP.getFreeHeap());
+        ota_logPartitionSnapshot("after_update_begin");
         mbedtls_sha256_init(&g_job.shaCtx);
         mbedtls_sha256_starts(&g_job.shaCtx, 0);
         g_job.shaInit = true;
+        g_job.updateBegun = true;
 
         if (state)
         {
@@ -1721,199 +1840,245 @@ void ota_tick(DeviceState *state)
             ota_requestPublish();
         }
 
-        WiFiClient *stream = http.getStreamPtr();
-        if (!stream)
+        g_job.lastProgressMs = millis();
+        g_job.lastReportMs = g_job.lastProgressMs;
+        g_job.lastDiagMs = g_job.lastProgressMs;
+        g_job.zeroReadStreak = 0;
+        g_job.noDataSinceMs = 0;
+        return;
+    }
+
+    // Step B: stream a bounded chunk per tick
+    WiFiClient *stream = g_job.http.getStreamPtr();
+    if (!stream)
+    {
+        ota_abort(state, "no_stream");
+        return;
+    }
+
+    const size_t kMaxChunk = 4096;
+    uint8_t buf[512];
+    size_t processed = 0;
+
+    while (processed < kMaxChunk)
+    {
+        int avail = stream->available();
+        if (avail <= 0)
         {
-            http.end();
-            ota_abort(state, "no_stream");
-            return;
+            if (g_job.zeroReadStreak == 0)
+                g_job.noDataSinceMs = millis();
+            g_job.zeroReadStreak++;
+            break;
         }
 
-        uint8_t buf[512];
-        while (true)
+        size_t toRead = (size_t)avail;
+        if (toRead > sizeof(buf))
+            toRead = sizeof(buf);
+
+        int n = stream->read(buf, toRead);
+        if (n <= 0)
         {
-            if (!WiFi.isConnected())
-            {
-                http.end();
-                ota_abort(state, "wifi_disconnected");
-                return;
-            }
-
-            int avail = stream->available();
-            if (avail > 0)
-            {
-                size_t toRead = (size_t)avail;
-                if (toRead > sizeof(buf))
-                {
-                    toRead = sizeof(buf);
-                }
-
-                int n = stream->readBytes(buf, toRead);
-                if (n <= 0)
-                {
-                    if (g_job.zeroReadStreak == 0)
-                    {
-                        g_job.noDataSinceMs = millis();
-                    }
-                    g_job.zeroReadStreak++;
-                }
-                else
-                {
-                    if (g_job.shaInit)
-                    {
-                        mbedtls_sha256_update(&g_job.shaCtx, buf, (size_t)n);
-                    }
-
-                    size_t written = Update.write(buf, (size_t)n);
-                    if (written != (size_t)n)
-                    {
-                        http.end();
-                        ota_abort(state, "flash_write_failed");
-                        return;
-                    }
-
-                    g_job.bytesWritten += (uint32_t)written;
-                    g_job.zeroReadStreak = 0;
-                    g_job.noDataSinceMs = 0;
-                    g_job.lastProgressMs = millis();
-                }
-            }
-            else
-            {
-                if (g_job.zeroReadStreak == 0)
-                {
-                    g_job.noDataSinceMs = millis();
-                }
-                g_job.zeroReadStreak++;
-            }
-
-            uint32_t now = millis();
-            if (state && (now - g_job.lastReportMs) >= 500u)
-            {
-                g_job.lastReportMs = now;
-                if (g_job.bytesTotal > 0)
-                {
-                    uint32_t pct = (g_job.bytesWritten * 100u) / g_job.bytesTotal;
-                    if (pct > 100u)
-                    {
-                        pct = 100u;
-                    }
-                    ota_setProgress(state, (uint8_t)pct);
-                }
-                else
-                {
-                    ota_setProgress(state, 255);
-                }
-                ota_requestPublish();
-            }
-
-            bool finished = false;
-            if (g_job.bytesTotal > 0)
-            {
-                finished = g_job.bytesWritten >= g_job.bytesTotal;
-            }
-            else
-            {
-                finished = !stream->connected() &&
-                           stream->available() == 0 &&
-                           g_job.zeroReadStreak > 0 &&
-                           (now - g_job.noDataSinceMs) > 200u;
-            }
-
-            if (finished)
-            {
-                break;
-            }
-
-            if (g_job.updateBegun && g_job.lastProgressMs > 0 &&
-                (now - g_job.lastProgressMs) > 60000u)
-            {
-                http.end();
-                ota_abort(state, "download_timeout");
-                return;
-            }
-
-            delay(1);
+            if (g_job.zeroReadStreak == 0)
+                g_job.noDataSinceMs = millis();
+            g_job.zeroReadStreak++;
+            break;
         }
-
-        if (state)
-        {
-            ota_setStatus(state, OtaStatus::VERIFYING);
-            ota_setFlat(state, "verifying", state->ota.progress, nullptr, nullptr, false);
-            ota_requestPublish();
-        }
-
-        if (g_job.bytesWritten < OTA_MIN_BYTES)
-        {
-            http.end();
-            ota_abort(state, "download_too_small");
-            return;
-        }
-
-        uint8_t digest[32];
-        char hex[65];
-        hex[64] = '\0';
 
         if (g_job.shaInit)
         {
-            mbedtls_sha256_finish(&g_job.shaCtx, digest);
-            mbedtls_sha256_free(&g_job.shaCtx);
-            g_job.shaInit = false;
-
-            static const char *kHex = "0123456789abcdef";
-            for (int i = 0; i < 32; i++)
-            {
-                hex[i * 2] = kHex[(digest[i] >> 4) & 0xF];
-                hex[i * 2 + 1] = kHex[digest[i] & 0xF];
-            }
-
-            if (g_job.sha256[0] == '\0')
-            {
-                http.end();
-                ota_abort(state, "missing_sha256");
-                return;
-            }
-            if (!isHex64(g_job.sha256))
-            {
-                http.end();
-                ota_abort(state, "bad_sha256_format");
-                return;
-            }
-
-            for (int i = 0; i < 64; i++)
-            {
-                if (lowerHexChar(g_job.sha256[i]) != hex[i])
-                {
-                    LOG_WARN(LogDomain::OTA, "Pull OTA SHA256 mismatch exp_prefix=%.12s got_prefix=%.12s",
-                             g_job.sha256, hex);
-                    http.end();
-                    ota_abort(state, "sha_mismatch");
-                    return;
-                }
-            }
-            LOG_INFO(LogDomain::OTA, "Pull OTA SHA256 ok (prefix)=%c%c%c%c%c%c%c%c%c%c%c%c",
-                     hex[0], hex[1], hex[2], hex[3], hex[4], hex[5], hex[6], hex[7], hex[8], hex[9], hex[10], hex[11]);
+            mbedtls_sha256_update(&g_job.shaCtx, buf, (size_t)n);
         }
 
-        if (state)
+        size_t written = Update.write(buf, (size_t)n);
+        if (written != (size_t)n)
         {
-            ota_setStatus(state, OtaStatus::APPLYING);
-            ota_setFlat(state, "applying", state->ota.progress, nullptr, nullptr, false);
-            ota_requestPublish();
-        }
-
-        bool okEnd = Update.end(true);
-        http.end();
-        g_job.updateBegun = false;
-        if (!okEnd)
-        {
-            char msg[40];
-            snprintf(msg, sizeof(msg), "update_end_failed_%u", (unsigned int)Update.getError());
-            ota_abort(state, msg);
+            LOG_ERROR(LogDomain::OTA,
+                      "Update.write mismatch read=%d written=%u update_error=%u bytes_written=%lu",
+                      n,
+                      (unsigned int)written,
+                      (unsigned int)Update.getError(),
+                      (unsigned long)g_job.bytesWritten);
+            ota_abort(state, "flash_write_failed");
             return;
         }
 
-        ota_finishSuccess(state);
+        g_job.zeroReadStreak = 0;
+        g_job.noDataSinceMs = 0;
+        g_job.bytesWritten += (uint32_t)written;
+        processed += written;
+        g_job.lastProgressMs = millis();
+    }
+
+    uint32_t now = millis();
+
+    if (s_otaHeartbeatEnabled && (uint32_t)(now - g_job.lastDiagMs) >= (uint32_t)CFG_OTA_DOWNLOAD_HEARTBEAT_MS)
+    {
+        g_job.lastDiagMs = now;
+        uint32_t pct = 255u;
+        if (g_job.bytesTotal > 0)
+        {
+            pct = (g_job.bytesWritten * 100u) / g_job.bytesTotal;
+            if (pct > 100u)
+            {
+                pct = 100u;
+            }
+        }
+        LOG_INFO(LogDomain::OTA,
+                 "OTA heartbeat progress=%lu%% bytes=%lu/%lu zero_reads=%u stream_connected=%s stream_avail=%d retries=%u/%u free_heap=%lu update_error=%u",
+                 (unsigned long)pct,
+                 (unsigned long)g_job.bytesWritten,
+                 (unsigned long)g_job.bytesTotal,
+                 (unsigned int)g_job.zeroReadStreak,
+                 stream->connected() ? "true" : "false",
+                 stream->available(),
+                 (unsigned int)g_job.netRetryCount,
+                 (unsigned int)CFG_OTA_HTTP_MAX_RETRIES,
+                 (unsigned long)ESP.getFreeHeap(),
+                 (unsigned int)Update.getError());
+    }
+
+    if (state && (now - g_job.lastReportMs) >= 500u)
+    {
+        g_job.lastReportMs = now;
+
+        if (g_job.bytesTotal > 0)
+        {
+            uint32_t pct = (g_job.bytesWritten * 100u) / g_job.bytesTotal;
+            if (pct > 100u)
+                pct = 100u;
+            ota_setProgress(state, (uint8_t)pct);
+        }
+        else
+        {
+            ota_setProgress(state, 255);
+        }
+        ota_requestPublish();
+    }
+
+    bool finished = false;
+    if (g_job.bytesTotal > 0)
+    {
+        finished = g_job.bytesWritten >= g_job.bytesTotal;
+    }
+    else
+    {
+        finished = !stream->connected() &&
+                   stream->available() == 0 &&
+                   g_job.zeroReadStreak > 0 &&
+                   (now - g_job.noDataSinceMs) > 200u;
+    }
+
+    if (!finished)
+    {
+        if (g_job.updateBegun && g_job.lastProgressMs > 0 &&
+            (now - g_job.lastProgressMs) > 60000u)
+        {
+            ota_abort(state, "download_timeout");
+            return;
+        }
         return;
     }
+
+    LOG_INFO(LogDomain::OTA,
+             "OTA stream complete bytes_written=%lu bytes_total=%lu stream_connected=%s stream_avail=%d",
+             (unsigned long)g_job.bytesWritten,
+             (unsigned long)g_job.bytesTotal,
+             stream->connected() ? "true" : "false",
+             stream->available());
+
+    // Step C: finalize update
+    if (state)
+    {
+        ota_setStatus(state, OtaStatus::VERIFYING);
+        ota_setFlat(state, "verifying", state->ota.progress, nullptr, nullptr, false);
+        ota_requestPublish();
+    }
+
+    if (g_job.bytesWritten < OTA_MIN_BYTES)
+    {
+        ota_abort(state, "download_too_small");
+        return;
+    }
+
+    uint8_t digest[32];
+    char hex[65];
+    hex[64] = '\0';
+
+    if (g_job.shaInit)
+    {
+        mbedtls_sha256_finish(&g_job.shaCtx, digest);
+        mbedtls_sha256_free(&g_job.shaCtx);
+        g_job.shaInit = false;
+
+        static const char *kHex = "0123456789abcdef";
+        for (int i = 0; i < 32; i++)
+        {
+            hex[i * 2] = kHex[(digest[i] >> 4) & 0xF];
+            hex[i * 2 + 1] = kHex[digest[i] & 0xF];
+        }
+
+        if (g_job.sha256[0] == '\0')
+        {
+            ota_abort(state, "missing_sha256");
+            return;
+        }
+        if (!isHex64(g_job.sha256))
+        {
+            ota_abort(state, "bad_sha256_format");
+            return;
+        }
+
+        for (int i = 0; i < 64; i++)
+        {
+            if (lowerHexChar(g_job.sha256[i]) != hex[i])
+            {
+                LOG_WARN(LogDomain::OTA, "Pull OTA SHA256 mismatch exp_prefix=%.12s got_prefix=%.12s",
+                         g_job.sha256, hex);
+                ota_abort(state, "sha_mismatch");
+                return;
+            }
+        }
+        LOG_INFO(LogDomain::OTA, "Pull OTA SHA256 ok (prefix)=%c%c%c%c%c%c%c%c%c%c%c%c",
+                 hex[0], hex[1], hex[2], hex[3], hex[4], hex[5], hex[6], hex[7], hex[8], hex[9], hex[10], hex[11]);
+    }
+
+    if (state)
+    {
+        ota_setStatus(state, OtaStatus::APPLYING);
+        ota_setFlat(state, "applying", state->ota.progress, nullptr, nullptr, false);
+        ota_requestPublish();
+    }
+
+    const bool wdtDetachedEnd = ota_detachCurrentTaskWdt("update_end");
+    bool okEnd = Update.end(true);
+    ota_reattachCurrentTaskWdt(wdtDetachedEnd, "update_end");
+    LOG_INFO(LogDomain::OTA,
+             "Update.end(force=true) result=%s update_error=%u bytes_written=%lu bytes_total=%lu free_heap=%lu",
+             okEnd ? "ok" : "fail",
+             (unsigned int)Update.getError(),
+             (unsigned long)g_job.bytesWritten,
+             (unsigned long)g_job.bytesTotal,
+             (unsigned long)ESP.getFreeHeap());
+    ota_logPartitionSnapshot("after_update_end");
+    const esp_partition_t *bootAfter = esp_ota_get_boot_partition();
+    LOG_INFO(LogDomain::OTA, "Boot partition AFTER Update.end: %s@0x%08lx",
+             bootAfter ? bootAfter->label : "<null>",
+             (unsigned long)(bootAfter ? bootAfter->address : 0));
+    if (!okEnd)
+    {
+        char msg[40];
+        snprintf(msg, sizeof(msg), "update_end_failed_%u", (unsigned int)Update.getError());
+        ota_abort(state, msg);
+        return;
+    }
+
+    if (g_job.httpBegun)
+    {
+        g_job.http.end();
+        g_job.httpBegun = false;
+    }
+    g_job.updateBegun = false;
+
+    ota_finishSuccess(state);
+    return;
 }
