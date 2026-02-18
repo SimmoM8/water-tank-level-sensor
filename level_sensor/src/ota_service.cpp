@@ -303,6 +303,7 @@ static void ota_logBlocked(const char *phase, const char *reason, const char *fm
 static const char *ota_sourceFromRequestId(const char *requestId);
 static void ota_formatSizeCompact(uint32_t bytes, char *out, size_t outLen);
 static void ota_logSuccessBanner(const char *version, uint32_t elapsedMs);
+static void ota_logFailureBanner(const char *reason, const char *version, uint32_t elapsedMs);
 static void ota_clearActive(DeviceState *state);
 static void ota_emitCancelledResult(const char *reason);
 static const char *ota_imgStateToString(esp_ota_img_states_t state);
@@ -415,6 +416,7 @@ static void ota_progressEnsureLineBreak()
 static void ota_progressPrint(uint32_t bytesWritten, uint32_t bytesTotal, bool force, bool completed)
 {
     constexpr uint32_t kMinUpdateIntervalMs = 125u; // cap at ~8 Hz
+    constexpr size_t kProgressLineWidth = 108u;
     const bool newlineMode = (CFG_OTA_DEV_LOGS != 0) || (CFG_OTA_PROGRESS_NEWLINES != 0);
     const bool hasTotal = bytesTotal > 0u;
     const uint32_t nowMs = millis();
@@ -500,13 +502,14 @@ static void ota_progressPrint(uint32_t bytesWritten, uint32_t bytesTotal, bool f
     char etaBuf[8] = "--:--";
     const uint32_t elapsedMs = (g_job.startedMs > 0 && nowMs >= g_job.startedMs) ? (nowMs - g_job.startedMs) : 0u;
     if (hasTotal &&
-        g_job.progressSpeedEmaBps > 1.0f &&
+        g_job.progressSpeedEmaBps > 0.1f &&
         clampedBytes < bytesTotal &&
         elapsedMs >= 1500u &&
         clampedBytes >= 32768u)
     {
+        const float speedForEta = (g_job.progressSpeedEmaBps < 128.0f) ? 128.0f : g_job.progressSpeedEmaBps;
         const float remain = (float)(bytesTotal - clampedBytes);
-        uint32_t etaSec = (uint32_t)(remain / g_job.progressSpeedEmaBps);
+        uint32_t etaSec = (uint32_t)(remain / speedForEta);
         if (etaSec > 5999u)
         {
             etaSec = 5999u;
@@ -521,7 +524,14 @@ static void ota_progressPrint(uint32_t bytesWritten, uint32_t bytesTotal, bool f
     }
 
     constexpr size_t kBarWidth = 25u;
-    char line[144] = {0};
+    char lineRaw[192] = {0};
+    char line[192] = {0};
+    char bytesField[24] = {0};
+    char pctField[5] = " --%";
+    if (hasTotal || completed)
+    {
+        snprintf(pctField, sizeof(pctField), "%3lu%%", (unsigned long)pct);
+    }
     if (hasTotal)
     {
         char bar[kBarWidth + 1] = {0};
@@ -531,48 +541,72 @@ static void ota_progressPrint(uint32_t bytesWritten, uint32_t bytesTotal, bool f
             bar[i] = (i < fill) ? '=' : ' ';
         }
         bar[kBarWidth] = '\0';
-        snprintf(line, sizeof(line),
-                 "Download        [%-25s] %3lu%% %12lu bytes %11s ETA %5s",
+        float writtenMb = (float)clampedBytes / (1024.0f * 1024.0f);
+        float totalMb = (float)bytesTotal / (1024.0f * 1024.0f);
+        if (writtenMb > 9999.99f)
+        {
+            writtenMb = 9999.99f;
+        }
+        if (totalMb > 9999.99f)
+        {
+            totalMb = 9999.99f;
+        }
+        snprintf(bytesField, sizeof(bytesField), "%6.2f/%6.2f MB", writtenMb, totalMb);
+        snprintf(lineRaw, sizeof(lineRaw),
+                 "Download        [%-25s] %4s %-16s %11s ETA %5s",
                  bar,
-                 (unsigned long)pct,
-                 (unsigned long)clampedBytes,
+                 pctField,
+                 bytesField,
                  speedBuf,
                  etaBuf);
     }
     else
     {
-        snprintf(line, sizeof(line),
-                 "Download        [%-25s]     %12lu bytes %11s ETA %5s",
+        float writtenKb = (float)clampedBytes / 1024.0f;
+        if (writtenKb > 999999.9f)
+        {
+            writtenKb = 999999.9f;
+        }
+        snprintf(bytesField, sizeof(bytesField), "%12.1f KB", writtenKb);
+        snprintf(lineRaw, sizeof(lineRaw),
+                 "Download        [%-25s] %4s %-16s %11s ETA %5s",
                  "size unknown",
-                 (unsigned long)clampedBytes,
+                 pctField,
+                 bytesField,
                  speedBuf,
                  etaBuf);
     }
-    line[sizeof(line) - 1] = '\0';
+    lineRaw[sizeof(lineRaw) - 1] = '\0';
+    const size_t rawLen = strlen(lineRaw);
+    if (rawLen >= kProgressLineWidth)
+    {
+        memcpy(line, lineRaw, kProgressLineWidth);
+        line[kProgressLineWidth] = '\0';
+    }
+    else
+    {
+        memcpy(line, lineRaw, rawLen);
+        memset(line + rawLen, ' ', kProgressLineWidth - rawLen);
+        line[kProgressLineWidth] = '\0';
+    }
 
     logger_serialLock();
+    if (!newlineMode && !g_job.progressStarted)
+    {
+        Serial.println();
+        logger_serialSetInlineActive(false);
+    }
     if (newlineMode)
     {
         Serial.println(line);
         logger_serialSetInlineActive(false);
-        g_job.progressLastLineLen = 0u;
+        g_job.progressLastLineLen = 0;
     }
     else
     {
-        const size_t lineLen = strlen(line);
         Serial.print('\r');
         Serial.print(line);
-        if (g_job.progressLastLineLen > lineLen)
-        {
-            const size_t extra = g_job.progressLastLineLen - lineLen;
-            for (size_t i = 0; i < extra; ++i)
-            {
-                Serial.print(' ');
-            }
-            Serial.print('\r');
-            Serial.print(line);
-        }
-        g_job.progressLastLineLen = lineLen;
+        g_job.progressLastLineLen = (uint32_t)kProgressLineWidth;
         if (completed)
         {
             Serial.println();
@@ -592,6 +626,10 @@ static void ota_progressPrint(uint32_t bytesWritten, uint32_t bytesTotal, bool f
     if (completed && !g_job.progressCompleted)
     {
         Serial.println("Download done.");
+        if (!newlineMode)
+        {
+            Serial.println();
+        }
         g_job.progressCompleted = true;
         g_job.progressLastLineLen = 0u;
     }
@@ -600,11 +638,16 @@ static void ota_progressPrint(uint32_t bytesWritten, uint32_t bytesTotal, bool f
 
 static void ota_progressFail(const char *reason)
 {
+    const bool newlineMode = (CFG_OTA_DEV_LOGS != 0) || (CFG_OTA_PROGRESS_NEWLINES != 0);
     const char *msg = (reason && reason[0] != '\0') ? reason : "error";
     logger_serialEnsureLineBreak();
     logger_serialLock();
     Serial.print("Download failed: ");
     Serial.println(msg);
+    if (!newlineMode)
+    {
+        Serial.println();
+    }
     logger_serialSetInlineActive(false);
     g_job.progressLastLineLen = 0u;
     logger_serialUnlock();
@@ -695,15 +738,48 @@ static void ota_logSuccessBanner(const char *version, uint32_t elapsedMs)
     ota_progressEnsureLineBreak();
     logger_serialLock();
 #if CFG_LOG_COLOR
-    Serial.print("\x1B[1m\x1B[32mSUCCESS\x1B[0m ");
+    Serial.print("=====[ OTA UPDATE ");
+    Serial.print("\x1B[1m\x1B[32mSUCCESS\x1B[0m");
+    Serial.print(" ]===== ");
     Serial.print("\x1B[36m");
     Serial.print(v);
     Serial.print("\x1B[0m");
 #else
-    Serial.print("SUCCESS ");
+    Serial.print("=====[ OTA UPDATE SUCCESS ]===== ");
     Serial.print(v);
 #endif
     Serial.print(" in ");
+    char dur[8];
+    snprintf(dur, sizeof(dur), "%02lu:%02lu", (unsigned long)mins, (unsigned long)secs);
+    Serial.println(dur);
+    logger_serialSetInlineActive(false);
+    logger_serialUnlock();
+}
+
+static void ota_logFailureBanner(const char *reason, const char *version, uint32_t elapsedMs)
+{
+    const uint32_t seconds = elapsedMs / 1000u;
+    const uint32_t mins = seconds / 60u;
+    const uint32_t secs = seconds % 60u;
+    const char *r = (reason && reason[0] != '\0') ? reason : "error";
+    const char *v = (version && version[0] != '\0') ? version : "<unknown>";
+    ota_progressEnsureLineBreak();
+    logger_serialLock();
+#if CFG_LOG_COLOR
+    Serial.print("=====[ OTA UPDATE ");
+    Serial.print("\x1B[1m\x1B[31mFAILED\x1B[0m");
+    Serial.print(" ]====== ");
+    Serial.print(r);
+    Serial.print(" (\x1B[36m");
+    Serial.print(v);
+    Serial.print("\x1B[0m) after ");
+#else
+    Serial.print("=====[ OTA UPDATE FAILED ]====== ");
+    Serial.print(r);
+    Serial.print(" (");
+    Serial.print(v);
+    Serial.print(") after ");
+#endif
     char dur[8];
     snprintf(dur, sizeof(dur), "%02lu:%02lu", (unsigned long)mins, (unsigned long)secs);
     Serial.println(dur);
@@ -2341,12 +2417,15 @@ static void ota_abort(DeviceState *state, const char *reason)
     }
 
     g_job.active = false;
+    const uint32_t elapsedMs = (g_job.startedMs > 0u) ? (millis() - g_job.startedMs) : 0u;
     ota_progressReset();
 #if CFG_OTA_DEV_LOGS
     LOG_ERROR(LogDomain::OTA, "ota_failed_no_reboot reason=%s", reason ? reason : "");
     LOG_WARN(LogDomain::OTA, "Pull OTA aborted reason=%s", reason ? reason : "");
 #else
-    LOG_ERROR(LogDomain::OTA, "OTA failed: %s", reason ? reason : "error");
+    ota_logFailureBanner(reason ? reason : "error",
+                         g_job.version[0] ? g_job.version : nullptr,
+                         elapsedMs);
 #endif
 }
 
@@ -2797,7 +2876,7 @@ static void ota_tick(DeviceState *state)
 
         char sizeBuf[24] = {0};
         ota_formatSizeCompact(g_job.bytesTotal, sizeBuf, sizeof(sizeBuf));
-        LOG_INFO(LogDomain::OTA, "Downloading %s (%s)",
+        LOG_INFO(LogDomain::OTA, "Updating to %s (%s)",
                  g_job.version[0] ? g_job.version : "<unknown>",
                  sizeBuf);
 #if CFG_OTA_DEV_LOGS
@@ -2872,16 +2951,6 @@ static void ota_tick(DeviceState *state)
         const size_t updateSize =
             (g_job.bytesTotal > 0) ? (size_t)g_job.bytesTotal : (size_t)OTA_SIZE_UNKNOWN;
 
-#if !CFG_OTA_DEV_LOGS
-        char freeBuf[24] = {0};
-        char imageBuf[24] = {0};
-        ota_formatSizeCompact((uint32_t)ESP.getFreeSketchSpace(), freeBuf, sizeof(freeBuf));
-        ota_formatSizeCompact((uint32_t)updateSize, imageBuf, sizeof(imageBuf));
-        LOG_INFO(LogDomain::OTA, "Installing... %s free=%s image=%s",
-                 g_job.targetPartition->label,
-                 freeBuf,
-                 imageBuf);
-#endif
 #if CFG_OTA_DEV_LOGS
         LOG_INFO(LogDomain::OTA, "esp_ota_begin partition=%s@0x%08lx size=%s (%lu)",
                  g_job.targetPartition->label,
@@ -3112,7 +3181,6 @@ static void ota_tick(DeviceState *state)
 #endif
 
     // Step C: finalize update
-    LOG_INFO(LogDomain::OTA, "Verifying... SHA256");
     if (state)
     {
         ota_setStatus(state, OtaStatus::VERIFYING);
@@ -3147,12 +3215,18 @@ static void ota_tick(DeviceState *state)
         if (g_job.sha256[0] == '\0')
         {
             ota_trace("sha_fail", "missing_sha256");
+#if !CFG_OTA_DEV_LOGS
+            LOG_ERROR(LogDomain::OTA, "Verifying update integrity... FAILED");
+#endif
             ota_abort(state, "missing_sha256");
             return;
         }
         if (!isHex64(g_job.sha256))
         {
             ota_trace("sha_fail", "bad_sha256_format");
+#if !CFG_OTA_DEV_LOGS
+            LOG_ERROR(LogDomain::OTA, "Verifying update integrity... FAILED");
+#endif
             ota_abort(state, "bad_sha256_format");
             return;
         }
@@ -3165,7 +3239,7 @@ static void ota_tick(DeviceState *state)
                 LOG_WARN(LogDomain::OTA, "Pull OTA SHA256 mismatch exp_prefix=%.12s got_prefix=%.12s",
                          g_job.sha256, hex);
 #else
-                LOG_ERROR(LogDomain::OTA, "Verifying... SHA256 mismatch");
+                LOG_ERROR(LogDomain::OTA, "Verifying update integrity... FAILED");
 #endif
                 ota_trace("sha_fail", "sha_mismatch");
                 ota_abort(state, "sha_mismatch");
@@ -3181,7 +3255,7 @@ static void ota_tick(DeviceState *state)
         LOG_INFO(LogDomain::OTA, "Pull OTA SHA256 ok (prefix)=%c%c%c%c%c%c%c%c%c%c%c%c",
                  hex[0], hex[1], hex[2], hex[3], hex[4], hex[5], hex[6], hex[7], hex[8], hex[9], hex[10], hex[11]);
 #else
-        LOG_INFO(LogDomain::OTA, "Verifying... SHA256 OK");
+        LOG_INFO(LogDomain::OTA, "Verifying update integrity... OK");
 #endif
     }
 
