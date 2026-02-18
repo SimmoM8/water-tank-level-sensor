@@ -1,8 +1,8 @@
 {
   "channel": "dev",
-  "version": "1.0.2-alpha",
-  "url": "https://github.com/SimmoM8/water-tank-level-sensor/releases/download/v1.0.2-alpha/firmware.bin",
-  "sha256": "87dbe65910531986cb20435bcaed8d19aaed2513a964794841f498a971a2c351",
-  "notes": "OTA test"
+  "version": "1.0.3-alpha",
+  "url": "https://github.com/SimmoM8/water-tank-level-sensor/releases/download/v1.0.3-alpha/firmware.bin",
+  "sha256": "0b29f6d873b90eeebabc4067f07439560de1f72ae4c2c5beddeccb51759f9e64",
+  "notes": "Official working release with successful OTA updates"
 }
 
