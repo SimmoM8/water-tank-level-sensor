@@ -6,6 +6,8 @@
 #include <ctype.h>
 #include <string.h>
 #include <esp_system.h>
+#include <esp_heap_caps.h>
+#include <esp_partition.h>
 #include "main.h"
 #include "probe_reader.h"
 #include "wifi_provisioning.h"
@@ -208,7 +210,9 @@ static void windowCompute();
 static void windowStateMeta();
 static void windowMqtt();
 static void maybeConfirmOtaRollback();
+static void logBootCrashDiagnostics(esp_reset_reason_t reasonCode, const char *reasonLabel);
 static void logBootRebootEvent(const char *resetReason, esp_reset_reason_t reasonCode, uint8_t rebootIntent, BootClassification cls);
+static void logBootOtaIntentResult(uint8_t rebootIntent);
 static void setCalibrationDryValue(int32_t value, const char *sourceMsg = nullptr);
 static void setCalibrationWetValue(int32_t value, const char *sourceMsg = nullptr);
 
@@ -275,6 +279,57 @@ static const char *mapResetReason(esp_reset_reason_t reason)
 #endif
   default:
     return "other";
+  }
+}
+
+static void logBootCrashDiagnostics(esp_reset_reason_t reasonCode, const char *reasonLabel)
+{
+  const uint32_t freeHeap = (uint32_t)ESP.getFreeHeap();
+  const uint32_t minHeap = (uint32_t)ESP.getMinFreeHeap();
+  const uint32_t largest8Bit = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+  LOG_INFO(LogDomain::SYSTEM,
+           "Boot diagnostics reset_reason=%s code=%d heap_free=%lu heap_min=%lu heap_largest_8bit=%lu",
+           reasonLabel ? reasonLabel : "other",
+           (int)reasonCode,
+           (unsigned long)freeHeap,
+           (unsigned long)minHeap,
+           (unsigned long)largest8Bit);
+
+#ifdef ESP_PARTITION_SUBTYPE_DATA_COREDUMP
+  const esp_partition_t *coreDumpPart = esp_partition_find_first(
+      ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_COREDUMP, nullptr);
+  if (coreDumpPart)
+  {
+    LOG_INFO(LogDomain::SYSTEM,
+             "Core-dump partition detected label=%s addr=0x%08lx size=%lu",
+             coreDumpPart->label ? coreDumpPart->label : "<null>",
+             (unsigned long)coreDumpPart->address,
+             (unsigned long)coreDumpPart->size);
+  }
+  else
+  {
+    LOG_WARN(LogDomain::SYSTEM, "Core-dump partition not found; panic dumps will be unavailable");
+  }
+#endif
+
+  const bool crashLike =
+#ifdef ESP_RST_PANIC
+      (reasonCode == ESP_RST_PANIC) ||
+#endif
+      (reasonCode == ESP_RST_INT_WDT) ||
+#ifdef ESP_RST_TASK_WDT
+      (reasonCode == ESP_RST_TASK_WDT) ||
+#endif
+      (reasonCode == ESP_RST_WDT)
+#ifdef ESP_RST_BROWNOUT
+      || (reasonCode == ESP_RST_BROWNOUT)
+#endif
+      ;
+
+  if (crashLike)
+  {
+    LOG_ERROR(LogDomain::SYSTEM,
+              "Crash-like reset detected; check panic output before reboot and consider enabling ESP-IDF core dumps for post-mortem analysis");
   }
 }
 
@@ -393,6 +448,26 @@ static const char *bootClassificationLabel(BootClassification cls)
   return "neutral";
 }
 
+static const char *otaImgStateLabel(esp_ota_img_states_t state)
+{
+  switch (state)
+  {
+  case ESP_OTA_IMG_NEW:
+    return "new";
+  case ESP_OTA_IMG_PENDING_VERIFY:
+    return "pending_verify";
+  case ESP_OTA_IMG_VALID:
+    return "valid";
+  case ESP_OTA_IMG_INVALID:
+    return "invalid";
+  case ESP_OTA_IMG_ABORTED:
+    return "aborted";
+  case ESP_OTA_IMG_UNDEFINED:
+  default:
+    return "undefined";
+  }
+}
+
 static void logBootRebootEvent(const char *resetReason, esp_reset_reason_t reasonCode, uint8_t rebootIntent, BootClassification cls)
 {
   const char *reason = resetReason ? resetReason : "other";
@@ -434,6 +509,33 @@ static void logBootRebootEvent(const char *resetReason, esp_reset_reason_t reaso
            (int)reasonCode,
            intent,
            classification);
+}
+
+static void logBootOtaIntentResult(uint8_t rebootIntent)
+{
+  if (rebootIntent != (uint8_t)RebootIntent::OTA)
+  {
+    return;
+  }
+
+  const esp_partition_t *running = esp_ota_get_running_partition();
+  const esp_partition_t *boot = esp_ota_get_boot_partition();
+  esp_ota_img_states_t runningState = ESP_OTA_IMG_UNDEFINED;
+  const esp_err_t stateErr = running ? esp_ota_get_state_partition(running, &runningState) : ESP_ERR_INVALID_ARG;
+  const bool appliedGuess = (running != nullptr) && (boot != nullptr) && (running->address == boot->address);
+
+  LOG_INFO(LogDomain::OTA,
+           "OTA intent boot report intent=ota applied_guess=%s running=%s@0x%08lx boot=%s@0x%08lx running_state=%s state_err=%d fw=%s build=%s %s",
+           appliedGuess ? "true" : "false",
+           (running && running->label) ? running->label : "<null>",
+           (unsigned long)(running ? running->address : 0u),
+           (boot && boot->label) ? boot->label : "<null>",
+           (unsigned long)(boot ? boot->address : 0u),
+           otaImgStateLabel(runningState),
+           (int)stateErr,
+           FW_VERSION,
+           __DATE__,
+           __TIME__);
 }
 
 static void applySafeModeState(bool enabled, const char *reason)
@@ -1257,8 +1359,16 @@ static void handleSerialCommands()
       LOG_WARN(LogDomain::OTA, "OTA serial rejected: missing_url_or_sha256_or_version");
       return;
     }
-    LOG_INFO(LogDomain::OTA, "OTA serial parsed: url=%s sha_prefix=%.8s target=%s",
-             url, sha256, version);
+    constexpr const char *kSerialRequestId = "serial_test";
+    constexpr bool kSerialForce = true;
+    constexpr bool kSerialReboot = true;
+    LOG_INFO(LogDomain::OTA, "OTA serial parsed request_id=%s url_len=%u target=%s sha_prefix=%.12s force=%s reboot=%s",
+             kSerialRequestId,
+             (unsigned)strlen(url),
+             version,
+             sha256,
+             kSerialForce ? "true" : "false",
+             kSerialReboot ? "true" : "false");
     if (!isHex64(sha256))
     {
       LOG_WARN(LogDomain::OTA, "OTA serial rejected: bad_sha256_format");
@@ -1276,20 +1386,27 @@ static void handleSerialCommands()
     }
 
     char errBuf[48] = {0};
-    LOG_INFO(LogDomain::OTA, "OTA serial start: url=%s", url);
+    LOG_INFO(LogDomain::OTA, "OTA serial start request_id=%s url=%s target=%s force=%s reboot=%s",
+             kSerialRequestId,
+             url,
+             version,
+             kSerialForce ? "true" : "false",
+             kSerialReboot ? "true" : "false");
     const bool ok = ota_pullStart(
         &g_state,
-        "serial_test",
+        kSerialRequestId,
         version,
         url,
         sha256,
-        true,
-        true,
+        kSerialForce,
+        kSerialReboot,
         errBuf,
         sizeof(errBuf));
     if (!ok)
     {
-      LOG_WARN(LogDomain::OTA, "OTA serial start failed: %s", errBuf[0] ? errBuf : "start_failed");
+      LOG_WARN(LogDomain::OTA, "OTA serial start failed request_id=%s reason=%s",
+               kSerialRequestId,
+               errBuf[0] ? errBuf : "start_failed");
     }
     return;
   }
@@ -1359,6 +1476,7 @@ void appSetup()
   logger_begin(BASE_TOPIC, true, true);
   logger_setHighFreqEnabled(false);
   quality_init(probeQualityRt);
+  logBootCrashDiagnostics(resetReasonCode, bootReason);
   LOG_INFO(LogDomain::SYSTEM, "BOOT water_level_sensor starting...");
 
   const esp_partition_t *running = esp_ota_get_running_partition();
@@ -1401,6 +1519,7 @@ void appSetup()
     const char *intentLabel = rebootIntentLabel(rebootIntent);
     strncpy(g_state.reboot_intent_label, intentLabel, sizeof(g_state.reboot_intent_label));
     g_state.reboot_intent_label[sizeof(g_state.reboot_intent_label) - 1] = '\0';
+    logBootOtaIntentResult(rebootIntent);
 
     uint32_t badBootStreak = 0u;
     uint32_t lastGoodBootTs = 0u;

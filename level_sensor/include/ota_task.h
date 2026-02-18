@@ -4,8 +4,13 @@
 #include <stdint.h>
 #include "device_state.h"
 
-#ifndef CFG_OTA_TASK_STACK_WORDS
-#define CFG_OTA_TASK_STACK_WORDS 4096u
+#ifndef CFG_OTA_TASK_STACK_BYTES
+#if defined(CFG_OTA_TASK_STACK_WORDS)
+// Backward-compatibility: legacy name used "WORDS" but value was treated as bytes.
+#define CFG_OTA_TASK_STACK_BYTES CFG_OTA_TASK_STACK_WORDS
+#else
+#define CFG_OTA_TASK_STACK_BYTES 16384u
+#endif
 #endif
 
 #ifndef CFG_OTA_TASK_PRIORITY

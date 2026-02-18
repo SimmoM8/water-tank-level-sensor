@@ -56,7 +56,7 @@ static void otaTask(void * /*arg*/)
              kOtaTaskPinMode,
              xPortGetCoreID(),
              (int)CFG_OTA_TASK_CORE,
-             (unsigned)CFG_OTA_TASK_STACK_WORDS,
+             (unsigned)CFG_OTA_TASK_STACK_BYTES,
              (unsigned)CFG_OTA_TASK_PRIORITY,
              (unsigned)CFG_OTA_TASK_QUEUE_DEPTH);
 
@@ -102,12 +102,12 @@ bool ota_taskBegin(DeviceState *state)
 #if (CFG_OTA_TASK_CORE < 0)
     LOG_INFO(LogDomain::OTA,
              "Creating otaTask mode=unpinned stack_bytes=%u prio=%u",
-             (unsigned)CFG_OTA_TASK_STACK_WORDS,
+             (unsigned)CFG_OTA_TASK_STACK_BYTES,
              (unsigned)CFG_OTA_TASK_PRIORITY);
     created = xTaskCreate(
         otaTask,
         "otaTask",
-        (uint32_t)CFG_OTA_TASK_STACK_WORDS,
+        (uint32_t)CFG_OTA_TASK_STACK_BYTES,
         nullptr,
         (UBaseType_t)CFG_OTA_TASK_PRIORITY,
         &s_otaTaskHandle);
@@ -115,12 +115,12 @@ bool ota_taskBegin(DeviceState *state)
     LOG_INFO(LogDomain::OTA,
              "Creating otaTask mode=pinned core=%d stack_bytes=%u prio=%u",
              (int)CFG_OTA_TASK_CORE,
-             (unsigned)CFG_OTA_TASK_STACK_WORDS,
+             (unsigned)CFG_OTA_TASK_STACK_BYTES,
              (unsigned)CFG_OTA_TASK_PRIORITY);
     created = xTaskCreatePinnedToCore(
         otaTask,
         "otaTask",
-        (uint32_t)CFG_OTA_TASK_STACK_WORDS,
+        (uint32_t)CFG_OTA_TASK_STACK_BYTES,
         nullptr,
         (UBaseType_t)CFG_OTA_TASK_PRIORITY,
         &s_otaTaskHandle,
@@ -129,7 +129,7 @@ bool ota_taskBegin(DeviceState *state)
 
     if (created != pdPASS)
     {
-        LOG_ERROR(LogDomain::OTA, "otaTask create failed stack_bytes=%u", (unsigned)CFG_OTA_TASK_STACK_WORDS);
+        LOG_ERROR(LogDomain::OTA, "otaTask create failed stack_bytes=%u", (unsigned)CFG_OTA_TASK_STACK_BYTES);
         vQueueDelete(s_otaQueue);
         s_otaQueue = nullptr;
         return false;
