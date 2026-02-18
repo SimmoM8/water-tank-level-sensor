@@ -578,6 +578,7 @@ static void printHelpMenu()
   LOG_INFO(LogDomain::SYSTEM, "  safe_mode -> show safe mode status");
   LOG_INFO(LogDomain::SYSTEM, "  safe_mode clear -> clear safe mode and reset bad-boot streak");
   LOG_INFO(LogDomain::SYSTEM, "  safe_mode enter -> force safe mode on (testing)");
+  LOG_INFO(LogDomain::SYSTEM, "  dev on/off/status -> toggle runtime dev mode (high-frequency logs)");
   LOG_INFO(LogDomain::SYSTEM, "  log hf on/off -> enable/disable high-frequency logs");
   LOG_INFO(LogDomain::SYSTEM, "  sim <0-5> -> set simulation mode and enable sim backend");
   LOG_INFO(LogDomain::SYSTEM, "  mode touch -> use touchRead()");
@@ -1295,6 +1296,33 @@ static void handleSerialCommands()
         LOG_INFO(LogDomain::SYSTEM, "High-frequency logging disabled (serial command)");
         return;
       }
+    }
+    printHelpMenu();
+    return;
+  }
+
+  if (strcmp(cmd, "dev") == 0 || strcmp(cmd, "dev_mode") == 0)
+  {
+    const char *sub = strtok_r(nullptr, SERIAL_CMD_DELIMS, &save);
+    if (!sub || strcmp(sub, "status") == 0)
+    {
+      LOG_INFO(LogDomain::SYSTEM,
+               "Dev mode runtime=%s (high-frequency logs=%s)",
+               logger_isHighFreqEnabled() ? "on" : "off",
+               logger_isHighFreqEnabled() ? "on" : "off");
+      return;
+    }
+    if (strcmp(sub, "on") == 0)
+    {
+      logger_setHighFreqEnabled(true);
+      LOG_INFO(LogDomain::SYSTEM, "Dev mode enabled (runtime)");
+      return;
+    }
+    if (strcmp(sub, "off") == 0)
+    {
+      logger_setHighFreqEnabled(false);
+      LOG_INFO(LogDomain::SYSTEM, "Dev mode disabled (runtime)");
+      return;
     }
     printHelpMenu();
     return;
