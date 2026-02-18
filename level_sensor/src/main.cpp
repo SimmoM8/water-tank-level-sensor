@@ -190,6 +190,8 @@ static float lastLiters = NAN; // Derived caches for change detection
 static float lastCentimeters = NAN;
 static char s_emptyStr[1] = {0};
 static bool s_goodBootMarked = false;
+static bool s_bootRollbackDiagPending = false;
+static char s_bootRollbackDiag[192] = {0};
 
 static void applyConfigFromCache(bool logValues);
 static bool reloadConfigIfDirty(bool logValues);
@@ -201,6 +203,7 @@ static void windowSensor();
 static void windowCompute();
 static void windowStateMeta();
 static void windowMqtt();
+static void maybeConfirmOtaRollback();
 static void setCalibrationDryValue(int32_t value, const char *sourceMsg = nullptr);
 static void setCalibrationWetValue(int32_t value, const char *sourceMsg = nullptr);
 
@@ -268,6 +271,56 @@ static const char *mapResetReason(esp_reset_reason_t reason)
   default:
     return "other";
   }
+}
+
+static void maybeConfirmOtaRollback()
+{
+  const esp_partition_t *running = esp_ota_get_running_partition();
+  if (!running)
+  {
+    LOG_WARN(LogDomain::OTA, "Rollback validation skipped: running partition is null");
+    return;
+  }
+
+  const bool runningIsFactory =
+      (running->subtype == ESP_PARTITION_SUBTYPE_APP_FACTORY) ||
+      (running->label && strcmp(running->label, "factory") == 0);
+
+  esp_ota_img_states_t runningState = ESP_OTA_IMG_UNDEFINED;
+  const esp_err_t stateErr = esp_ota_get_state_partition(running, &runningState);
+  const bool pendingVerify = (stateErr == ESP_OK && runningState == ESP_OTA_IMG_PENDING_VERIFY);
+  const bool shouldValidate = (!runningIsFactory) || pendingVerify;
+
+  if (!shouldValidate)
+  {
+    LOG_INFO(LogDomain::OTA,
+             "Rollback validation skipped running=%s state_err=%d state=%d",
+             running->label,
+             (int)stateErr,
+             (int)runningState);
+    snprintf(s_bootRollbackDiag, sizeof(s_bootRollbackDiag),
+             "rollback validation skipped running=%s state_err=%d state=%d",
+             running->label,
+             (int)stateErr,
+             (int)runningState);
+    s_bootRollbackDiagPending = true;
+    return;
+  }
+
+  const esp_err_t markErr = esp_ota_mark_app_valid_cancel_rollback();
+  LOG_INFO(LogDomain::OTA,
+           "marked app valid / cancelled rollback running=%s err=%d state_err=%d state=%d",
+           running->label,
+           (int)markErr,
+           (int)stateErr,
+           (int)runningState);
+  snprintf(s_bootRollbackDiag, sizeof(s_bootRollbackDiag),
+           "marked app valid / cancelled rollback running=%s err=%d state_err=%d state=%d",
+           running->label,
+           (int)markErr,
+           (int)stateErr,
+           (int)runningState);
+  s_bootRollbackDiagPending = true;
 }
 
 static const char *rebootIntentLabel(uint8_t intent)
@@ -955,6 +1008,13 @@ static void windowStateMeta()
 static void windowMqtt()
 {
   mqtt_tick(g_state);
+  if (s_bootRollbackDiagPending && mqtt_isConnected())
+  {
+    if (mqtt_publishLog("ota/diag", s_bootRollbackDiag, false))
+    {
+      s_bootRollbackDiagPending = false;
+    }
+  }
 }
 
 static void handleSerialCommands()
@@ -1254,7 +1314,7 @@ void appSetup()
            boot ? boot->label : "<null>",
            boot ? (unsigned long)boot->address : 0);
 
-  ota_confirmRunningApp();
+  maybeConfirmOtaRollback();
 
   LOG_INFO(LogDomain::SYSTEM, "FW=%s HW=%s", DEVICE_FW, DEVICE_HW);
   LOG_INFO(LogDomain::SYSTEM, "Reset reason=%s (code=%d)", g_state.reset_reason, (int)resetReasonCode);
