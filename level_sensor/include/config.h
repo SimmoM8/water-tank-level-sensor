@@ -20,11 +20,14 @@
 // #define CFG_ZERO_WINDOW_MS 5000u
 
 // #define CFG_SERIAL_CMD_BUF 512u // default 256 bytes for incoming serial command buffer
+#ifndef CFG_DEV_MODE
+#define CFG_DEV_MODE 0 // Master development mode (0=production defaults, 1=dev/verbose defaults)
+#endif
 #ifndef CFG_LOG_COLOR
 #define CFG_LOG_COLOR 0 // ANSI colorized Serial logs (0=off, 1=on)
 #endif
 #ifndef CFG_LOG_HIGH_FREQ_DEFAULT
-#define CFG_LOG_HIGH_FREQ_DEFAULT 1 // High-frequency DEBUG/trace logs at boot (0=off, 1=on)
+#define CFG_LOG_HIGH_FREQ_DEFAULT CFG_DEV_MODE // High-frequency DEBUG/trace logs at boot (0=off, 1=on)
 #endif
 
 // — Tank Volume Number entity (display/input) —
@@ -46,7 +49,7 @@
 #define CFG_OTA_MANIFEST_URL "https://github.com/SimmoM8/water-tank-level-sensor/releases/latest/download/dev.json"
 #define CFG_OTA_TLS_PREFER_CRT_BUNDLE 1 // default 1 uses embedded fallback CA chain
 #ifndef CFG_OTA_DEV_LOGS
-#define CFG_OTA_DEV_LOGS 0 // OTA verbose trace/health/chunk logs (0=normal production logs, 1=dev verbose)
+#define CFG_OTA_DEV_LOGS CFG_DEV_MODE // OTA verbose trace/health/chunk logs (0=normal production logs, 1=dev verbose)
 #endif
 #ifndef CFG_OTA_PROGRESS_NEWLINES
 #define CFG_OTA_PROGRESS_NEWLINES 0 // OTA progress style (0=in-place carriage return, 1=print each update on new line)

@@ -95,8 +95,11 @@ DeviceState g_state;
 #ifndef CFG_SERIAL_CMD_BUF
 #define CFG_SERIAL_CMD_BUF 256u
 #endif
+#ifndef CFG_DEV_MODE
+#define CFG_DEV_MODE 0
+#endif
 #ifndef CFG_LOG_HIGH_FREQ_DEFAULT
-#define CFG_LOG_HIGH_FREQ_DEFAULT 1
+#define CFG_LOG_HIGH_FREQ_DEFAULT CFG_DEV_MODE
 #endif
 
 // =============================================================================
