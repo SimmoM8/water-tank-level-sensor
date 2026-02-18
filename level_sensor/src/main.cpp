@@ -134,7 +134,7 @@ DeviceState g_state;
 
 // ===== MQTT config =====
 #ifndef MQTT_HOST
-#define MQTT_HOST "192.168.0.198"
+#define MQTT_HOST "192.168.1.164" // Dads is 192.168.0.198
 #endif
 #ifndef MQTT_PORT
 #define MQTT_PORT 1883
