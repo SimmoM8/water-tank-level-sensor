@@ -63,6 +63,7 @@ static const uint32_t RETRY_INTERVAL_MS = 5000;
 static bool s_loggedFirstConnectAttempt = false;
 static bool s_seenConnectFailure = false;
 static bool s_lastConnected = false;
+static bool s_rxConfirmedForSession = false;
 static bool s_stateBuildPaused = false;
 static uint32_t s_stateBuildFailureCount = 0;
 static uint32_t s_stateBuildLastLogMs = 0;
@@ -103,6 +104,22 @@ const char *mqtt_stateToString(int state)
 static bool mqtt_devLogsEnabled()
 {
     return (CFG_LOG_DEV != 0) || (CFG_OTA_DEV_LOGS != 0);
+}
+
+static const char *mqtt_stateHint(int state)
+{
+    switch (state)
+    {
+    case 4:
+    case 5:
+        return "check username/password";
+    case -4:
+        return "check broker reachability";
+    case 2:
+        return "check clientId";
+    default:
+        return "check broker/network";
+    }
 }
 
 static const char *stateJsonErrorToShort(StateJsonError err)
@@ -267,7 +284,22 @@ static void mqttCallback(char *topic, byte *payload, unsigned int length)
 
     // From here on, we only log using the copied buffer.
 
-    // Build printable preview for logging
+    if (!s_rxConfirmedForSession)
+    {
+        s_rxConfirmedForSession = true;
+        if (!mqtt_devLogsEnabled())
+        {
+            LOG_INFO(LogDomain::MQTT, "MQTT link confirmed (RX OK)");
+        }
+    }
+
+    if (!mqtt_devLogsEnabled())
+    {
+        LOG_INFO(LogDomain::COMMAND, "MQTT command received: %s (%u bytes)", topicBuf, length);
+        return;
+    }
+
+    // Build printable preview for logging (dev only).
     char preview[121];
     buildPayloadPreview(cmdBuf, length, preview, sizeof(preview));
 
@@ -292,12 +324,9 @@ static void mqttCallback(char *topic, byte *payload, unsigned int length)
 static bool mqtt_subscribe()
 {
     const bool cmdOk = mqtt.subscribe(s_topics.cmd);
-#if CFG_LOG_DEV
-    LOG_INFO(LogDomain::MQTT, "MQTT subscribe topic=%s result=%s", s_topics.cmd, cmdOk ? "ok" : "fail");
-#endif
-    if (!cmdOk)
+    if (mqtt_devLogsEnabled())
     {
-        LOG_WARN(LogDomain::MQTT, "MQTT subscribe failed topic=%s", s_topics.cmd);
+        LOG_INFO(LogDomain::MQTT, "MQTT subscribe topic=%s result=%s", s_topics.cmd, cmdOk ? "ok" : "fail");
     }
     return cmdOk;
 }
@@ -347,17 +376,16 @@ static bool mqtt_ensureConnected()
             {
                 s_loggedFirstConnectAttempt = true;
                 LOG_INFO(LogDomain::MQTT,
-                         "MQTT connecting host=%s port=%d clientId=%s auth=%s",
+                         "MQTT connecting host=%s port=%d auth=%s",
                          s_cfg.host,
                          s_cfg.port,
-                         s_cfg.clientId,
                          authMode);
             }
             else
             {
                 logger_logEvery("mqtt_connecting", 30000, LogLevel::INFO, LogDomain::MQTT,
-                                "MQTT connecting host=%s port=%d clientId=%s auth=%s",
-                                s_cfg.host, s_cfg.port, s_cfg.clientId, authMode);
+                                "MQTT connecting host=%s port=%d auth=%s",
+                                s_cfg.host, s_cfg.port, authMode);
             }
             const bool ok = mqtt.connect(
                 s_cfg.clientId,
@@ -371,43 +399,55 @@ static bool mqtt_ensureConnected()
             {
                 s_seenConnectFailure = false;
                 s_lastConnected = true;
-                mqtt.publish(s_topics.avail, AVAIL_ONLINE, true);
+                s_rxConfirmedForSession = false;
+                const bool availOk = mqtt.publish(s_topics.avail, AVAIL_ONLINE, true);
                 const bool subOk = mqtt_subscribe();
                 mqtt_requestStatePublish(); // force fresh retained snapshot after reconnect
                 const char *sessionMode = "clean";
                 LOG_INFO(LogDomain::MQTT, "MQTT connected (session=%s)", sessionMode);
-                LOG_INFO(LogDomain::MQTT, "MQTT subscribed cmd=%s", s_topics.cmd);
+                if (subOk)
+                {
+                    LOG_INFO(LogDomain::MQTT, "MQTT subscribed cmd=%s", s_topics.cmd);
+                }
+                else
+                {
+                    LOG_WARN(LogDomain::MQTT, "MQTT subscribe failed cmd=%s", s_topics.cmd);
+                }
+                if (availOk)
+                {
+                    LOG_INFO(LogDomain::MQTT, "MQTT online published topic=%s", s_topics.avail);
+                }
+                else
+                {
+                    LOG_WARN(LogDomain::MQTT, "MQTT online publish failed topic=%s", s_topics.avail);
+                }
+                if (subOk && availOk)
+                {
+                    LOG_INFO(LogDomain::MQTT, "MQTT ready (connected + subscribed + online published)");
+                }
 #if CFG_LOG_DEV
                 LOG_INFO(LogDomain::MQTT, "MQTT connected details host=%s port=%d clientId=%s auth=%s subscribe=%s presence=%s",
                          s_cfg.host, s_cfg.port, s_cfg.clientId, authMode, subOk ? "ok" : "fail", s_topics.avail);
 #endif
-                if (!subOk)
-                {
-                    LOG_WARN(LogDomain::MQTT, "MQTT subscribe failed cmd=%s", s_topics.cmd);
-                }
             }
             else
             {
                 const int state = mqtt.state();
                 const char *stateStr = mqtt_stateToString(state);
+                const char *hint = mqtt_stateHint(state);
                 if (!s_seenConnectFailure)
                 {
                     s_seenConnectFailure = true;
-                    LOG_WARN(LogDomain::MQTT, "MQTT connect failed: %s (rc=%d)", stateStr, state);
-                    if (state == 4 || state == 5)
-                    {
-                        LOG_WARN(LogDomain::MQTT, "Check MQTT_USER/MQTT_PASS (secrets.h) and broker ACL");
-                    }
+                    LOG_WARN(LogDomain::MQTT, "MQTT connect failed: %s (%s)", stateStr, hint);
                 }
                 else
                 {
                     logger_logEvery("mqtt_connect_fail", 30000, LogLevel::WARN, LogDomain::MQTT,
-                                    "MQTT connect failed: %s (rc=%d)", stateStr, state);
-                    if (state == 4 || state == 5)
-                    {
-                        logger_logEvery("mqtt_connect_auth_hint", 30000, LogLevel::WARN, LogDomain::MQTT,
-                                        "Check MQTT_USER/MQTT_PASS (secrets.h) and broker ACL");
-                    }
+                                    "MQTT connect failed: %s (%s)", stateStr, hint);
+                }
+                if (mqtt_devLogsEnabled())
+                {
+                    LOG_DEBUG(LogDomain::MQTT, "MQTT connect fail rc=%d (%s)", state, stateStr);
                 }
             }
         }
@@ -439,16 +479,13 @@ static bool publishState(const DeviceState &state)
         {
             s_stateBuildPaused = true;
             s_stateBuildLastLogMs = now;
-            LOG_WARN(LogDomain::MQTT, "State publish paused: payload build failed (reason=%s)",
-                     stateJsonErrorToShort(jsonErr));
+            LOG_WARN(LogDomain::MQTT, "MQTT state publish skipped: state payload too large (enable dev logs)");
             logStateJsonDiag("State JSON diag", jsonErr, diag);
         }
         else if ((uint32_t)(now - s_stateBuildLastLogMs) >= STATE_BUILD_STILL_PAUSED_MS)
         {
             s_stateBuildLastLogMs = now;
-            LOG_WARN(LogDomain::MQTT, "State publish still paused: %s (x%u failures)",
-                     stateJsonErrorToShort(jsonErr),
-                     (unsigned)s_stateBuildFailureCount);
+            LOG_WARN(LogDomain::MQTT, "MQTT state publish skipped: state payload too large (enable dev logs)");
             logStateJsonDiag("State JSON diag", jsonErr, diag);
         }
         return false;
@@ -547,7 +584,9 @@ void mqtt_begin(const MqttConfig &cfg, CommandHandlerFn cmdHandler)
 
     logger_setMqttPublisher(mqtt_publishLog, mqtt_isConnected);
 
-    LOG_INFO(LogDomain::MQTT, "MQTT init baseTopic=%s cmdTopic=%s stateTopic=%s", s_cfg.baseTopic, s_topics.cmd, s_topics.state);
+    const bool hasUser = (s_cfg.user && s_cfg.user[0] != '\0');
+    LOG_INFO(LogDomain::MQTT, "MQTT init baseTopic=%s broker=%s:%d clientId=%s auth=%s",
+             s_cfg.baseTopic, s_cfg.host, s_cfg.port, s_cfg.clientId, hasUser ? "yes" : "no");
     if (CFG_LOG_DEV == 0 && (!s_cfg.user || s_cfg.user[0] == '\0'))
     {
         LOG_WARN(LogDomain::MQTT, "MQTT credentials not set (MQTT_USER empty). Broker may reject connection.");
