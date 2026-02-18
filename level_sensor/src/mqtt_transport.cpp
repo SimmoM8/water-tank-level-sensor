@@ -59,6 +59,7 @@ static uint32_t s_lastAttemptMs = 0;
 static const uint32_t RETRY_INTERVAL_MS = 5000;
 static bool s_loggedFirstConnectAttempt = false;
 static bool s_seenConnectFailure = false;
+static bool s_lastConnected = false;
 
 static const char *AVAIL_ONLINE = "online";
 static const char *AVAIL_OFFLINE = "offline";
@@ -68,23 +69,25 @@ const char *mqtt_stateToString(int state)
     switch (state)
     {
     case -4:
-        return "timeout";
+        return "MQTT_CONNECTION_TIMEOUT";
     case -3:
-        return "connection lost";
+        return "MQTT_CONNECTION_LOST";
     case -2:
-        return "connect failed";
+        return "MQTT_CONNECT_FAILED";
     case -1:
-        return "disconnected";
+        return "MQTT_DISCONNECTED";
+    case 0:
+        return "MQTT_CONNECTED";
     case 1:
-        return "bad protocol";
+        return "MQTT_CONNECT_BAD_PROTOCOL";
     case 2:
-        return "bad client id";
+        return "MQTT_CONNECT_BAD_CLIENT_ID";
     case 3:
-        return "unavailable";
+        return "MQTT_CONNECT_UNAVAILABLE";
     case 4:
-        return "bad credentials";
+        return "MQTT_CONNECT_BAD_CREDENTIALS";
     case 5:
-        return "unauthorized";
+        return "MQTT_CONNECT_UNAUTHORIZED";
     default:
         return "unknown";
     }
@@ -254,8 +257,15 @@ static bool mqtt_ensureConnected()
     }
 
     const uint32_t now = millis();
+    const bool currentlyConnected = mqtt.connected();
+    if (!currentlyConnected && s_lastConnected)
+    {
+        const int state = mqtt.state();
+        LOG_WARN(LogDomain::MQTT, "MQTT disconnected state=%d (%s)", state, mqtt_stateToString(state));
+        s_lastConnected = false;
+    }
 
-    if (!mqtt.connected())
+    if (!currentlyConnected)
     {
         if (WiFi.status() != WL_CONNECTED)
         {
@@ -278,22 +288,24 @@ static bool mqtt_ensureConnected()
         if ((uint32_t)(now - s_lastAttemptMs) >= RETRY_INTERVAL_MS)
         {
             const bool hasUser = (s_cfg.user && s_cfg.user[0] != '\0');
+            const char *authMode = hasUser ? "user" : "none";
             if (!s_loggedFirstConnectAttempt)
             {
                 s_loggedFirstConnectAttempt = true;
                 if (CFG_LOG_DEV == 0)
                 {
                     LOG_INFO(LogDomain::MQTT,
-                             "MQTT connect attempt host=%s port=%d clientId=%s user_set=%s",
+                             "MQTT connecting host=%s port=%d clientId=%s auth=%s willTopic=%s",
                              s_cfg.host,
                              s_cfg.port,
                              s_cfg.clientId,
-                             hasUser ? "yes" : "no");
+                             authMode,
+                             s_topics.avail);
                 }
             }
             logger_logEvery("mqtt_connecting", 30000, LogLevel::INFO, LogDomain::MQTT,
-                            "MQTT connecting host=%s port=%d clientId=%s user_set=%s",
-                            s_cfg.host, s_cfg.port, s_cfg.clientId, hasUser ? "yes" : "no");
+                            "MQTT connecting host=%s port=%d clientId=%s auth=%s willTopic=%s",
+                            s_cfg.host, s_cfg.port, s_cfg.clientId, authMode, s_topics.avail);
             const bool ok = mqtt.connect(
                 s_cfg.clientId,
                 s_cfg.user,
@@ -305,15 +317,18 @@ static bool mqtt_ensureConnected()
             if (ok)
             {
                 s_seenConnectFailure = false;
+                s_lastConnected = true;
                 mqtt.publish(s_topics.avail, AVAIL_ONLINE, true);
                 const bool subOk = mqtt_subscribe();
                 mqtt_requestStatePublish(); // force fresh retained snapshot after reconnect
-                LOG_INFO(LogDomain::MQTT, "MQTT connected session");
+                LOG_INFO(LogDomain::MQTT, "MQTT connected; presence=%s (online retained)", s_topics.avail);
+                if (subOk)
+                {
+                    LOG_INFO(LogDomain::MQTT, "MQTT subscribed cmdTopic=%s", s_topics.cmd);
+                }
 #if CFG_LOG_DEV
-                LOG_INFO(LogDomain::MQTT, "MQTT connected session host=%s port=%d clientId=%s subscribe=%s",
-                         s_cfg.host, s_cfg.port, s_cfg.clientId, subOk ? "ok" : "partial_fail");
-#else
-                (void)subOk;
+                LOG_INFO(LogDomain::MQTT, "MQTT connected session host=%s port=%d clientId=%s auth=%s subscribe=%s",
+                         s_cfg.host, s_cfg.port, s_cfg.clientId, authMode, subOk ? "ok" : "partial_fail");
 #endif
             }
             else
@@ -345,6 +360,7 @@ static bool mqtt_ensureConnected()
         return false;
     }
 
+    s_lastConnected = true;
     mqtt.loop();
     return true;
 }
