@@ -13,7 +13,6 @@
 #include <WiFi.h>
 #include "logger.h"
 #include <HTTPClient.h>
-#include <Update.h>
 #include <ArduinoJson.h>
 #include <string.h>
 #include <ctype.h>
@@ -106,6 +105,7 @@ struct PullOtaJob
     mbedtls_sha256_context shaCtx;
     bool shaInit = false;
 
+    esp_ota_handle_t otaHandle = 0;
     bool httpBegun = false;
     bool updateBegun = false;
     const esp_partition_t *targetPartition = nullptr;
@@ -242,6 +242,7 @@ static bool ota_urlContainsNoCase(const char *url, const char *needle)
 static void setErr(char *buf, size_t len, const char *msg);
 static inline void ota_requestPublish();
 static void ota_abort(DeviceState *state, const char *reason);
+static bool ota_requireEspOk(DeviceState *state, const char *op, esp_err_t err);
 static uint32_t ota_epochNow();
 static inline const char *ota_configureTlsClient(WiFiClientSecure &client);
 static void ota_tick(DeviceState *state);
@@ -1036,7 +1037,8 @@ static void ota_releaseJobResources()
 {
     if (g_job.updateBegun)
     {
-        Update.abort();
+        (void)esp_ota_abort(g_job.otaHandle);
+        g_job.otaHandle = 0;
         g_job.updateBegun = false;
     }
     if (g_job.httpBegun)
@@ -1070,6 +1072,7 @@ static void ota_resetRuntimeJob()
     g_job.retryAtMs = 0;
     g_job.retryCount = 0;
     g_job.nextRetryAtMs = 0;
+    g_job.otaHandle = 0;
     g_job.targetPartition = nullptr;
     g_job.request_id[0] = '\0';
     g_job.version[0] = '\0';
@@ -1699,13 +1702,12 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
 static void ota_abort(DeviceState *state, const char *reason)
 {
     LOG_WARN(LogDomain::OTA,
-             "OTA abort detail reason=%s bytes_written=%lu bytes_total=%lu update_begun=%s http_begun=%s update_error=%u free_heap=%lu",
+             "OTA abort detail reason=%s bytes_written=%lu bytes_total=%lu update_begun=%s http_begun=%s free_heap=%lu",
              reason ? reason : "",
              (unsigned long)g_job.bytesWritten,
              (unsigned long)g_job.bytesTotal,
              g_job.updateBegun ? "true" : "false",
              g_job.httpBegun ? "true" : "false",
-             (unsigned int)Update.getError(),
              (unsigned long)ESP.getFreeHeap());
     ota_logPartitionSnapshot("abort");
 
@@ -1718,7 +1720,8 @@ static void ota_abort(DeviceState *state, const char *reason)
 
         if (g_job.updateBegun)
         {
-            Update.abort();
+            (void)esp_ota_abort(g_job.otaHandle);
+            g_job.otaHandle = 0;
             g_job.updateBegun = false;
         }
         if (g_job.httpBegun)
@@ -1769,7 +1772,8 @@ static void ota_abort(DeviceState *state, const char *reason)
 
     if (g_job.updateBegun)
     {
-        Update.abort();
+        (void)esp_ota_abort(g_job.otaHandle);
+        g_job.otaHandle = 0;
         g_job.updateBegun = false;
     }
 
@@ -1787,6 +1791,24 @@ static void ota_abort(DeviceState *state, const char *reason)
 
     g_job.active = false;
     LOG_WARN(LogDomain::OTA, "Pull OTA aborted reason=%s", reason ? reason : "");
+}
+
+static bool ota_requireEspOk(DeviceState *state, const char *op, esp_err_t err)
+{
+    if (err == ESP_OK)
+    {
+        return true;
+    }
+
+    char reason[OTA_ERROR_MAX];
+    snprintf(reason, sizeof(reason), "%s_err_%d", op ? op : "esp_ota", (int)err);
+    reason[sizeof(reason) - 1] = '\0';
+    LOG_ERROR(LogDomain::OTA, "%s failed err=%d", op ? op : "esp_ota", (int)err);
+
+    // Flash/boot partition API failures are terminal for this pull attempt.
+    g_job.retryCount = MAX_OTA_RETRIES;
+    ota_abort(state, reason);
+    return false;
 }
 
 static void ota_finishSuccess(DeviceState *state)
@@ -1833,10 +1855,9 @@ static void ota_finishSuccess(DeviceState *state)
     s_otaHeartbeatEnabled = false;
     LOG_INFO(LogDomain::OTA, "OTA heartbeat diagnostics auto-disabled after successful apply");
     LOG_INFO(LogDomain::OTA,
-             "OTA finalize summary bytes_written=%lu bytes_total=%lu update_error=%u free_heap=%lu",
+             "OTA finalize summary bytes_written=%lu bytes_total=%lu free_heap=%lu",
              (unsigned long)g_job.bytesWritten,
              (unsigned long)g_job.bytesTotal,
-             (unsigned int)Update.getError(),
              (unsigned long)ESP.getFreeHeap());
     ota_logPartitionSnapshot("finish_success_post_state");
 
@@ -1925,7 +1946,8 @@ static void ota_tick(DeviceState *state)
         g_job.nextRetryAtMs = 0;
         if (g_job.updateBegun)
         {
-            Update.abort();
+            (void)esp_ota_abort(g_job.otaHandle);
+            g_job.otaHandle = 0;
             g_job.updateBegun = false;
         }
         if (g_job.httpBegun)
@@ -2081,28 +2103,33 @@ static void ota_tick(DeviceState *state)
         LOG_INFO(LogDomain::OTA, "HTTP len=%d -> bytesTotal=%lu", len, (unsigned long)g_job.bytesTotal);
 
         g_job.targetPartition = esp_ota_get_next_update_partition(nullptr);
+        if (g_job.targetPartition == nullptr)
+        {
+            (void)ota_requireEspOk(state, "esp_ota_get_next_update_partition", ESP_ERR_NOT_FOUND);
+            return;
+        }
         ota_logPartitionSnapshot("before_update_begin");
         ota_emitPartitionDiag("before_update_begin");
         const size_t updateSize =
-            (g_job.bytesTotal > 0) ? (size_t)g_job.bytesTotal : (size_t)UPDATE_SIZE_UNKNOWN;
+            (g_job.bytesTotal > 0) ? (size_t)g_job.bytesTotal : (size_t)OTA_SIZE_UNKNOWN;
 
-        LOG_INFO(LogDomain::OTA, "Update.begin size=%s (%lu)",
+        LOG_INFO(LogDomain::OTA, "esp_ota_begin partition=%s@0x%08lx size=%s (%lu)",
+                 g_job.targetPartition->label,
+                 (unsigned long)g_job.targetPartition->address,
                  (g_job.bytesTotal > 0) ? "known" : "unknown",
                  (unsigned long)updateSize);
 
-        Update.setMD5(nullptr);
         const bool wdtDetachedBegin = ota_detachCurrentTaskWdt("update_begin");
-        const bool updateBeginOk = Update.begin(updateSize, U_FLASH);
+        const esp_err_t otaBeginErr = esp_ota_begin(g_job.targetPartition, updateSize, &g_job.otaHandle);
         ota_reattachCurrentTaskWdt(wdtDetachedBegin, "update_begin");
-        if (!updateBeginOk)
+        if (!ota_requireEspOk(state, "esp_ota_begin", otaBeginErr))
         {
-            ota_abort(state, "update_begin_failed");
             return;
         }
         LOG_INFO(LogDomain::OTA,
-                 "Update.begin ok expected_len=%lu update_error=%u free_heap=%lu",
+                 "esp_ota_begin ok expected_len=%lu handle=%lu free_heap=%lu",
                  (unsigned long)g_job.bytesTotal,
-                 (unsigned int)Update.getError(),
+                 (unsigned long)g_job.otaHandle,
                  (unsigned long)ESP.getFreeHeap());
         ota_logPartitionSnapshot("after_update_begin");
         mbedtls_sha256_init(&g_job.shaCtx);
@@ -2166,23 +2193,16 @@ static void ota_tick(DeviceState *state)
             mbedtls_sha256_update(&g_job.shaCtx, buf, (size_t)n);
         }
 
-        size_t written = Update.write(buf, (size_t)n);
-        if (written != (size_t)n)
+        const esp_err_t otaWriteErr = esp_ota_write(g_job.otaHandle, buf, (size_t)n);
+        if (!ota_requireEspOk(state, "esp_ota_write", otaWriteErr))
         {
-            LOG_ERROR(LogDomain::OTA,
-                      "Update.write mismatch read=%d written=%u update_error=%u bytes_written=%lu",
-                      n,
-                      (unsigned int)written,
-                      (unsigned int)Update.getError(),
-                      (unsigned long)g_job.bytesWritten);
-            ota_abort(state, "flash_write_failed");
             return;
         }
 
         g_job.zeroReadStreak = 0;
         g_job.noDataSinceMs = 0;
-        g_job.bytesWritten += (uint32_t)written;
-        processed += written;
+        g_job.bytesWritten += (uint32_t)n;
+        processed += (size_t)n;
         g_job.lastProgressMs = millis();
     }
 
@@ -2201,7 +2221,7 @@ static void ota_tick(DeviceState *state)
             }
         }
         LOG_INFO(LogDomain::OTA,
-                 "OTA heartbeat progress=%lu%% bytes=%lu/%lu zero_reads=%u stream_connected=%s stream_avail=%d retries=%u/%u free_heap=%lu update_error=%u",
+                 "OTA heartbeat progress=%lu%% bytes=%lu/%lu zero_reads=%u stream_connected=%s stream_avail=%d retries=%u/%u free_heap=%lu",
                  (unsigned long)pct,
                  (unsigned long)g_job.bytesWritten,
                  (unsigned long)g_job.bytesTotal,
@@ -2210,8 +2230,7 @@ static void ota_tick(DeviceState *state)
                  stream->available(),
                  (unsigned int)g_job.netRetryCount,
                  (unsigned int)CFG_OTA_HTTP_MAX_RETRIES,
-                 (unsigned long)ESP.getFreeHeap(),
-                 (unsigned int)Update.getError());
+                 (unsigned long)ESP.getFreeHeap());
     }
 
     if (state && (now - g_job.lastReportMs) >= 500u)
@@ -2327,38 +2346,40 @@ static void ota_tick(DeviceState *state)
     }
 
     const bool wdtDetachedEnd = ota_detachCurrentTaskWdt("update_end");
-    bool okEnd = Update.end(true);
+    const esp_err_t otaEndErr = esp_ota_end(g_job.otaHandle);
     ota_reattachCurrentTaskWdt(wdtDetachedEnd, "update_end");
+    g_job.otaHandle = 0;
+    g_job.updateBegun = false;
     LOG_INFO(LogDomain::OTA,
-             "Update.end(force=true) result=%s update_error=%u bytes_written=%lu bytes_total=%lu free_heap=%lu",
-             okEnd ? "ok" : "fail",
-             (unsigned int)Update.getError(),
+             "esp_ota_end err=%d bytes_written=%lu bytes_total=%lu free_heap=%lu",
+             (int)otaEndErr,
              (unsigned long)g_job.bytesWritten,
              (unsigned long)g_job.bytesTotal,
              (unsigned long)ESP.getFreeHeap());
     ota_logPartitionSnapshot("after_update_end");
     const esp_partition_t *bootAfter = esp_ota_get_boot_partition();
-    LOG_INFO(LogDomain::OTA, "Boot partition AFTER Update.end: %s@0x%08lx",
+    LOG_INFO(LogDomain::OTA, "Boot partition AFTER esp_ota_end: %s@0x%08lx",
              bootAfter ? bootAfter->label : "<null>",
              (unsigned long)(bootAfter ? bootAfter->address : 0));
-    if (!okEnd)
+    if (!ota_requireEspOk(state, "esp_ota_end", otaEndErr))
     {
-        char msg[40];
-        snprintf(msg, sizeof(msg), "update_end_failed_%u", (unsigned int)Update.getError());
-        ota_abort(state, msg);
         return;
     }
 
-    const esp_partition_t *setBootTarget = g_job.targetPartition;
-    if (setBootTarget == nullptr)
+    if (g_job.targetPartition == nullptr)
     {
-        setBootTarget = esp_ota_get_boot_partition();
+        (void)ota_requireEspOk(state, "esp_ota_set_boot_partition_target", ESP_ERR_INVALID_ARG);
+        return;
     }
-    const esp_err_t setBootErr = setBootTarget ? esp_ota_set_boot_partition(setBootTarget) : ESP_ERR_INVALID_ARG;
+    const esp_err_t setBootErr = esp_ota_set_boot_partition(g_job.targetPartition);
     LOG_INFO(LogDomain::OTA, "esp_ota_set_boot_partition target=%s@0x%08lx err=%d",
-             (setBootTarget && setBootTarget->label) ? setBootTarget->label : "<null>",
-             (unsigned long)(setBootTarget ? setBootTarget->address : 0u),
+             g_job.targetPartition->label,
+             (unsigned long)g_job.targetPartition->address,
              (int)setBootErr);
+    if (!ota_requireEspOk(state, "esp_ota_set_boot_partition", setBootErr))
+    {
+        return;
+    }
     ota_logPartitionSnapshot("after_set_boot_partition");
     ota_emitPartitionDiag("after_set_boot_partition");
 
@@ -2367,7 +2388,6 @@ static void ota_tick(DeviceState *state)
         g_job.http.end();
         g_job.httpBegun = false;
     }
-    g_job.updateBegun = false;
 
     ota_finishSuccess(state);
     return;
