@@ -67,9 +67,12 @@
 #ifndef CFG_OTA_DOWNLOAD_HEARTBEAT_MS
 #define CFG_OTA_DOWNLOAD_HEARTBEAT_MS 1000u
 #endif
+#ifndef CFG_LOG_DEV
+#define CFG_LOG_DEV 0
+#endif
 #ifndef CFG_OTA_DEV_LOGS
-#ifdef CFG_DEV_MODE
-#define CFG_OTA_DEV_LOGS CFG_DEV_MODE
+#ifdef CFG_LOG_DEV
+#define CFG_OTA_DEV_LOGS CFG_LOG_DEV
 #else
 #define CFG_OTA_DEV_LOGS 0
 #endif
@@ -116,6 +119,10 @@ struct PullOtaJob
     int16_t progressLastPctPrinted = -1;
     bool progressStarted = false;
     bool progressCompleted = false;
+    uint32_t progressLastPrintMs = 0;
+    uint32_t progressLastSampleMs = 0;
+    uint32_t progressLastSampleBytes = 0;
+    float progressSpeedEmaBps = 0.0f;
     uint32_t noDataSinceMs = 0;
     uint8_t zeroReadStreak = 0;
     uint8_t netRetryCount = 0;
@@ -143,6 +150,10 @@ static int s_lastTlsErrCode = 0;
 static char s_lastTlsErrMsg[128] = {0};
 static bool s_otaHeartbeatEnabled = true;
 static TaskHandle_t s_otaTaskHandle = nullptr;
+static uint32_t s_blockAttemptId = 1u;
+static uint32_t s_lastBlockedAttemptId = 0u;
+static char s_lastBlockedPhase[24] = {0};
+static char s_lastBlockedReason[48] = {0};
 
 static inline bool ota_isInOtaTaskContext()
 {
@@ -282,6 +293,9 @@ static void ota_setFlat(DeviceState *state,
 static void ota_progressReset();
 static void ota_progressEnsureLineBreak();
 static void ota_progressPrint(uint32_t bytesWritten, uint32_t bytesTotal, bool force, bool completed);
+static void ota_progressFail(const char *reason);
+static void ota_nextBlockAttempt();
+static void ota_logBlocked(const char *phase, const char *reason, const char *fmt, ...);
 static void ota_clearActive(DeviceState *state);
 static void ota_emitCancelledResult(const char *reason);
 static const char *ota_imgStateToString(esp_ota_img_states_t state);
@@ -378,16 +392,15 @@ static void ota_progressReset()
     g_job.progressLastPctPrinted = -1;
     g_job.progressStarted = false;
     g_job.progressCompleted = false;
+    g_job.progressLastPrintMs = 0;
+    g_job.progressLastSampleMs = 0;
+    g_job.progressLastSampleBytes = 0;
+    g_job.progressSpeedEmaBps = 0.0f;
 }
 
 static void ota_progressEnsureLineBreak()
 {
-#if !CFG_OTA_DEV_LOGS && !CFG_OTA_PROGRESS_NEWLINES
-    if (g_job.progressStarted && !g_job.progressCompleted)
-    {
-        Serial.println();
-    }
-#endif
+    logger_serialEnsureLineBreak();
 }
 
 static void ota_progressPrint(uint32_t bytesWritten, uint32_t bytesTotal, bool force, bool completed)
@@ -399,7 +412,9 @@ static void ota_progressPrint(uint32_t bytesWritten, uint32_t bytesTotal, bool f
     (void)completed;
     return;
 #else
+    constexpr uint32_t kMinUpdateIntervalMs = 125u; // cap at ~8 Hz
     const bool hasTotal = bytesTotal > 0u;
+    const uint32_t nowMs = millis();
     const uint32_t clampedBytes = (hasTotal && bytesWritten > bytesTotal) ? bytesTotal : bytesWritten;
     uint32_t pct = 0u;
     if (hasTotal)
@@ -428,14 +443,73 @@ static void ota_progressPrint(uint32_t bytesWritten, uint32_t bytesTotal, bool f
         const bool bytesAdvanced = clampedBytes >= (g_job.progressLastBytesPrinted + (uint32_t)CFG_OTA_PROGRESS_BYTES_STEP);
         shouldPrint = pctAdvanced || bytesAdvanced;
     }
+    if (!force && shouldPrint && g_job.progressLastPrintMs > 0 &&
+        (uint32_t)(nowMs - g_job.progressLastPrintMs) < kMinUpdateIntervalMs)
+    {
+        shouldPrint = false;
+    }
 
     if (!shouldPrint)
     {
         return;
     }
 
+    if (g_job.progressLastSampleMs > 0 && nowMs > g_job.progressLastSampleMs &&
+        clampedBytes >= g_job.progressLastSampleBytes)
+    {
+        const uint32_t deltaMs = nowMs - g_job.progressLastSampleMs;
+        const uint32_t deltaBytes = clampedBytes - g_job.progressLastSampleBytes;
+        if (deltaMs >= 50u && deltaBytes > 0u)
+        {
+            const float instBps = ((float)deltaBytes * 1000.0f) / (float)deltaMs;
+            const float alpha = 0.25f;
+            if (g_job.progressSpeedEmaBps <= 0.0f)
+            {
+                g_job.progressSpeedEmaBps = instBps;
+            }
+            else
+            {
+                g_job.progressSpeedEmaBps = (g_job.progressSpeedEmaBps * (1.0f - alpha)) + (instBps * alpha);
+            }
+        }
+    }
+    g_job.progressLastSampleMs = nowMs;
+    g_job.progressLastSampleBytes = clampedBytes;
+
+    char speedBuf[20] = {0};
+    if (g_job.progressSpeedEmaBps >= (1024.0f * 1024.0f))
+    {
+        snprintf(speedBuf, sizeof(speedBuf), "%5.1f MB/s", g_job.progressSpeedEmaBps / (1024.0f * 1024.0f));
+    }
+    else if (g_job.progressSpeedEmaBps > 0.0f)
+    {
+        snprintf(speedBuf, sizeof(speedBuf), "%5.1f kB/s", g_job.progressSpeedEmaBps / 1024.0f);
+    }
+    else
+    {
+        snprintf(speedBuf, sizeof(speedBuf), "--.- kB/s");
+    }
+
+    char etaBuf[8] = "--:--";
+    if (hasTotal && g_job.progressSpeedEmaBps > 1.0f && clampedBytes < bytesTotal)
+    {
+        const float remain = (float)(bytesTotal - clampedBytes);
+        uint32_t etaSec = (uint32_t)(remain / g_job.progressSpeedEmaBps);
+        if (etaSec > 5999u)
+        {
+            etaSec = 5999u;
+        }
+        snprintf(etaBuf, sizeof(etaBuf), "%02lu:%02lu",
+                 (unsigned long)(etaSec / 60u),
+                 (unsigned long)(etaSec % 60u));
+    }
+    else if (completed)
+    {
+        snprintf(etaBuf, sizeof(etaBuf), "00:00");
+    }
+
     constexpr size_t kBarWidth = 25u;
-    char line[96] = {0};
+    char line[144] = {0};
     if (hasTotal)
     {
         char bar[kBarWidth + 1] = {0};
@@ -446,32 +520,44 @@ static void ota_progressPrint(uint32_t bytesWritten, uint32_t bytesTotal, bool f
         }
         bar[kBarWidth] = '\0';
         snprintf(line, sizeof(line),
-                 "Download        [%-25s] %3lu%% %12lu bytes",
+                 "Download        [%-25s] %3lu%% %12lu bytes %11s ETA %5s",
                  bar,
                  (unsigned long)pct,
-                 (unsigned long)clampedBytes);
+                 (unsigned long)clampedBytes,
+                 speedBuf,
+                 etaBuf);
     }
     else
     {
         snprintf(line, sizeof(line),
-                 "Download        [%-25s]     %12lu bytes",
+                 "Download        [%-25s]     %12lu bytes %11s ETA %5s",
                  "size unknown",
-                 (unsigned long)clampedBytes);
+                 (unsigned long)clampedBytes,
+                 speedBuf,
+                 etaBuf);
     }
     line[sizeof(line) - 1] = '\0';
 
+    logger_serialLock();
 #if CFG_OTA_PROGRESS_NEWLINES
     Serial.println(line);
+    logger_serialSetInlineActive(false);
 #else
     Serial.print('\r');
     Serial.print(line);
     if (completed)
     {
         Serial.println();
+        logger_serialSetInlineActive(false);
+    }
+    else
+    {
+        logger_serialSetInlineActive(true);
     }
 #endif
 
     g_job.progressStarted = true;
+    g_job.progressLastPrintMs = nowMs;
     g_job.progressLastBytesPrinted = clampedBytes;
     g_job.progressLastPctPrinted = hasTotal ? (int16_t)pct : -1;
 
@@ -480,11 +566,64 @@ static void ota_progressPrint(uint32_t bytesWritten, uint32_t bytesTotal, bool f
         Serial.println("Download done.");
         g_job.progressCompleted = true;
     }
+    logger_serialUnlock();
 #endif
+}
+
+static void ota_progressFail(const char *reason)
+{
+#if CFG_OTA_DEV_LOGS
+    (void)reason;
+#else
+    const char *msg = (reason && reason[0] != '\0') ? reason : "error";
+    logger_serialEnsureLineBreak();
+    logger_serialLock();
+    Serial.print("Download failed: ");
+    Serial.println(msg);
+    logger_serialSetInlineActive(false);
+    logger_serialUnlock();
+    g_job.progressCompleted = true;
+#endif
+}
+
+static void ota_nextBlockAttempt()
+{
+    ++s_blockAttemptId;
+    if (s_blockAttemptId == 0u)
+    {
+        s_blockAttemptId = 1u;
+    }
+}
+
+static void ota_logBlocked(const char *phase, const char *reason, const char *fmt, ...)
+{
+    const char *safePhase = phase ? phase : "";
+    const char *safeReason = reason ? reason : "";
+    if (s_lastBlockedAttemptId == s_blockAttemptId &&
+        strncmp(s_lastBlockedPhase, safePhase, sizeof(s_lastBlockedPhase)) == 0 &&
+        strncmp(s_lastBlockedReason, safeReason, sizeof(s_lastBlockedReason)) == 0)
+    {
+        return;
+    }
+
+    s_lastBlockedAttemptId = s_blockAttemptId;
+    strncpy(s_lastBlockedPhase, safePhase, sizeof(s_lastBlockedPhase));
+    s_lastBlockedPhase[sizeof(s_lastBlockedPhase) - 1] = '\0';
+    strncpy(s_lastBlockedReason, safeReason, sizeof(s_lastBlockedReason));
+    s_lastBlockedReason[sizeof(s_lastBlockedReason) - 1] = '\0';
+
+    char msg[192] = {0};
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, args);
+    va_end(args);
+    msg[sizeof(msg) - 1] = '\0';
+    LOG_WARN(LogDomain::OTA, "%s", msg);
 }
 
 static void ota_logPartitionSnapshot(const char *phase)
 {
+#if CFG_OTA_DEV_LOGS
     const esp_partition_t *running = esp_ota_get_running_partition();
     const esp_partition_t *boot = esp_ota_get_boot_partition();
     const esp_partition_t *next = esp_ota_get_next_update_partition(nullptr);
@@ -498,6 +637,9 @@ static void ota_logPartitionSnapshot(const char *phase)
              (unsigned long)(boot ? boot->address : 0u),
              (next && next->label) ? next->label : "<null>",
              (unsigned long)(next ? next->address : 0u));
+#else
+    (void)phase;
+#endif
 }
 
 static const char *ota_imgStateToString(esp_ota_img_states_t state)
@@ -559,6 +701,10 @@ static const char *ota_resetReasonToString(esp_reset_reason_t reason)
 
 static void ota_emitPartitionDiag(const char *phase)
 {
+#if !CFG_OTA_DEV_LOGS
+    (void)phase;
+    return;
+#else
     const esp_partition_t *running = esp_ota_get_running_partition();
     const esp_partition_t *boot = esp_ota_get_boot_partition();
     const esp_partition_t *next = esp_ota_get_next_update_partition(nullptr);
@@ -616,6 +762,7 @@ static void ota_emitPartitionDiag(const char *phase)
     {
         (void)mqtt_publishLog("ota/diag", payload, false);
     }
+#endif
 }
 
 static bool ota_detachCurrentTaskWdt(const char *phase)
@@ -840,7 +987,7 @@ static bool ota_checkSafetyGuards(DeviceState *state,
     if (!state->mqtt.connected)
     {
         const char *reason = "mqtt_disconnected";
-        LOG_ERROR(LogDomain::OTA, "OTA guard reject phase=%s reason=%s", phase ? phase : "", reason);
+        ota_logBlocked("guard", reason, "OTA guard reject phase=%s reason=%s", phase ? phase : "", reason);
         setErr(errBuf, errBufLen, reason);
         ota_recordError(state, reason);
         ota_requestPublish();
@@ -852,11 +999,11 @@ static bool ota_checkSafetyGuards(DeviceState *state,
     if (state->wifi.rssi < (int)CFG_OTA_GUARD_MIN_WIFI_RSSI)
     {
         const char *reason = "wifi_rssi_low";
-        LOG_ERROR(LogDomain::OTA, "OTA guard reject phase=%s reason=%s rssi=%d threshold=%d",
-                  phase ? phase : "",
-                  reason,
-                  state->wifi.rssi,
-                  (int)CFG_OTA_GUARD_MIN_WIFI_RSSI);
+        ota_logBlocked("guard", reason, "OTA guard reject phase=%s reason=%s rssi=%d threshold=%d",
+                       phase ? phase : "",
+                       reason,
+                       state->wifi.rssi,
+                       (int)CFG_OTA_GUARD_MIN_WIFI_RSSI);
         setErr(errBuf, errBufLen, reason);
         ota_recordError(state, reason);
         ota_requestPublish();
@@ -869,6 +1016,13 @@ static bool ota_checkSafetyGuards(DeviceState *state,
 
 static void ota_logTlsStatus(const char *phase, const char *endpoint, bool success, int httpCode)
 {
+#if !CFG_OTA_DEV_LOGS
+    (void)phase;
+    (void)endpoint;
+    (void)success;
+    (void)httpCode;
+    return;
+#else
     const char *phaseStr = phase ? phase : "";
     const char *endpointStr = (endpoint && endpoint[0] != '\0') ? endpoint : "<none>";
     char endpointHost[128] = {0};
@@ -922,6 +1076,7 @@ static void ota_logTlsStatus(const char *phase, const char *endpoint, bool succe
                   s_lastTlsErrCode,
                   s_lastTlsErrMsg[0] ? s_lastTlsErrMsg : "<none>");
     }
+#endif
 }
 
 static inline void ota_prepareTlsClient(WiFiClientSecure &client, const char *phase, const char *endpoint)
@@ -933,12 +1088,18 @@ static inline void ota_prepareTlsClient(WiFiClientSecure &client, const char *ph
     s_lastTlsTrustMode = (trustMode && trustMode[0] != '\0') ? trustMode : "unknown";
     ota_resetTlsError();
 
+#if CFG_OTA_DEV_LOGS
     LOG_INFO(LogDomain::OTA,
              "TLS trust=%s phase=%s endpoint=%s host=%s",
              s_lastTlsTrustMode,
              phase ? phase : "",
              (endpoint && endpoint[0] != '\0') ? endpoint : "<none>",
              hostOk ? endpointHost : "<unparsed>");
+#else
+    (void)phase;
+    (void)hostOk;
+    (void)endpointHost;
+#endif
 }
 
 bool ota_isBusy()
@@ -990,10 +1151,18 @@ void ota_handle()
         }
 
         ArduinoOTA.onStart([]()
-                           { LOG_INFO(LogDomain::OTA, "Update started"); });
+                           {
+#if CFG_LOG_DEV
+                               LOG_DEBUG(LogDomain::OTA, "Update started");
+#endif
+                           });
 
         ArduinoOTA.onEnd([]()
-                         { LOG_INFO(LogDomain::OTA, "Update finished"); });
+                         {
+#if CFG_LOG_DEV
+                             LOG_DEBUG(LogDomain::OTA, "Update finished");
+#endif
+                         });
 
         ArduinoOTA.onError([](ota_error_t error)
                            { LOG_WARN(LogDomain::OTA, "Error %u", (unsigned int)error); });
@@ -1302,6 +1471,7 @@ static void ota_resetRuntimeJob()
 static void ota_primeRuntimeJob(const OtaTaskJob &job)
 {
     ota_resetRuntimeJob();
+    ota_nextBlockAttempt();
 
     g_job.active = true;
     g_job.reboot = job.reboot;
@@ -1344,7 +1514,7 @@ bool ota_pullStart(DeviceState *state,
     if (!url || url[0] == '\0')
     {
         const char *reason = "missing_url";
-        LOG_ERROR(LogDomain::OTA, "Pull OTA blocked: %s", reason);
+        ota_logBlocked("pull_start", reason, "Pull OTA blocked: %s", reason);
         setErr(errBuf, errBufLen, reason);
         ota_recordError(state, reason);
         ota_requestPublish();
@@ -1355,7 +1525,7 @@ bool ota_pullStart(DeviceState *state,
     if (strncasecmp(url, "https://", 8) != 0)
     {
         const char *reason = "url_not_https";
-        LOG_ERROR(LogDomain::OTA, "Pull OTA blocked: %s", reason);
+        ota_logBlocked("pull_start", reason, "Pull OTA blocked: %s", reason);
         setErr(errBuf, errBufLen, reason);
         ota_recordError(state, reason);
         ota_requestPublish();
@@ -1368,7 +1538,7 @@ bool ota_pullStart(DeviceState *state,
         if (!parseVersion(version, &targetVersion))
         {
             const char *reason = "invalid_version";
-            LOG_ERROR(LogDomain::OTA, "Pull OTA blocked: %s target=%s", reason, version);
+            ota_logBlocked("pull_start", reason, "Pull OTA blocked: %s target=%s", reason, version);
             setErr(errBuf, errBufLen, reason);
             ota_recordError(state, reason);
             ota_requestPublish();
@@ -1396,8 +1566,8 @@ bool ota_pullStart(DeviceState *state,
             if (!force && cmp < 0)
             {
                 const char *reason = "downgrade_blocked";
-                LOG_ERROR(LogDomain::OTA, "Pull OTA blocked: %s current=%s target=%s",
-                          reason, currentFw, version);
+                ota_logBlocked("pull_start", reason, "Pull OTA blocked: %s current=%s target=%s",
+                               reason, currentFw, version);
                 setErr(errBuf, errBufLen, reason);
                 ota_recordError(state, reason);
                 ota_requestPublish();
@@ -1435,10 +1605,10 @@ bool ota_pullStart(DeviceState *state,
             if (!force)
             {
                 const char *reason = "current_version_invalid";
-                LOG_ERROR(LogDomain::OTA, "Pull OTA blocked: %s current=%s target=%s",
-                          reason,
-                          currentFw[0] ? currentFw : "<empty>",
-                          version);
+                ota_logBlocked("pull_start", reason, "Pull OTA blocked: %s current=%s target=%s",
+                               reason,
+                               currentFw[0] ? currentFw : "<empty>",
+                               version);
                 setErr(errBuf, errBufLen, reason);
                 ota_recordError(state, reason);
                 ota_requestPublish();
@@ -1458,12 +1628,15 @@ bool ota_pullStart(DeviceState *state,
     taskJob.sha256[sizeof(taskJob.sha256) - 1] = '\0';
     taskJob.force = force;
     taskJob.reboot = reboot;
+    char shaPrefix[13] = {0};
+    strncpy(shaPrefix, taskJob.sha256, 12);
+    shaPrefix[sizeof(shaPrefix) - 1] = '\0';
     LOG_INFO(LogDomain::OTA,
-             "Pull OTA enqueue request request_id=%s version=%s url_len=%u sha_prefix=%.12s force=%s reboot=%s",
+             "Pull OTA enqueue request request_id=%s version=%s url_len=%u sha_prefix=%s force=%s reboot=%s",
              taskJob.request_id[0] ? taskJob.request_id : "<none>",
              taskJob.version[0] ? taskJob.version : "<none>",
              (unsigned)strlen(taskJob.url),
-             taskJob.sha256[0] ? taskJob.sha256 : "<none>",
+             taskJob.sha256[0] ? shaPrefix : "<none>",
              taskJob.force ? "true" : "false",
              taskJob.reboot ? "true" : "false");
 
@@ -1542,7 +1715,7 @@ bool ota_pullStartFromManifest(DeviceState *state,
     if (!WiFi.isConnected())
     {
         const char *reason = "wifi_disconnected";
-        LOG_ERROR(LogDomain::OTA, "Manifest pull blocked: %s", reason);
+        ota_logBlocked("manifest_pull", reason, "Manifest pull blocked: %s", reason);
         setErr(errBuf, errBufLen, reason);
         ota_markFailed(state, "wifi_disconnected");
         return false;
@@ -1550,7 +1723,7 @@ bool ota_pullStartFromManifest(DeviceState *state,
     if (!wifi_timeIsValid())
     {
         const char *reason = "time_not_set";
-        LOG_ERROR(LogDomain::OTA, "Manifest pull blocked: %s", reason);
+        ota_logBlocked("manifest_pull", reason, "Manifest pull blocked: %s", reason);
         setErr(errBuf, errBufLen, reason);
         ota_markFailed(state, reason);
         return false;
@@ -1567,7 +1740,7 @@ bool ota_pullStartFromManifest(DeviceState *state,
     if (!manifestUrl || manifestUrl[0] == '\0')
     {
         const char *reason = "missing_manifest_url";
-        LOG_ERROR(LogDomain::OTA, "Manifest pull blocked: %s", reason);
+        ota_logBlocked("manifest_pull", reason, "Manifest pull blocked: %s", reason);
         setErr(errBuf, errBufLen, reason);
         ota_markFailed(state, reason);
         return false;
@@ -1575,7 +1748,7 @@ bool ota_pullStartFromManifest(DeviceState *state,
     if (strncasecmp(manifestUrl, "https://", 8) != 0)
     {
         const char *reason = "manifest_url_not_https";
-        LOG_ERROR(LogDomain::OTA, "Manifest pull blocked: %s", reason);
+        ota_logBlocked("manifest_pull", reason, "Manifest pull blocked: %s", reason);
         setErr(errBuf, errBufLen, reason);
         ota_markFailed(state, reason);
         return false;
@@ -1583,7 +1756,7 @@ bool ota_pullStartFromManifest(DeviceState *state,
     if (ota_urlContainsNoCase(manifestUrl, "raw.githubusercontent.com"))
     {
         const char *reason = "manifest_raw_disallowed";
-        LOG_ERROR(LogDomain::OTA, "Manifest pull blocked: %s url=%s", reason, manifestUrl);
+        ota_logBlocked("manifest_pull", reason, "Manifest pull blocked: %s url=%s", reason, manifestUrl);
         setErr(errBuf, errBufLen, reason);
         ota_markFailed(state, reason);
         return false;
@@ -1720,7 +1893,7 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
     if (!WiFi.isConnected())
     {
         const char *reason = "wifi_disconnected";
-        LOG_ERROR(LogDomain::OTA, "Manifest check blocked: %s", reason);
+        ota_logBlocked("manifest_check", reason, "Manifest check blocked: %s", reason);
         setErr(errBuf, errBufLen, reason);
         ota_recordError(state, reason);
         ota_requestPublish();
@@ -1729,7 +1902,7 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
     if (!wifi_timeIsValid())
     {
         const char *reason = "time_not_set";
-        LOG_ERROR(LogDomain::OTA, "Manifest check blocked: %s", reason);
+        ota_logBlocked("manifest_check", reason, "Manifest check blocked: %s", reason);
         setErr(errBuf, errBufLen, reason);
         ota_recordError(state, reason);
         ota_requestPublish();
@@ -1742,7 +1915,7 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
     if (!manifestUrl || manifestUrl[0] == '\0')
     {
         const char *reason = "missing_manifest_url";
-        LOG_ERROR(LogDomain::OTA, "Manifest check blocked: %s", reason);
+        ota_logBlocked("manifest_check", reason, "Manifest check blocked: %s", reason);
         setErr(errBuf, errBufLen, reason);
         ota_recordError(state, reason);
         ota_requestPublish();
@@ -1751,7 +1924,7 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
     if (strncasecmp(manifestUrl, "https://", 8) != 0)
     {
         const char *reason = "manifest_url_not_https";
-        LOG_ERROR(LogDomain::OTA, "Manifest check blocked: %s", reason);
+        ota_logBlocked("manifest_check", reason, "Manifest check blocked: %s", reason);
         setErr(errBuf, errBufLen, reason);
         ota_recordError(state, reason);
         ota_requestPublish();
@@ -1760,7 +1933,7 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
     if (ota_urlContainsNoCase(manifestUrl, "raw.githubusercontent.com"))
     {
         const char *reason = "manifest_raw_disallowed";
-        LOG_ERROR(LogDomain::OTA, "Manifest check blocked: %s url=%s", reason, manifestUrl);
+        ota_logBlocked("manifest_check", reason, "Manifest check blocked: %s url=%s", reason, manifestUrl);
         setErr(errBuf, errBufLen, reason);
         ota_recordError(state, reason);
         ota_requestPublish();
@@ -2010,6 +2183,8 @@ static void ota_abort(DeviceState *state, const char *reason)
         ota_requestPublish();
     }
 
+    ota_progressFail(reason);
+
     if (g_job.updateBegun)
     {
         (void)esp_ota_abort(g_job.otaHandle);
@@ -2134,6 +2309,7 @@ void ota_processPullJobInTask(DeviceState *state, const OtaTaskJob &job)
     if (!state)
     {
         ota_trace("task_start_skip", "state_missing");
+        logger_setOtaQuietMode(false);
         return;
     }
 
@@ -2174,6 +2350,11 @@ void ota_processPullJobInTask(DeviceState *state, const OtaTaskJob &job)
         ota_abort(state, "time_not_set");
     }
 
+    if (g_job.active)
+    {
+        logger_setOtaQuietMode(true);
+    }
+
     while (g_job.active)
     {
 #if CFG_OTA_DEV_LOGS
@@ -2201,6 +2382,7 @@ void ota_processPullJobInTask(DeviceState *state, const OtaTaskJob &job)
             vTaskDelay(pdMS_TO_TICKS(20));
         }
     }
+    logger_setOtaQuietMode(false);
     ota_trace("task_exit", "request_id=%s", g_job.request_id[0] ? g_job.request_id : "<none>");
 }
 
@@ -2284,7 +2466,7 @@ static void ota_tick(DeviceState *state)
     }
     if (!wifi_timeIsValid())
     {
-        LOG_ERROR(LogDomain::OTA, "Firmware download blocked: time_not_set");
+        ota_logBlocked("download", "time_not_set", "Firmware download blocked: time_not_set");
         ota_trace("guard_fail", "time_not_set");
         ota_abort(state, "time_not_set");
         return;
@@ -2346,10 +2528,12 @@ static void ota_tick(DeviceState *state)
         }
         ota_trace("http_begin_ok", "elapsed_ms=%lu", (unsigned long)hsElapsedMs);
         ota_logRuntimeHealth("http_begin_ok");
+#if CFG_OTA_DEV_LOGS
         LOG_INFO(LogDomain::OTA,
                  "HTTP begin ok url=%s announced_len_pre_get=%d",
                  g_job.url,
                  g_job.http.getSize());
+#endif
         g_job.httpBegun = true;
 
         static const char *kHeaders[] = {"Content-Type", "Content-Length", "Location"};
@@ -2395,6 +2579,7 @@ static void ota_tick(DeviceState *state)
         ota_trace("http_status_ok", "code=%d", code);
         ota_logRuntimeHealth("http_status_ok");
 
+#if CFG_OTA_DEV_LOGS
         if (location.length() > 0)
         {
             LOG_INFO(LogDomain::OTA, "HTTP Location header=%s", location.c_str());
@@ -2403,6 +2588,7 @@ static void ota_tick(DeviceState *state)
         {
             LOG_DEBUG(LogDomain::OTA, "HTTP Location header=<none>");
         }
+#endif
         g_job.netRetryCount = 0;
         g_job.retryAtMs = 0;
 

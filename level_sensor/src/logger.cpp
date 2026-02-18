@@ -4,6 +4,8 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include "config.h"
 
 #ifndef CFG_LOG_COLOR
@@ -15,8 +17,11 @@ static const char *s_baseTopic = nullptr;
 static bool s_serialEnabled = true;
 static bool s_mqttEnabled = true;
 static bool s_highFreqEnabled = true;
+static bool s_otaQuietMode = false;
+static bool s_serialInlineActive = false;
 static LoggerMqttPublishFn s_mqttPublisher = nullptr;
 static LoggerMqttConnectedFn s_mqttConnectedFn = nullptr;
+static SemaphoreHandle_t s_serialMutex = nullptr;
 
 static constexpr size_t kThrottleSlots = 16;
 static constexpr size_t kKeyTagLen = 12;
@@ -227,6 +232,45 @@ static void appendTruncMarker(char *buf, size_t bufSize)
     buf[end] = '\0';
 }
 
+static void ensureSerialMutex()
+{
+    if (s_serialMutex == nullptr)
+    {
+        s_serialMutex = xSemaphoreCreateMutex();
+    }
+}
+
+static void serialLockInternal()
+{
+    ensureSerialMutex();
+    if (s_serialMutex != nullptr)
+    {
+        (void)xSemaphoreTake(s_serialMutex, portMAX_DELAY);
+    }
+}
+
+static void serialUnlockInternal()
+{
+    if (s_serialMutex != nullptr)
+    {
+        (void)xSemaphoreGive(s_serialMutex);
+    }
+}
+
+static bool shouldSuppressForOtaQuiet(LogLevel lvl, LogDomain dom)
+{
+    if (!s_otaQuietMode)
+    {
+        return false;
+    }
+    if (lvl != LogLevel::INFO && lvl != LogLevel::DEBUG)
+    {
+        return false;
+    }
+
+    return dom == LogDomain::SYSTEM || dom == LogDomain::WIFI || dom == LogDomain::MQTT;
+}
+
 static size_t jsonEscapeString(const char *src, char *dst, size_t dstSize, bool &truncated)
 {
     truncated = false;
@@ -340,6 +384,7 @@ void logger_begin(const char *baseTopic, bool serialEnabled, bool mqttEnabled)
     s_baseTopic = baseTopic;
     s_serialEnabled = serialEnabled;
     s_mqttEnabled = mqttEnabled;
+    ensureSerialMutex();
 }
 
 void logger_setMqttEnabled(bool enabled)
@@ -368,10 +413,53 @@ bool logger_isHighFreqEnabled()
     return s_highFreqEnabled;
 }
 
+void logger_setOtaQuietMode(bool enabled)
+{
+    s_otaQuietMode = enabled;
+}
+
+bool logger_isOtaQuietMode()
+{
+    return s_otaQuietMode;
+}
+
+void logger_serialLock()
+{
+    serialLockInternal();
+}
+
+void logger_serialUnlock()
+{
+    serialUnlockInternal();
+}
+
+void logger_serialSetInlineActive(bool active)
+{
+    s_serialInlineActive = active;
+}
+
+void logger_serialEnsureLineBreak()
+{
+    serialLockInternal();
+    if (s_serialInlineActive)
+    {
+        Serial.println();
+        s_serialInlineActive = false;
+    }
+    serialUnlockInternal();
+}
+
 static void logToSerial(uint32_t tsSec, LogLevel lvl, LogDomain dom, const char *msg)
 {
     if (!s_serialEnabled)
         return;
+
+    serialLockInternal();
+    if (s_serialInlineActive)
+    {
+        Serial.println();
+        s_serialInlineActive = false;
+    }
 
     char tsBuf[16];
     snprintf(tsBuf, sizeof(tsBuf), "[%6lu]", (unsigned long)tsSec);
@@ -413,6 +501,7 @@ static void logToSerial(uint32_t tsSec, LogLevel lvl, LogDomain dom, const char 
     Serial.print(": ");
     Serial.println(msg ? msg : "");
 #endif
+    serialUnlockInternal();
 }
 
 static void logToMqtt(uint32_t tsSec, LogLevel lvl, LogDomain dom, const char *msg)
@@ -434,6 +523,11 @@ static void logToMqtt(uint32_t tsSec, LogLevel lvl, LogDomain dom, const char *m
 
 void logger_log(LogLevel lvl, LogDomain dom, const char *fmt, ...)
 {
+    if (shouldSuppressForOtaQuiet(lvl, dom))
+    {
+        return;
+    }
+
     char msgBuf[kMsgBufSize];
     va_list args;
     va_start(args, fmt);
@@ -456,6 +550,10 @@ void logger_log(LogLevel lvl, LogDomain dom, const char *fmt, ...)
 void logger_logEvery(const char *key, uint32_t intervalMs, LogLevel lvl, LogDomain dom, const char *fmt, ...)
 {
     if (!s_highFreqEnabled)
+    {
+        return;
+    }
+    if (shouldSuppressForOtaQuiet(lvl, dom))
     {
         return;
     }

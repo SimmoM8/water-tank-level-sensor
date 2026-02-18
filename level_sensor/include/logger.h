@@ -2,7 +2,7 @@
 
 #include <stdint.h>
 
-// Contract: logger is intended for single-threaded Arduino loop usage (not ISR-safe).
+// Contract: logger is task-safe for normal FreeRTOS tasks (not ISR-safe).
 
 // Logging levels
 enum class LogLevel : uint8_t
@@ -31,6 +31,12 @@ void logger_begin(const char *baseTopic, bool serialEnabled = true, bool mqttEna
 void logger_setMqttEnabled(bool enabled);
 void logger_setHighFreqEnabled(bool enabled);
 bool logger_isHighFreqEnabled();
+void logger_setOtaQuietMode(bool enabled);
+bool logger_isOtaQuietMode();
+void logger_serialLock();
+void logger_serialUnlock();
+void logger_serialSetInlineActive(bool active);
+void logger_serialEnsureLineBreak();
 using LoggerMqttPublishFn = bool (*)(const char *topicSuffix, const char *payload, bool retained);
 using LoggerMqttConnectedFn = bool (*)();
 void logger_setMqttPublisher(LoggerMqttPublishFn publishFn, LoggerMqttConnectedFn isConnectedFn = nullptr);

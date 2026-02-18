@@ -99,7 +99,7 @@ DeviceState g_state;
 #define CFG_DEV_MODE 0
 #endif
 #ifndef CFG_LOG_HIGH_FREQ_DEFAULT
-#define CFG_LOG_HIGH_FREQ_DEFAULT CFG_DEV_MODE
+#define CFG_LOG_HIGH_FREQ_DEFAULT 0
 #endif
 
 // =============================================================================
@@ -1368,11 +1368,14 @@ static void handleSerialCommands()
     constexpr const char *kSerialRequestId = "serial_test";
     constexpr bool kSerialForce = true;
     constexpr bool kSerialReboot = true;
-    LOG_INFO(LogDomain::OTA, "OTA serial parsed request_id=%s url_len=%u target=%s sha_prefix=%.12s force=%s reboot=%s",
+    char shaPrefix[13] = {0};
+    strncpy(shaPrefix, sha256, 12);
+    shaPrefix[sizeof(shaPrefix) - 1] = '\0';
+    LOG_INFO(LogDomain::OTA, "OTA serial parsed request_id=%s url_len=%u target=%s sha_prefix=%s force=%s reboot=%s",
              kSerialRequestId,
              (unsigned)strlen(url),
              version,
-             sha256,
+             shaPrefix,
              kSerialForce ? "true" : "false",
              kSerialReboot ? "true" : "false");
     if (!isHex64(sha256))
@@ -1480,7 +1483,7 @@ void appSetup()
 
   delay(1500);
   logger_begin(BASE_TOPIC, true, true);
-  logger_setHighFreqEnabled(CFG_LOG_HIGH_FREQ_DEFAULT != 0);
+  logger_setHighFreqEnabled(log_hf_enabled());
   quality_init(probeQualityRt);
   logBootCrashDiagnostics(resetReasonCode, bootReason);
   LOG_INFO(LogDomain::SYSTEM, "BOOT water_level_sensor starting...");
