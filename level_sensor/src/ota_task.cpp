@@ -30,6 +30,12 @@ static volatile bool s_cancelRequested = false;
 static char s_cancelReason[OTA_ERROR_MAX] = {0};
 static portMUX_TYPE s_cancelMux = portMUX_INITIALIZER_UNLOCKED;
 
+#if (CFG_OTA_TASK_CORE < 0)
+static constexpr const char *kOtaTaskPinMode = "unpinned";
+#else
+static constexpr const char *kOtaTaskPinMode = "pinned";
+#endif
+
 static bool ota_taskIsCancelRequested()
 {
     bool cancelRequested = false;
@@ -46,8 +52,10 @@ static bool ota_taskIsCancelRequested()
 static void otaTask(void * /*arg*/)
 {
     LOG_INFO(LogDomain::OTA,
-             "otaTask started core=%d stack_bytes=%u prio=%u queue_depth=%u",
+             "otaTask started mode=%s core=%d configured_core=%d stack_bytes=%u prio=%u queue_depth=%u",
+             kOtaTaskPinMode,
              xPortGetCoreID(),
+             (int)CFG_OTA_TASK_CORE,
              (unsigned)CFG_OTA_TASK_STACK_WORDS,
              (unsigned)CFG_OTA_TASK_PRIORITY,
              (unsigned)CFG_OTA_TASK_QUEUE_DEPTH);
@@ -90,7 +98,26 @@ bool ota_taskBegin(DeviceState *state)
         return false;
     }
 
-    const BaseType_t created = xTaskCreatePinnedToCore(
+    BaseType_t created = pdFAIL;
+#if (CFG_OTA_TASK_CORE < 0)
+    LOG_INFO(LogDomain::OTA,
+             "Creating otaTask mode=unpinned stack_bytes=%u prio=%u",
+             (unsigned)CFG_OTA_TASK_STACK_WORDS,
+             (unsigned)CFG_OTA_TASK_PRIORITY);
+    created = xTaskCreate(
+        otaTask,
+        "otaTask",
+        (uint32_t)CFG_OTA_TASK_STACK_WORDS,
+        nullptr,
+        (UBaseType_t)CFG_OTA_TASK_PRIORITY,
+        &s_otaTaskHandle);
+#else
+    LOG_INFO(LogDomain::OTA,
+             "Creating otaTask mode=pinned core=%d stack_bytes=%u prio=%u",
+             (int)CFG_OTA_TASK_CORE,
+             (unsigned)CFG_OTA_TASK_STACK_WORDS,
+             (unsigned)CFG_OTA_TASK_PRIORITY);
+    created = xTaskCreatePinnedToCore(
         otaTask,
         "otaTask",
         (uint32_t)CFG_OTA_TASK_STACK_WORDS,
@@ -98,6 +125,7 @@ bool ota_taskBegin(DeviceState *state)
         (UBaseType_t)CFG_OTA_TASK_PRIORITY,
         &s_otaTaskHandle,
         (BaseType_t)CFG_OTA_TASK_CORE);
+#endif
 
     if (created != pdPASS)
     {
