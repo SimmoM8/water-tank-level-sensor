@@ -17,6 +17,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <time.h>
+#include <stdarg.h>
 #include "domain_strings.h"
 #include "mqtt_transport.h"
 #include "storage_nvs.h"
@@ -291,6 +292,22 @@ static inline void ota_resetTlsError()
 {
     s_lastTlsErrCode = 0;
     s_lastTlsErrMsg[0] = '\0';
+}
+
+static void ota_trace(const char *step, const char *fmt, ...)
+{
+    char detail[256] = {0};
+    if (fmt && fmt[0] != '\0')
+    {
+        va_list args;
+        va_start(args, fmt);
+        vsnprintf(detail, sizeof(detail), fmt, args);
+        va_end(args);
+        detail[sizeof(detail) - 1] = '\0';
+    }
+    LOG_INFO(LogDomain::OTA, "[TRACE] step=%s %s",
+             step ? step : "",
+             detail[0] ? detail : "");
 }
 
 static void ota_logPartitionSnapshot(const char *phase)
@@ -984,6 +1001,10 @@ static void ota_setFlat(DeviceState *state,
 static bool ota_scheduleRetry(DeviceState *state, const char *reason)
 {
     const char *msg = (reason && reason[0] != '\0') ? reason : "retry";
+    ota_trace("schedule_retry", "reason=%s retry_count=%u/%u",
+              msg,
+              (unsigned int)g_job.netRetryCount,
+              (unsigned int)CFG_OTA_HTTP_MAX_RETRIES);
 
     if (g_job.httpBegun)
     {
@@ -1701,6 +1722,7 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
 
 static void ota_abort(DeviceState *state, const char *reason)
 {
+    ota_trace("abort", "reason=%s", reason ? reason : "");
     LOG_WARN(LogDomain::OTA,
              "OTA abort detail reason=%s bytes_written=%lu bytes_total=%lu update_begun=%s http_begun=%s free_heap=%lu",
              reason ? reason : "",
@@ -1813,6 +1835,9 @@ static bool ota_requireEspOk(DeviceState *state, const char *op, esp_err_t err)
 
 static void ota_finishSuccess(DeviceState *state)
 {
+    ota_trace("finish_success_enter", "bytes=%lu/%lu",
+              (unsigned long)g_job.bytesWritten,
+              (unsigned long)g_job.bytesTotal);
     ota_logPartitionSnapshot("finish_success_pre_state");
 
     if (state)
@@ -1851,6 +1876,7 @@ static void ota_finishSuccess(DeviceState *state)
     }
 
     g_job.active = false;
+    ota_trace("finish_success_complete", "reboot=%s", g_job.reboot ? "true" : "false");
     LOG_INFO(LogDomain::OTA, "Pull OTA success");
     s_otaHeartbeatEnabled = false;
     LOG_INFO(LogDomain::OTA, "OTA heartbeat diagnostics auto-disabled after successful apply");
@@ -1880,6 +1906,7 @@ void ota_processPullJobInTask(DeviceState *state, const OtaTaskJob &job)
 {
     if (!state)
     {
+        ota_trace("task_start_skip", "state_missing");
         return;
     }
 
@@ -1894,11 +1921,15 @@ void ota_processPullJobInTask(DeviceState *state, const OtaTaskJob &job)
              g_job.version[0] ? g_job.version : "<none>",
              g_job.force ? "true" : "false",
              g_job.reboot ? "true" : "false");
+    ota_trace("task_start", "url=%s sha_prefix=%.12s",
+              g_job.url[0] ? g_job.url : "<none>",
+              g_job.sha256[0] ? g_job.sha256 : "<none>");
 
     // Validate runtime guards in task context before the pull starts.
     if (!ota_checkSafetyGuards(state, "pull_task_start", nullptr, 0))
     {
         const char *reason = "guard_rejected";
+        ota_trace("guard_fail", "reason=%s", reason);
         ota_markFailed(state, reason);
         ota_resetRuntimeJob();
         return;
@@ -1906,18 +1937,29 @@ void ota_processPullJobInTask(DeviceState *state, const OtaTaskJob &job)
 
     if (!WiFi.isConnected())
     {
+        ota_trace("preflight_fail", "wifi_disconnected");
         ota_abort(state, "wifi_disconnected");
     }
     else if (!wifi_timeIsValid())
     {
+        ota_trace("preflight_fail", "time_not_set");
         ota_abort(state, "time_not_set");
     }
 
     while (g_job.active)
     {
+        logger_logEvery("ota_task_loop", 2000u, LogLevel::DEBUG, LogDomain::OTA,
+                        "[TRACE] step=task_loop active=%s http=%s update=%s written=%lu total=%lu retry=%u",
+                        g_job.active ? "true" : "false",
+                        g_job.httpBegun ? "true" : "false",
+                        g_job.updateBegun ? "true" : "false",
+                        (unsigned long)g_job.bytesWritten,
+                        (unsigned long)g_job.bytesTotal,
+                        (unsigned int)g_job.retryCount);
         char cancelReason[OTA_ERROR_MAX] = {0};
         if (ota_taskTakeCancelReason(cancelReason, sizeof(cancelReason)))
         {
+            ota_trace("cancel_received", "reason=%s", cancelReason[0] ? cancelReason : "cancelled");
             g_job.retryCount = MAX_OTA_RETRIES;
             ota_abort(state, cancelReason[0] ? cancelReason : "cancelled");
             continue;
@@ -1929,20 +1971,38 @@ void ota_processPullJobInTask(DeviceState *state, const OtaTaskJob &job)
             vTaskDelay(pdMS_TO_TICKS(20));
         }
     }
+    ota_trace("task_exit", "request_id=%s", g_job.request_id[0] ? g_job.request_id : "<none>");
 }
 
 static void ota_tick(DeviceState *state)
 {
     if (!g_job.active)
+    {
+        logger_logEvery("ota_tick_idle", 3000u, LogLevel::DEBUG, LogDomain::OTA, "[TRACE] step=tick_idle");
         return;
+    }
 
     const uint32_t nowMs = millis();
+    logger_logEvery("ota_tick_active", 1500u, LogLevel::DEBUG, LogDomain::OTA,
+                    "[TRACE] step=tick active=true http=%s update=%s bytes=%lu/%lu retry_at=%lu next_retry_at=%lu",
+                    g_job.httpBegun ? "true" : "false",
+                    g_job.updateBegun ? "true" : "false",
+                    (unsigned long)g_job.bytesWritten,
+                    (unsigned long)g_job.bytesTotal,
+                    (unsigned long)g_job.retryAtMs,
+                    (unsigned long)g_job.nextRetryAtMs);
     if (g_job.nextRetryAtMs != 0 && !ota_timeReached(nowMs, g_job.nextRetryAtMs))
     {
+        logger_logEvery("ota_wait_next_retry", 1000u, LogLevel::DEBUG, LogDomain::OTA,
+                        "[TRACE] step=wait_next_retry now=%lu target=%lu",
+                        (unsigned long)nowMs,
+                        (unsigned long)g_job.nextRetryAtMs);
         return;
     }
     if (g_job.nextRetryAtMs != 0 && ota_timeReached(nowMs, g_job.nextRetryAtMs))
     {
+        ota_trace("retry_window_reached", "now=%lu target=%lu",
+                  (unsigned long)nowMs, (unsigned long)g_job.nextRetryAtMs);
         g_job.nextRetryAtMs = 0;
         if (g_job.updateBegun)
         {
@@ -1982,28 +2042,37 @@ static void ota_tick(DeviceState *state)
 
     if (!WiFi.isConnected())
     {
+        ota_trace("guard_fail", "wifi_disconnected");
         ota_abort(state, "wifi_disconnected");
         return;
     }
     if (!wifi_timeIsValid())
     {
         LOG_ERROR(LogDomain::OTA, "Firmware download blocked: time_not_set");
+        ota_trace("guard_fail", "time_not_set");
         ota_abort(state, "time_not_set");
         return;
     }
 
     if (!g_job.httpBegun && g_job.retryAtMs != 0 && !ota_timeReached(nowMs, g_job.retryAtMs))
     {
+        logger_logEvery("ota_wait_http_retry", 1000u, LogLevel::DEBUG, LogDomain::OTA,
+                        "[TRACE] step=wait_http_retry now=%lu target=%lu",
+                        (unsigned long)nowMs,
+                        (unsigned long)g_job.retryAtMs);
         return;
     }
     if (!g_job.httpBegun && g_job.retryAtMs != 0 && ota_timeReached(nowMs, g_job.retryAtMs))
     {
+        ota_trace("http_retry_window_reached", "now=%lu target=%lu",
+                  (unsigned long)nowMs, (unsigned long)g_job.retryAtMs);
         g_job.retryAtMs = 0;
     }
 
     // Step A: begin HTTP if not begun
     if (!g_job.httpBegun)
     {
+        ota_trace("http_begin_prepare", "url=%s", g_job.url[0] ? g_job.url : "<none>");
         const uint32_t connectTimeoutMs = (uint32_t)CFG_OTA_HTTP_CONNECT_TIMEOUT_MS;
         const uint32_t readTimeoutMs = (uint32_t)CFG_OTA_HTTP_READ_TIMEOUT_MS;
         const uint16_t readTimeoutMsClamped = (readTimeoutMs > 65535u) ? 65535u : (uint16_t)readTimeoutMs;
@@ -2023,12 +2092,14 @@ static void ota_tick(DeviceState *state)
         const uint32_t hsElapsedMs = millis() - hsStartMs;
         if (!beginOk)
         {
+            ota_trace("http_begin_fail", "elapsed_ms=%lu", (unsigned long)hsElapsedMs);
             ota_captureTlsError(g_job.client);
             ota_logTlsStatus("firmware_download", g_job.url, false, 0);
             const char *reason = ota_classifyBeginFailure(hsElapsedMs);
             ota_scheduleRetry(state, reason);
             return;
         }
+        ota_trace("http_begin_ok", "elapsed_ms=%lu", (unsigned long)hsElapsedMs);
         g_job.httpBegun = true;
 
         static const char *kHeaders[] = {"Content-Type", "Content-Length", "Location"};
@@ -2043,6 +2114,7 @@ static void ota_tick(DeviceState *state)
         const bool requestOk = (code > 0);
         if (!requestOk)
         {
+            ota_trace("http_get_fail", "code=%d elapsed_ms=%lu", code, (unsigned long)getElapsedMs);
             ota_captureTlsError(g_job.client);
             ota_logTlsStatus("firmware_download", g_job.url, false, code);
             const char *reason = ota_classifyRequestFailure(code);
@@ -2056,11 +2128,13 @@ static void ota_tick(DeviceState *state)
         ota_logTlsStatus("firmware_download", g_job.url, true, code);
         if (code != HTTP_CODE_OK)
         {
+            ota_trace("http_status_fail", "code=%d", code);
             char msg[32];
             ota_formatHttpCodeReason(code, msg, sizeof(msg));
             ota_scheduleRetry(state, msg);
             return;
         }
+        ota_trace("http_status_ok", "code=%d", code);
         g_job.netRetryCount = 0;
         g_job.retryAtMs = 0;
 
@@ -2087,6 +2161,7 @@ static void ota_tick(DeviceState *state)
         int len = g_job.http.getSize();
         LOG_INFO(LogDomain::OTA, "HTTP %d len=%d ctype=%s", code, len, ctype.c_str());
         LOG_INFO(LogDomain::OTA, "Partition free space approx=%u", (unsigned)ESP.getFreeSketchSpace());
+        ota_trace("http_headers", "len=%d ctype=%s", len, ctype.c_str());
 
         if (len <= 0)
         {
@@ -2145,15 +2220,20 @@ static void ota_tick(DeviceState *state)
 
         if (headerProbeLen == 0)
         {
+            ota_trace("header_probe_fail", "empty");
             ota_abort(state, "invalid image header (empty)");
             return;
         }
         if (headerProbe[0] != 0xE9)
         {
+            ota_trace("header_probe_fail", "magic=0x%02X", (unsigned int)headerProbe[0]);
             LOG_ERROR(LogDomain::OTA, "Invalid image header first_byte=0x%02X", (unsigned int)headerProbe[0]);
             ota_abort(state, "invalid image header (magic != 0xE9)");
             return;
         }
+        ota_trace("header_probe_ok", "magic=0x%02X bytes=%u",
+                  (unsigned int)headerProbe[0],
+                  (unsigned int)headerProbeLen);
         LOG_INFO(LogDomain::OTA, "Image header probe ok first_byte=0x%02X bytes=%u",
                  (unsigned int)headerProbe[0],
                  (unsigned int)headerProbeLen);
@@ -2182,6 +2262,7 @@ static void ota_tick(DeviceState *state)
         {
             return;
         }
+        ota_trace("ota_begin_ok", "handle=%lu", (unsigned long)g_job.otaHandle);
         LOG_INFO(LogDomain::OTA,
                  "esp_ota_begin ok expected_len=%lu handle=%lu free_heap=%lu",
                  (unsigned long)g_job.bytesTotal,
@@ -2202,6 +2283,7 @@ static void ota_tick(DeviceState *state)
             return;
         }
         g_job.bytesWritten = (uint32_t)headerProbeLen;
+        ota_trace("ota_write_header_ok", "bytes=%u", (unsigned int)headerProbeLen);
 
         if (state)
         {
@@ -2222,6 +2304,7 @@ static void ota_tick(DeviceState *state)
     WiFiClient *stream = g_job.http.getStreamPtr();
     if (!stream)
     {
+        ota_trace("stream_fail", "stream_null");
         ota_abort(state, "no_stream");
         return;
     }
@@ -2335,11 +2418,13 @@ static void ota_tick(DeviceState *state)
         if (g_job.updateBegun && g_job.lastProgressMs > 0 &&
             (now - g_job.lastProgressMs) > 60000u)
         {
+            ota_trace("download_timeout", "idle_ms=%lu", (unsigned long)(now - g_job.lastProgressMs));
             ota_abort(state, "download_timeout");
             return;
         }
         return;
     }
+    ota_trace("download_complete", "bytes=%lu/%lu", (unsigned long)g_job.bytesWritten, (unsigned long)g_job.bytesTotal);
 
     LOG_INFO(LogDomain::OTA,
              "OTA stream complete bytes_written=%lu bytes_total=%lu stream_connected=%s stream_avail=%d",
@@ -2358,6 +2443,7 @@ static void ota_tick(DeviceState *state)
 
     if (g_job.bytesWritten < OTA_MIN_BYTES)
     {
+        ota_trace("finalize_fail", "download_too_small bytes=%lu", (unsigned long)g_job.bytesWritten);
         ota_abort(state, "download_too_small");
         return;
     }
@@ -2381,11 +2467,13 @@ static void ota_tick(DeviceState *state)
 
         if (g_job.sha256[0] == '\0')
         {
+            ota_trace("sha_fail", "missing_sha256");
             ota_abort(state, "missing_sha256");
             return;
         }
         if (!isHex64(g_job.sha256))
         {
+            ota_trace("sha_fail", "bad_sha256_format");
             ota_abort(state, "bad_sha256_format");
             return;
         }
@@ -2396,10 +2484,12 @@ static void ota_tick(DeviceState *state)
             {
                 LOG_WARN(LogDomain::OTA, "Pull OTA SHA256 mismatch exp_prefix=%.12s got_prefix=%.12s",
                          g_job.sha256, hex);
+                ota_trace("sha_fail", "sha_mismatch");
                 ota_abort(state, "sha_mismatch");
                 return;
             }
         }
+        ota_trace("sha_ok", "prefix=%.12s", hex);
         LOG_INFO(LogDomain::OTA, "Pull OTA SHA256 ok (prefix)=%c%c%c%c%c%c%c%c%c%c%c%c",
                  hex[0], hex[1], hex[2], hex[3], hex[4], hex[5], hex[6], hex[7], hex[8], hex[9], hex[10], hex[11]);
     }
@@ -2431,6 +2521,7 @@ static void ota_tick(DeviceState *state)
     {
         return;
     }
+    ota_trace("ota_end_ok", "err=%d", (int)otaEndErr);
 
     if (g_job.targetPartition == nullptr)
     {
@@ -2446,6 +2537,9 @@ static void ota_tick(DeviceState *state)
     {
         return;
     }
+    ota_trace("set_boot_ok", "target=%s@0x%08lx",
+              g_job.targetPartition->label,
+              (unsigned long)g_job.targetPartition->address);
     ota_logPartitionSnapshot("after_set_boot_partition");
     ota_emitPartitionDiag("after_set_boot_partition");
 
