@@ -22,6 +22,7 @@
 #include "domain_strings.h"
 #include "mqtt_transport.h"
 #include "storage_nvs.h"
+#include "time_format.h"
 #include "wifi_provisioning.h"
 #include "semver.h"
 #include "version.h"
@@ -1615,7 +1616,7 @@ static void ota_setFlat(DeviceState *state,
         const uint32_t epochNow = ota_epochNow();
         if (epochNow > 0)
         {
-            state->ota_last_ts = epochNow;
+            (void)time_format::formatIsoUtc(epochNow, state->ota_last_ts, sizeof(state->ota_last_ts));
         }
     }
 }
@@ -2351,7 +2352,7 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
     const uint32_t manifestEpoch = ota_epochNow();
     if (manifestEpoch > 0)
     {
-        state->ota_last_ts = manifestEpoch;
+        (void)time_format::formatIsoUtc(manifestEpoch, state->ota_last_ts, sizeof(state->ota_last_ts));
     }
     int manifestCmp = 0;
     bool manifestCmpValid = false;
@@ -2551,7 +2552,7 @@ static void ota_finishSuccess(DeviceState *state)
             }
             else
             {
-                state->ota_last_success_ts = epochNow;
+                (void)time_format::formatIsoUtc(epochNow, state->ota_last_success_ts, sizeof(state->ota_last_success_ts));
             }
             storage_saveOtaLastSuccess(epochNow);
         }

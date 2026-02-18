@@ -1,8 +1,8 @@
 #include "telemetry_registry.h"
 #include <string.h>
-#include <time.h>
 #include "domain_strings.h"
 #include "logger.h"
+#include "time_format.h"
 
 static constexpr size_t kPathSegMax = 32;
 static constexpr uint32_t kPathWarnThrottleMs = 5000;
@@ -23,26 +23,6 @@ static constexpr const char *ICON_PLAYLIST = "mdi:playlist-check";
 
 using domain_strings::to_string;
 using domain_strings::c_str;
-
-static bool epochSecondsToIso8601(uint32_t epochSeconds, char *out, size_t outSize)
-{
-    // Home Assistant timestamp device_class expects ISO8601-like date-time strings.
-    if (!out || outSize < 21 || epochSeconds < 1600000000u)
-    {
-        return false;
-    }
-
-    time_t t = (time_t)epochSeconds;
-    struct tm tmUtc;
-    memset(&tmUtc, 0, sizeof(tmUtc));
-    if (!gmtime_r(&t, &tmUtc))
-    {
-        return false;
-    }
-
-    const size_t n = strftime(out, outSize, "%Y-%m-%dT%H:%M:%SZ", &tmUtc);
-    return n > 0;
-}
 
 static bool writeAtPath(JsonObject &root, const char *dottedPath, const char *value, bool allowEmpty = true)
 {
@@ -74,6 +54,47 @@ static bool writeAtPath(JsonObject &root, const char *dottedPath, const char *va
         if (!dot)
         {
             obj[key] = v;
+            return true;
+        }
+
+        JsonVariant child = obj[key];
+        if (!child.is<JsonObject>())
+        {
+            child = obj.createNestedObject(key);
+        }
+        obj = child.as<JsonObject>();
+        p = dot + 1;
+    }
+
+    return false;
+}
+
+static bool writeAtPathNull(JsonObject &root, const char *dottedPath)
+{
+    if (!dottedPath || dottedPath[0] == '\0')
+        return false;
+    JsonObject obj = root;
+    const char *p = dottedPath;
+    while (p && *p)
+    {
+        const char *dot = strchr(p, '.');
+        size_t len = dot ? (size_t)(dot - p) : strlen(p);
+        if (len == 0)
+            return false;
+        if (len >= kPathSegMax)
+        {
+            logger_logEvery("telemetry_path_too_long", kPathWarnThrottleMs, LogLevel::WARN, LogDomain::MQTT,
+                            "Telemetry path segment too long path=%s", dottedPath);
+            return false;
+        }
+
+        char key[kPathSegMax];
+        memcpy(key, p, len);
+        key[len] = '\0';
+
+        if (!dot)
+        {
+            obj[key] = nullptr;
             return true;
         }
 
@@ -564,27 +585,29 @@ static bool write_ota_target_version_flat(const DeviceState &s, JsonObject &root
 
 static bool write_ota_last_ts_flat(const DeviceState &s, JsonObject &root)
 {
-    uint32_t ts = s.ota_last_ts;
-    if (ts == 0)
+    if (time_format::isValidIsoUtc(s.ota_last_ts))
     {
-        ts = s.ota.completed_ts ? s.ota.completed_ts : s.ota.started_ts;
+        return writeAtPath(root, "ota_last_ts", s.ota_last_ts, true);
     }
-    char iso8601[25];
-    if (!epochSecondsToIso8601(ts, iso8601, sizeof(iso8601)))
+
+    // Backward-safe fallback: derive from active/result epochs if mirror string is empty.
+    char iso8601[ISO8601_UTC_MAX] = {0};
+    const uint32_t fallbackTs = s.ota.completed_ts ? s.ota.completed_ts : s.ota.started_ts;
+    if (time_format::formatIsoUtc(fallbackTs, iso8601, sizeof(iso8601)))
     {
-        return false;
+        return writeAtPath(root, "ota_last_ts", iso8601, true);
     }
-    return writeAtPath(root, "ota_last_ts", iso8601, true);
+
+    return writeAtPathNull(root, "ota_last_ts");
 }
 
 static bool write_ota_last_success_ts(const DeviceState &s, JsonObject &root)
 {
-    char iso8601[25];
-    if (!epochSecondsToIso8601(s.ota_last_success_ts, iso8601, sizeof(iso8601)))
+    if (!time_format::isValidIsoUtc(s.ota_last_success_ts))
     {
-        return false;
+        return writeAtPathNull(root, "ota_last_success_ts");
     }
-    return writeAtPath(root, "ota_last_success_ts", iso8601, true);
+    return writeAtPath(root, "ota_last_success_ts", s.ota_last_success_ts, true);
 }
 
 static bool write_ota_status(const DeviceState &s, JsonObject &root)

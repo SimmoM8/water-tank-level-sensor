@@ -7,6 +7,7 @@
 #include <freertos/queue.h>
 
 #include "mqtt_transport.h"
+#include "time_format.h"
 
 enum class OtaEventType : uint8_t
 {
@@ -438,7 +439,7 @@ bool ota_events_drainAndApply(DeviceState *state)
         const time_t now = time(nullptr);
         if (now >= 1600000000)
         {
-            state->ota_last_ts = (uint32_t)now;
+            (void)time_format::formatIsoUtc((uint32_t)now, state->ota_last_ts, sizeof(state->ota_last_ts));
         }
     }
     if (pending.clearActive)
@@ -455,7 +456,7 @@ bool ota_events_drainAndApply(DeviceState *state)
     }
     if (pending.hasLastSuccessTs)
     {
-        state->ota_last_success_ts = pending.lastSuccessTs;
+        (void)time_format::formatIsoUtc(pending.lastSuccessTs, state->ota_last_success_ts, sizeof(state->ota_last_success_ts));
     }
     if (pending.requestPublish)
     {

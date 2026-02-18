@@ -19,6 +19,7 @@ static constexpr size_t RESET_REASON_MAX = 24;
 static constexpr size_t CRASH_LOOP_REASON_MAX = 24;
 static constexpr size_t REBOOT_INTENT_LABEL_MAX = 16;
 static constexpr size_t SAFE_MODE_REASON_MAX = 32;
+static constexpr size_t ISO8601_UTC_MAX = 25;
 
 // --- C++ enums (stronger than magic ints/strings) ---
 enum class SenseMode : uint8_t
@@ -202,8 +203,8 @@ struct DeviceState
     uint8_t ota_progress = 0;                         // mirror of ota.progress
     char ota_error[OTA_ERROR_MAX] = {0};              // mirror/summary of ota.result.message
     char ota_target_version[OTA_TARGET_VERSION_MAX] = {0}; // mirror of ota.version or manifest
-    uint32_t ota_last_ts = 0;                         // epoch seconds mirror of ota.started_ts/completed_ts
-    uint32_t ota_last_success_ts = 0;                 // epoch seconds of last successful OTA
+    char ota_last_ts[ISO8601_UTC_MAX] = {0};          // ISO8601 UTC, empty if unavailable
+    char ota_last_success_ts[ISO8601_UTC_MAX] = {0};  // ISO8601 UTC, empty if unavailable
     bool update_available = false;
     bool ota_force = false;                           // default force behavior for ota_pull
     bool ota_reboot = true;                           // default reboot behavior for ota_pull
