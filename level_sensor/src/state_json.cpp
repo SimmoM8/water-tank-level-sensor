@@ -2,11 +2,17 @@
 #include <ArduinoJson.h>
 #include <string.h>
 #include "telemetry_registry.h"
-#include "logger.h"
 
-// Contract: outBuf must be non-null; outSize must allow at least "{}\\0".
-// Returns true only if the JSON is fully serialized and non-empty.
-bool buildStateJson(const DeviceState &s, char *outBuf, size_t outSize)
+namespace
+{
+static uint16_t clampToU16(size_t value)
+{
+    return value > 0xFFFFu ? 0xFFFFu : static_cast<uint16_t>(value);
+}
+} // namespace
+
+// Contract: outBuf must be non-null and outSize must allow a null-terminated JSON payload.
+StateJsonError buildStateJson(const DeviceState &s, char *outBuf, size_t outSize, StateJsonDiag *diag)
 {
     // Capacity rationale (ArduinoJson v6):
     // - Objects created by dotted paths: root + device + wifi + time + mqtt + probe + calibration + level + config + ota + ota.active + ota.result + last_cmd = 13
@@ -87,13 +93,18 @@ bool buildStateJson(const DeviceState &s, char *outBuf, size_t outSize)
 
     static constexpr size_t kJsonKeyBytes = 840; // ~80 keys * avg 10 bytes + headroom
     static constexpr size_t kStateJsonCapacity = kJsonObjectCapacity + kJsonStringCapacity + kJsonKeyBytes;
-    static constexpr size_t kMinJsonSize = 4; // "{}" + NUL
-    static constexpr uint32_t kWarnThrottleMs = 5000;
-    static constexpr uint32_t kPreviewThrottleMs = 5000;
+    static constexpr size_t kMinJsonSize = 2; // "{}"
 
-    if (!outBuf || outSize < kMinJsonSize)
+    if (diag)
     {
-        return false;
+        memset(diag, 0, sizeof(*diag));
+        diag->outSize = clampToU16(outSize);
+        diag->jsonCapacity = clampToU16(kStateJsonCapacity);
+    }
+
+    if (!outBuf || outSize == 0)
+    {
+        return StateJsonError::OUT_TOO_SMALL;
     }
     outBuf[0] = '\0';
 
@@ -115,40 +126,61 @@ bool buildStateJson(const DeviceState &s, char *outBuf, size_t outSize)
         }
     }
 
+    if (diag)
+    {
+        diag->fields = fieldsCount > 0xFFu ? 0xFFu : static_cast<uint8_t>(fieldsCount);
+        diag->writes = meaningfulWrites > 0xFFu ? 0xFFu : static_cast<uint8_t>(meaningfulWrites);
+    }
+
+    const bool emptyRoot = root.isNull() || root.size() == 0 || meaningfulWrites == 0;
     const size_t required = measureJson(doc);
-    const bool fits = (required + 1) <= outSize;
-    const size_t written = fits ? serializeJson(doc, outBuf, outSize) : 0;
-    const bool emptyRoot = root.isNull() || root.size() == 0;
     const bool overflowed = doc.overflowed();
-    const bool ok = (meaningfulWrites > 0) && (required > 2) && fits && (written == required) && !overflowed;
-    if (!ok)
+    if (diag)
+    {
+        diag->required = clampToU16(required);
+        diag->empty_root = emptyRoot;
+        diag->overflowed = overflowed;
+    }
+
+    if (emptyRoot || required < kMinJsonSize)
+    {
+        return StateJsonError::EMPTY;
+    }
+
+    if (overflowed)
+    {
+        return StateJsonError::DOC_OVERFLOW;
+    }
+
+    if (required >= outSize)
+    {
+        return StateJsonError::OUT_TOO_SMALL;
+    }
+
+    const size_t written = serializeJson(doc, outBuf, outSize);
+    if (diag)
+    {
+        diag->bytes = clampToU16(written);
+    }
+
+    if (written == 0)
     {
         outBuf[0] = '\0';
-        logger_logEvery("state_json_build_failed", kWarnThrottleMs, LogLevel::WARN, LogDomain::MQTT,
-                        "State JSON build failed bytes=%u required=%u outSize=%u fields=%u writes=%u jsonCapacity=%u empty_root=%s overflowed=%s",
-                        (unsigned)written,
-                        (unsigned)required,
-                        (unsigned)outSize,
-                        (unsigned)fieldsCount,
-                        (unsigned)meaningfulWrites,
-                        (unsigned)kStateJsonCapacity,
-                        emptyRoot ? "true" : "false",
-                        overflowed ? "true" : "false");
-        return false;
+        return StateJsonError::SERIALIZE_FAILED;
+    }
+
+    if (written >= outSize)
+    {
+        outBuf[0] = '\0';
+        return StateJsonError::OUT_TOO_SMALL;
     }
 
     outBuf[written] = '\0';
-
-    // Debug small payloads only (throttled to avoid spam) without logging raw JSON.
-    if (written < 256)
+    if (outBuf[0] != '{')
     {
-        const size_t previewLen = written < 120 ? written : 120;
-        char preview[121];
-        memcpy(preview, outBuf, previewLen);
-        preview[previewLen] = '\0';
-        logger_logEvery("state_json_preview", kPreviewThrottleMs, LogLevel::DEBUG, LogDomain::MQTT,
-                        "State JSON len=%u preview=%s", (unsigned)written, preview);
+        outBuf[0] = '\0';
+        return StateJsonError::INTERNAL_MISMATCH;
     }
 
-    return true;
+    return StateJsonError::OK;
 }

@@ -23,6 +23,9 @@
 #ifndef CFG_LOG_DEV
 #define CFG_LOG_DEV 0
 #endif
+#ifndef CFG_OTA_DEV_LOGS
+#define CFG_OTA_DEV_LOGS CFG_LOG_DEV
+#endif
 
 static WiFiClient wifiClient;
 static PubSubClient mqtt(wifiClient);
@@ -60,6 +63,10 @@ static const uint32_t RETRY_INTERVAL_MS = 5000;
 static bool s_loggedFirstConnectAttempt = false;
 static bool s_seenConnectFailure = false;
 static bool s_lastConnected = false;
+static bool s_stateBuildPaused = false;
+static uint32_t s_stateBuildFailureCount = 0;
+static uint32_t s_stateBuildLastLogMs = 0;
+static const uint32_t STATE_BUILD_STILL_PAUSED_MS = 60000;
 
 static const char *AVAIL_ONLINE = "online";
 static const char *AVAIL_OFFLINE = "offline";
@@ -69,28 +76,74 @@ const char *mqtt_stateToString(int state)
     switch (state)
     {
     case -4:
-        return "MQTT_CONNECTION_TIMEOUT";
+        return "timeout";
     case -3:
-        return "MQTT_CONNECTION_LOST";
+        return "connection_lost";
     case -2:
-        return "MQTT_CONNECT_FAILED";
+        return "connect_failed";
     case -1:
-        return "MQTT_DISCONNECTED";
+        return "disconnected";
     case 0:
-        return "MQTT_CONNECTED";
+        return "connected";
     case 1:
-        return "MQTT_CONNECT_BAD_PROTOCOL";
+        return "bad_protocol";
     case 2:
-        return "MQTT_CONNECT_BAD_CLIENT_ID";
+        return "bad_client_id";
     case 3:
-        return "MQTT_CONNECT_UNAVAILABLE";
+        return "unavailable";
     case 4:
-        return "MQTT_CONNECT_BAD_CREDENTIALS";
+        return "bad_credentials";
     case 5:
-        return "MQTT_CONNECT_UNAUTHORIZED";
+        return "not_authorized";
     default:
         return "unknown";
     }
+}
+
+static bool mqtt_devLogsEnabled()
+{
+    return (CFG_LOG_DEV != 0) || (CFG_OTA_DEV_LOGS != 0);
+}
+
+static const char *stateJsonErrorToShort(StateJsonError err)
+{
+    switch (err)
+    {
+    case StateJsonError::OK:
+        return "ok";
+    case StateJsonError::EMPTY:
+        return "empty";
+    case StateJsonError::DOC_OVERFLOW:
+        return "doc_overflow";
+    case StateJsonError::OUT_TOO_SMALL:
+        return "out_too_small";
+    case StateJsonError::SERIALIZE_FAILED:
+        return "serialize_failed";
+    case StateJsonError::INTERNAL_MISMATCH:
+        return "internal_mismatch";
+    default:
+        return "unknown";
+    }
+}
+
+static void logStateJsonDiag(const char *prefix, StateJsonError err, const StateJsonDiag &diag)
+{
+    if (!mqtt_devLogsEnabled())
+    {
+        return;
+    }
+    LOG_DEBUG(LogDomain::MQTT,
+              "%s reason=%s bytes=%u required=%u outSize=%u jsonCapacity=%u fields=%u writes=%u empty_root=%s overflowed=%s",
+              prefix,
+              stateJsonErrorToShort(err),
+              (unsigned)diag.bytes,
+              (unsigned)diag.required,
+              (unsigned)diag.outSize,
+              (unsigned)diag.jsonCapacity,
+              (unsigned)diag.fields,
+              (unsigned)diag.writes,
+              diag.empty_root ? "true" : "false",
+              diag.overflowed ? "true" : "false");
 }
 
 static void buildPayloadPreview(const uint8_t *payload, size_t len, char *out, size_t outSize)
@@ -288,24 +341,24 @@ static bool mqtt_ensureConnected()
         if ((uint32_t)(now - s_lastAttemptMs) >= RETRY_INTERVAL_MS)
         {
             const bool hasUser = (s_cfg.user && s_cfg.user[0] != '\0');
-            const char *authMode = hasUser ? "user" : "none";
-            if (!s_loggedFirstConnectAttempt)
+            const char *authMode = hasUser ? "yes" : "no";
+            const bool firstConnectAttempt = !s_loggedFirstConnectAttempt;
+            if (firstConnectAttempt)
             {
                 s_loggedFirstConnectAttempt = true;
-                if (CFG_LOG_DEV == 0)
-                {
-                    LOG_INFO(LogDomain::MQTT,
-                             "MQTT connecting host=%s port=%d clientId=%s auth=%s willTopic=%s",
-                             s_cfg.host,
-                             s_cfg.port,
-                             s_cfg.clientId,
-                             authMode,
-                             s_topics.avail);
-                }
+                LOG_INFO(LogDomain::MQTT,
+                         "MQTT connecting host=%s port=%d clientId=%s auth=%s",
+                         s_cfg.host,
+                         s_cfg.port,
+                         s_cfg.clientId,
+                         authMode);
             }
-            logger_logEvery("mqtt_connecting", 30000, LogLevel::INFO, LogDomain::MQTT,
-                            "MQTT connecting host=%s port=%d clientId=%s auth=%s willTopic=%s",
-                            s_cfg.host, s_cfg.port, s_cfg.clientId, authMode, s_topics.avail);
+            else
+            {
+                logger_logEvery("mqtt_connecting", 30000, LogLevel::INFO, LogDomain::MQTT,
+                                "MQTT connecting host=%s port=%d clientId=%s auth=%s",
+                                s_cfg.host, s_cfg.port, s_cfg.clientId, authMode);
+            }
             const bool ok = mqtt.connect(
                 s_cfg.clientId,
                 s_cfg.user,
@@ -321,15 +374,17 @@ static bool mqtt_ensureConnected()
                 mqtt.publish(s_topics.avail, AVAIL_ONLINE, true);
                 const bool subOk = mqtt_subscribe();
                 mqtt_requestStatePublish(); // force fresh retained snapshot after reconnect
-                LOG_INFO(LogDomain::MQTT, "MQTT connected; presence=%s (online retained)", s_topics.avail);
-                if (subOk)
-                {
-                    LOG_INFO(LogDomain::MQTT, "MQTT subscribed cmdTopic=%s", s_topics.cmd);
-                }
+                const char *sessionMode = "clean";
+                LOG_INFO(LogDomain::MQTT, "MQTT connected (session=%s)", sessionMode);
+                LOG_INFO(LogDomain::MQTT, "MQTT subscribed cmd=%s", s_topics.cmd);
 #if CFG_LOG_DEV
-                LOG_INFO(LogDomain::MQTT, "MQTT connected session host=%s port=%d clientId=%s auth=%s subscribe=%s",
-                         s_cfg.host, s_cfg.port, s_cfg.clientId, authMode, subOk ? "ok" : "partial_fail");
+                LOG_INFO(LogDomain::MQTT, "MQTT connected details host=%s port=%d clientId=%s auth=%s subscribe=%s presence=%s",
+                         s_cfg.host, s_cfg.port, s_cfg.clientId, authMode, subOk ? "ok" : "fail", s_topics.avail);
 #endif
+                if (!subOk)
+                {
+                    LOG_WARN(LogDomain::MQTT, "MQTT subscribe failed cmd=%s", s_topics.cmd);
+                }
             }
             else
             {
@@ -338,18 +393,21 @@ static bool mqtt_ensureConnected()
                 if (!s_seenConnectFailure)
                 {
                     s_seenConnectFailure = true;
-                    LOG_WARN(LogDomain::MQTT, "MQTT connect failed state=%d (%s)", state, stateStr);
+                    LOG_WARN(LogDomain::MQTT, "MQTT connect failed: %s (rc=%d)", stateStr, state);
                     if (state == 4 || state == 5)
                     {
                         LOG_WARN(LogDomain::MQTT, "Check MQTT_USER/MQTT_PASS (secrets.h) and broker ACL");
                     }
                 }
-                logger_logEvery("mqtt_connect_fail", 30000, LogLevel::WARN, LogDomain::MQTT,
-                                "MQTT connect failed state=%d (%s)", state, stateStr);
-                if (state == 4 || state == 5)
+                else
                 {
-                    logger_logEvery("mqtt_connect_auth_hint", 30000, LogLevel::WARN, LogDomain::MQTT,
-                                    "Check MQTT_USER/MQTT_PASS (secrets.h) and broker ACL");
+                    logger_logEvery("mqtt_connect_fail", 30000, LogLevel::WARN, LogDomain::MQTT,
+                                    "MQTT connect failed: %s (rc=%d)", stateStr, state);
+                    if (state == 4 || state == 5)
+                    {
+                        logger_logEvery("mqtt_connect_auth_hint", 30000, LogLevel::WARN, LogDomain::MQTT,
+                                        "Check MQTT_USER/MQTT_PASS (secrets.h) and broker ACL");
+                    }
                 }
             }
         }
@@ -371,16 +429,37 @@ static bool publishState(const DeviceState &state)
         return false;
 
     static char buf[2048]; // sized to fit expanded state payload
-    static uint32_t lastFailLogMs = 0;
-    if (!buildStateJson(state, buf, sizeof(buf)))
+    StateJsonDiag diag{};
+    const StateJsonError jsonErr = buildStateJson(state, buf, sizeof(buf), &diag);
+    if (jsonErr != StateJsonError::OK)
     {
         const uint32_t now = millis();
-        if (now - lastFailLogMs > 5000)
+        ++s_stateBuildFailureCount;
+        if (!s_stateBuildPaused)
         {
-            LOG_WARN(LogDomain::MQTT, "Skipping state publish: buildStateJson failed");
-            lastFailLogMs = now;
+            s_stateBuildPaused = true;
+            s_stateBuildLastLogMs = now;
+            LOG_WARN(LogDomain::MQTT, "State publish paused: payload build failed (reason=%s)",
+                     stateJsonErrorToShort(jsonErr));
+            logStateJsonDiag("State JSON diag", jsonErr, diag);
+        }
+        else if ((uint32_t)(now - s_stateBuildLastLogMs) >= STATE_BUILD_STILL_PAUSED_MS)
+        {
+            s_stateBuildLastLogMs = now;
+            LOG_WARN(LogDomain::MQTT, "State publish still paused: %s (x%u failures)",
+                     stateJsonErrorToShort(jsonErr),
+                     (unsigned)s_stateBuildFailureCount);
+            logStateJsonDiag("State JSON diag", jsonErr, diag);
         }
         return false;
+    }
+
+    if (s_stateBuildPaused)
+    {
+        LOG_INFO(LogDomain::MQTT, "State publish resumed");
+        s_stateBuildPaused = false;
+        s_stateBuildFailureCount = 0;
+        s_stateBuildLastLogMs = 0;
     }
 
     // safe length calc without strnlen
