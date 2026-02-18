@@ -122,7 +122,9 @@ struct PullOtaJob
     uint32_t progressLastPrintMs = 0;
     uint32_t progressLastSampleMs = 0;
     uint32_t progressLastSampleBytes = 0;
+    uint32_t progressLastLineLen = 0;
     float progressSpeedEmaBps = 0.0f;
+    uint32_t startedMs = 0;
     uint32_t noDataSinceMs = 0;
     uint8_t zeroReadStreak = 0;
     uint8_t netRetryCount = 0;
@@ -148,7 +150,9 @@ static PullOtaJob g_job;
 static const char *s_lastTlsTrustMode = "none";
 static int s_lastTlsErrCode = 0;
 static char s_lastTlsErrMsg[128] = {0};
+#if CFG_OTA_DEV_LOGS
 static bool s_otaHeartbeatEnabled = true;
+#endif
 static TaskHandle_t s_otaTaskHandle = nullptr;
 static uint32_t s_blockAttemptId = 1u;
 static uint32_t s_lastBlockedAttemptId = 0u;
@@ -296,6 +300,9 @@ static void ota_progressPrint(uint32_t bytesWritten, uint32_t bytesTotal, bool f
 static void ota_progressFail(const char *reason);
 static void ota_nextBlockAttempt();
 static void ota_logBlocked(const char *phase, const char *reason, const char *fmt, ...);
+static const char *ota_sourceFromRequestId(const char *requestId);
+static void ota_formatSizeCompact(uint32_t bytes, char *out, size_t outLen);
+static void ota_logSuccessBanner(const char *version, uint32_t elapsedMs);
 static void ota_clearActive(DeviceState *state);
 static void ota_emitCancelledResult(const char *reason);
 static const char *ota_imgStateToString(esp_ota_img_states_t state);
@@ -395,7 +402,9 @@ static void ota_progressReset()
     g_job.progressLastPrintMs = 0;
     g_job.progressLastSampleMs = 0;
     g_job.progressLastSampleBytes = 0;
+    g_job.progressLastLineLen = 0;
     g_job.progressSpeedEmaBps = 0.0f;
+    g_job.startedMs = 0;
 }
 
 static void ota_progressEnsureLineBreak()
@@ -405,14 +414,8 @@ static void ota_progressEnsureLineBreak()
 
 static void ota_progressPrint(uint32_t bytesWritten, uint32_t bytesTotal, bool force, bool completed)
 {
-#if CFG_OTA_DEV_LOGS
-    (void)bytesWritten;
-    (void)bytesTotal;
-    (void)force;
-    (void)completed;
-    return;
-#else
     constexpr uint32_t kMinUpdateIntervalMs = 125u; // cap at ~8 Hz
+    const bool newlineMode = (CFG_OTA_DEV_LOGS != 0) || (CFG_OTA_PROGRESS_NEWLINES != 0);
     const bool hasTotal = bytesTotal > 0u;
     const uint32_t nowMs = millis();
     const uint32_t clampedBytes = (hasTotal && bytesWritten > bytesTotal) ? bytesTotal : bytesWritten;
@@ -453,6 +456,10 @@ static void ota_progressPrint(uint32_t bytesWritten, uint32_t bytesTotal, bool f
     {
         return;
     }
+    if (g_job.startedMs == 0u)
+    {
+        g_job.startedMs = nowMs;
+    }
 
     if (g_job.progressLastSampleMs > 0 && nowMs > g_job.progressLastSampleMs &&
         clampedBytes >= g_job.progressLastSampleBytes)
@@ -491,7 +498,12 @@ static void ota_progressPrint(uint32_t bytesWritten, uint32_t bytesTotal, bool f
     }
 
     char etaBuf[8] = "--:--";
-    if (hasTotal && g_job.progressSpeedEmaBps > 1.0f && clampedBytes < bytesTotal)
+    const uint32_t elapsedMs = (g_job.startedMs > 0 && nowMs >= g_job.startedMs) ? (nowMs - g_job.startedMs) : 0u;
+    if (hasTotal &&
+        g_job.progressSpeedEmaBps > 1.0f &&
+        clampedBytes < bytesTotal &&
+        elapsedMs >= 1500u &&
+        clampedBytes >= 32768u)
     {
         const float remain = (float)(bytesTotal - clampedBytes);
         uint32_t etaSec = (uint32_t)(remain / g_job.progressSpeedEmaBps);
@@ -539,22 +551,38 @@ static void ota_progressPrint(uint32_t bytesWritten, uint32_t bytesTotal, bool f
     line[sizeof(line) - 1] = '\0';
 
     logger_serialLock();
-#if CFG_OTA_PROGRESS_NEWLINES
-    Serial.println(line);
-    logger_serialSetInlineActive(false);
-#else
-    Serial.print('\r');
-    Serial.print(line);
-    if (completed)
+    if (newlineMode)
     {
-        Serial.println();
+        Serial.println(line);
         logger_serialSetInlineActive(false);
+        g_job.progressLastLineLen = 0u;
     }
     else
     {
-        logger_serialSetInlineActive(true);
+        const size_t lineLen = strlen(line);
+        Serial.print('\r');
+        Serial.print(line);
+        if (g_job.progressLastLineLen > lineLen)
+        {
+            const size_t extra = g_job.progressLastLineLen - lineLen;
+            for (size_t i = 0; i < extra; ++i)
+            {
+                Serial.print(' ');
+            }
+            Serial.print('\r');
+            Serial.print(line);
+        }
+        g_job.progressLastLineLen = lineLen;
+        if (completed)
+        {
+            Serial.println();
+            logger_serialSetInlineActive(false);
+        }
+        else
+        {
+            logger_serialSetInlineActive(true);
+        }
     }
-#endif
 
     g_job.progressStarted = true;
     g_job.progressLastPrintMs = nowMs;
@@ -565,25 +593,22 @@ static void ota_progressPrint(uint32_t bytesWritten, uint32_t bytesTotal, bool f
     {
         Serial.println("Download done.");
         g_job.progressCompleted = true;
+        g_job.progressLastLineLen = 0u;
     }
     logger_serialUnlock();
-#endif
 }
 
 static void ota_progressFail(const char *reason)
 {
-#if CFG_OTA_DEV_LOGS
-    (void)reason;
-#else
     const char *msg = (reason && reason[0] != '\0') ? reason : "error";
     logger_serialEnsureLineBreak();
     logger_serialLock();
     Serial.print("Download failed: ");
     Serial.println(msg);
     logger_serialSetInlineActive(false);
+    g_job.progressLastLineLen = 0u;
     logger_serialUnlock();
     g_job.progressCompleted = true;
-#endif
 }
 
 static void ota_nextBlockAttempt()
@@ -619,6 +644,71 @@ static void ota_logBlocked(const char *phase, const char *reason, const char *fm
     va_end(args);
     msg[sizeof(msg) - 1] = '\0';
     LOG_WARN(LogDomain::OTA, "%s", msg);
+}
+
+static const char *ota_sourceFromRequestId(const char *requestId)
+{
+    if (!requestId || requestId[0] == '\0')
+    {
+        return "unknown";
+    }
+    if (strstr(requestId, "serial") != nullptr)
+    {
+        return "serial";
+    }
+    if (strstr(requestId, "manifest") != nullptr)
+    {
+        return "manifest";
+    }
+    return "request";
+}
+
+static void ota_formatSizeCompact(uint32_t bytes, char *out, size_t outLen)
+{
+    if (!out || outLen == 0)
+    {
+        return;
+    }
+    if (bytes >= (1024u * 1024u))
+    {
+        const float mb = (float)bytes / (1024.0f * 1024.0f);
+        snprintf(out, outLen, "%.2f MB", mb);
+    }
+    else if (bytes >= 1024u)
+    {
+        const float kb = (float)bytes / 1024.0f;
+        snprintf(out, outLen, "%.1f kB", kb);
+    }
+    else
+    {
+        snprintf(out, outLen, "%lu B", (unsigned long)bytes);
+    }
+    out[outLen - 1] = '\0';
+}
+
+static void ota_logSuccessBanner(const char *version, uint32_t elapsedMs)
+{
+    const uint32_t seconds = elapsedMs / 1000u;
+    const uint32_t mins = seconds / 60u;
+    const uint32_t secs = seconds % 60u;
+    const char *v = (version && version[0] != '\0') ? version : "<unknown>";
+    ota_progressEnsureLineBreak();
+    logger_serialLock();
+#if CFG_LOG_COLOR
+    Serial.print("\x1B[1m\x1B[32mSUCCESS\x1B[0m ");
+    Serial.print("\x1B[36m");
+    Serial.print(v);
+    Serial.print("\x1B[0m");
+#else
+    Serial.print("SUCCESS ");
+    Serial.print(v);
+#endif
+    Serial.print(" in ");
+    char dur[8];
+    snprintf(dur, sizeof(dur), "%02lu:%02lu", (unsigned long)mins, (unsigned long)secs);
+    Serial.println(dur);
+    logger_serialSetInlineActive(false);
+    logger_serialUnlock();
 }
 
 static void ota_logPartitionSnapshot(const char *phase)
@@ -767,7 +857,8 @@ static void ota_emitPartitionDiag(const char *phase)
 
 static bool ota_detachCurrentTaskWdt(const char *phase)
 {
-    const esp_err_t err = esp_task_wdt_delete(nullptr);
+    TaskHandle_t task = xTaskGetCurrentTaskHandle();
+    const esp_err_t err = esp_task_wdt_delete(task);
     if (err == ESP_OK)
     {
 #if CFG_OTA_DEV_LOGS
@@ -776,15 +867,24 @@ static bool ota_detachCurrentTaskWdt(const char *phase)
         return true;
     }
 
-    if (err == ESP_ERR_INVALID_STATE)
+    const bool benign = (err == ESP_ERR_INVALID_STATE) ||
+                        (err == ESP_ERR_NOT_FOUND) ||
+                        (err == ESP_ERR_INVALID_ARG);
+    if (benign)
     {
 #if CFG_OTA_DEV_LOGS
-        LOG_DEBUG(LogDomain::OTA, "WDT detach benign skip phase=%s err=%d", phase ? phase : "", (int)err);
+        LOG_DEBUG(LogDomain::OTA, "WDT detach benign skip phase=%s err=%d name=%s",
+                  phase ? phase : "",
+                  (int)err,
+                  esp_err_to_name(err));
 #endif
         return false;
     }
 
-    LOG_WARN(LogDomain::OTA, "WDT detach skipped phase=%s err=%d", phase ? phase : "", (int)err);
+    LOG_WARN(LogDomain::OTA, "WDT detach skipped phase=%s err=%d name=%s",
+             phase ? phase : "",
+             (int)err,
+             esp_err_to_name(err));
     return false;
 }
 
@@ -794,7 +894,8 @@ static void ota_reattachCurrentTaskWdt(bool detached, const char *phase)
     {
         return;
     }
-    const esp_err_t err = esp_task_wdt_add(nullptr);
+    TaskHandle_t task = xTaskGetCurrentTaskHandle();
+    const esp_err_t err = esp_task_wdt_add(task);
     if (err == ESP_OK)
     {
 #if CFG_OTA_DEV_LOGS
@@ -802,14 +903,23 @@ static void ota_reattachCurrentTaskWdt(bool detached, const char *phase)
 #endif
         return;
     }
-    if (err == ESP_ERR_INVALID_STATE)
+    const bool benign = (err == ESP_ERR_INVALID_STATE) ||
+                        (err == ESP_ERR_NOT_FOUND) ||
+                        (err == ESP_ERR_INVALID_ARG);
+    if (benign)
     {
 #if CFG_OTA_DEV_LOGS
-        LOG_DEBUG(LogDomain::OTA, "WDT reattach benign skip phase=%s err=%d", phase ? phase : "", (int)err);
+        LOG_DEBUG(LogDomain::OTA, "WDT reattach benign skip phase=%s err=%d name=%s",
+                  phase ? phase : "",
+                  (int)err,
+                  esp_err_to_name(err));
 #endif
         return;
     }
-    LOG_ERROR(LogDomain::OTA, "WDT reattach failed phase=%s err=%d", phase ? phase : "", (int)err);
+    LOG_ERROR(LogDomain::OTA, "WDT reattach failed phase=%s err=%d name=%s",
+              phase ? phase : "",
+              (int)err,
+              esp_err_to_name(err));
 }
 
 static inline void ota_captureTlsError(WiFiClientSecure &client)
@@ -1118,7 +1228,9 @@ void ota_begin(DeviceState *state, const char *hostName, const char *password)
     {
         LOG_ERROR(LogDomain::OTA, "Failed to start otaTask worker");
     }
+#if CFG_OTA_DEV_LOGS
     LOG_INFO(LogDomain::OTA, "OTA manifest url configured: %s", CFG_OTA_MANIFEST_URL);
+#endif
 }
 
 void ota_handle()
@@ -1497,6 +1609,8 @@ bool ota_pullStart(DeviceState *state,
                    char *errBuf,
                    size_t errBufLen)
 {
+    ota_nextBlockAttempt();
+
     if (!state)
     {
         setErr(errBuf, errBufLen, "missing_state");
@@ -1521,6 +1635,11 @@ bool ota_pullStart(DeviceState *state,
         return false;
     }
 
+    const char *source = ota_sourceFromRequestId(request_id);
+    LOG_INFO(LogDomain::OTA, "OTA Update request (%s) -> target %s",
+             source,
+             (version && version[0] != '\0') ? version : "<unknown>");
+
     // Enforce HTTPS for pull-OTA URLs
     if (strncasecmp(url, "https://", 8) != 0)
     {
@@ -1534,6 +1653,9 @@ bool ota_pullStart(DeviceState *state,
 
     if (version && version[0] != '\0')
     {
+        LOG_INFO(LogDomain::OTA, "Checking update... (%s -> %s)",
+                 (state->device.fw && state->device.fw[0] != '\0') ? state->device.fw : "<unknown>",
+                 version);
         Version targetVersion;
         if (!parseVersion(version, &targetVersion))
         {
@@ -1556,12 +1678,14 @@ bool ota_pullStart(DeviceState *state,
         if (currentValid)
         {
             cmp = compareVersion(targetVersion, currentVersion);
+#if CFG_OTA_DEV_LOGS
             LOG_INFO(LogDomain::OTA,
                      "OTA version compare current=%s target=%s cmp=%d force=%s",
                      currentFw,
                      version,
                      cmp,
                      force ? "true" : "false");
+#endif
 
             if (!force && cmp < 0)
             {
@@ -1587,11 +1711,13 @@ bool ota_pullStart(DeviceState *state,
         }
         else
         {
+#if CFG_OTA_DEV_LOGS
             LOG_INFO(LogDomain::OTA,
                      "OTA version compare skipped current=%s target=%s cmp=na force=%s",
                      currentFw[0] ? currentFw : "<empty>",
                      version,
                      force ? "true" : "false");
+#endif
             if (!force && currentFw[0] != '\0' && strcmp(version, currentFw) == 0)
             {
                 ota_setStatus(state, OtaStatus::SUCCESS);
@@ -1628,6 +1754,7 @@ bool ota_pullStart(DeviceState *state,
     taskJob.sha256[sizeof(taskJob.sha256) - 1] = '\0';
     taskJob.force = force;
     taskJob.reboot = reboot;
+#if CFG_OTA_DEV_LOGS
     char shaPrefix[13] = {0};
     strncpy(shaPrefix, taskJob.sha256, 12);
     shaPrefix[sizeof(shaPrefix) - 1] = '\0';
@@ -1639,6 +1766,7 @@ bool ota_pullStart(DeviceState *state,
              taskJob.sha256[0] ? shaPrefix : "<none>",
              taskJob.force ? "true" : "false",
              taskJob.reboot ? "true" : "false");
+#endif
 
     if (!ota_taskEnqueue(taskJob))
     {
@@ -1673,14 +1801,19 @@ bool ota_pullStart(DeviceState *state,
     ota_setFlat(state, "downloading", 0, "", taskJob.version, true);
     int queuedCmp = 0;
     state->update_available = ota_isStrictUpgrade(state->device.fw, taskJob.version, &queuedCmp);
+#if CFG_OTA_DEV_LOGS
     LOG_INFO(LogDomain::OTA,
              "OTA queued version relation current=%s target=%s cmp=%d update_available=%s",
              (state->device.fw && state->device.fw[0]) ? state->device.fw : "<empty>",
              taskJob.version[0] ? taskJob.version : "<empty>",
              queuedCmp,
              state->update_available ? "true" : "false");
+#else
+    (void)queuedCmp;
+#endif
 
     setErr(errBuf, errBufLen, "");
+#if CFG_OTA_DEV_LOGS
     LOG_INFO(LogDomain::OTA,
              "Pull OTA queued request_id=%s url=%s version=%s force=%s reboot=%s",
              taskJob.request_id[0] ? taskJob.request_id : "<none>",
@@ -1688,6 +1821,7 @@ bool ota_pullStart(DeviceState *state,
              taskJob.version,
              taskJob.force ? "true" : "false",
              taskJob.reboot ? "true" : "false");
+#endif
     return true;
 }
 
@@ -2113,6 +2247,7 @@ static void ota_abort(DeviceState *state, const char *reason)
 {
     ota_progressEnsureLineBreak();
     ota_trace("abort", "reason=%s", reason ? reason : "");
+#if CFG_OTA_DEV_LOGS
     LOG_WARN(LogDomain::OTA,
              "OTA abort detail reason=%s bytes_written=%lu bytes_total=%lu update_begun=%s http_begun=%s free_heap=%lu",
              reason ? reason : "",
@@ -2122,6 +2257,7 @@ static void ota_abort(DeviceState *state, const char *reason)
              g_job.httpBegun ? "true" : "false",
              (unsigned long)ESP.getFreeHeap());
     ota_logPartitionSnapshot("abort");
+#endif
 
     if (g_job.retryCount < MAX_OTA_RETRIES)
     {
@@ -2206,8 +2342,12 @@ static void ota_abort(DeviceState *state, const char *reason)
 
     g_job.active = false;
     ota_progressReset();
+#if CFG_OTA_DEV_LOGS
     LOG_ERROR(LogDomain::OTA, "ota_failed_no_reboot reason=%s", reason ? reason : "");
     LOG_WARN(LogDomain::OTA, "Pull OTA aborted reason=%s", reason ? reason : "");
+#else
+    LOG_ERROR(LogDomain::OTA, "OTA failed: %s", reason ? reason : "error");
+#endif
 }
 
 static bool ota_requireEspOk(DeviceState *state, const char *op, esp_err_t err)
@@ -2276,6 +2416,9 @@ static void ota_finishSuccess(DeviceState *state)
 
     g_job.active = false;
     ota_trace("finish_success_complete", "reboot=%s", g_job.reboot ? "true" : "false");
+    const uint32_t elapsedMs = (g_job.startedMs > 0u) ? (millis() - g_job.startedMs) : 0u;
+    ota_logSuccessBanner(g_job.version[0] ? g_job.version : nullptr, elapsedMs);
+#if CFG_OTA_DEV_LOGS
     LOG_INFO(LogDomain::OTA, "Pull OTA success");
     s_otaHeartbeatEnabled = false;
     LOG_INFO(LogDomain::OTA, "OTA heartbeat diagnostics auto-disabled after successful apply");
@@ -2285,6 +2428,7 @@ static void ota_finishSuccess(DeviceState *state)
              (unsigned long)g_job.bytesTotal,
              (unsigned long)ESP.getFreeHeap());
     ota_logPartitionSnapshot("finish_success_post_state");
+#endif
 
     if (g_job.reboot)
     {
@@ -2293,11 +2437,18 @@ static void ota_finishSuccess(DeviceState *state)
             ota_setStatus(state, OtaStatus::REBOOTING);
         }
         storage_saveRebootIntent((uint8_t)RebootIntent::OTA);
+#if CFG_OTA_DEV_LOGS
         LOG_INFO(LogDomain::OTA, "Saved reboot intent=ota");
         LOG_INFO(LogDomain::OTA, "ota_success_rebooting");
         LOG_WARN(LogDomain::OTA, "REBOOTING... reason=ota_apply_success intent=ota delay_ms=2250");
+#else
+        LOG_INFO(LogDomain::OTA, "Rebooting into %s...",
+                 g_job.version[0] ? g_job.version : "new firmware");
+#endif
         delay(250);
+#if CFG_OTA_DEV_LOGS
         LOG_INFO(LogDomain::OTA, "Restarting into new firmware...");
+#endif
         delay(2000);
         Serial.flush();
         ESP.restart();
@@ -2318,12 +2469,14 @@ void ota_processPullJobInTask(DeviceState *state, const OtaTaskJob &job)
     {
         s_otaTaskHandle = xTaskGetCurrentTaskHandle();
     }
+#if CFG_OTA_DEV_LOGS
     LOG_INFO(LogDomain::OTA,
              "otaTask processing request_id=%s target=%s force=%s reboot=%s",
              g_job.request_id[0] ? g_job.request_id : "<none>",
              g_job.version[0] ? g_job.version : "<none>",
              g_job.force ? "true" : "false",
              g_job.reboot ? "true" : "false");
+#endif
     ota_trace("task_start", "url=%s sha_prefix=%.12s",
               g_job.url[0] ? g_job.url : "<none>",
               g_job.sha256[0] ? g_job.sha256 : "<none>");
@@ -2604,17 +2757,23 @@ static void ota_tick(DeviceState *state)
             }
             if (lower.indexOf("application/octet-stream") < 0)
             {
+#if CFG_OTA_DEV_LOGS
                 LOG_WARN(LogDomain::OTA, "Unexpected content-type for firmware: %s", ctype.c_str());
+#endif
             }
         }
         else
         {
+#if CFG_OTA_DEV_LOGS
             LOG_WARN(LogDomain::OTA, "Missing Content-Type header for firmware response");
+#endif
         }
 
         int len = g_job.http.getSize();
+#if CFG_OTA_DEV_LOGS
         LOG_INFO(LogDomain::OTA, "HTTP %d len=%d ctype=%s", code, len, ctype.c_str());
         LOG_INFO(LogDomain::OTA, "Partition free space approx=%u", (unsigned)ESP.getFreeSketchSpace());
+#endif
         ota_trace("http_headers", "len=%d ctype=%s", len, ctype.c_str());
         ota_logRuntimeHealth("http_headers");
 
@@ -2636,8 +2795,14 @@ static void ota_tick(DeviceState *state)
             return;
         }
 
+        char sizeBuf[24] = {0};
+        ota_formatSizeCompact(g_job.bytesTotal, sizeBuf, sizeof(sizeBuf));
+        LOG_INFO(LogDomain::OTA, "Downloading %s (%s)",
+                 g_job.version[0] ? g_job.version : "<unknown>",
+                 sizeBuf);
+#if CFG_OTA_DEV_LOGS
         LOG_INFO(LogDomain::OTA, "HTTP len=%d -> bytesTotal=%lu", len, (unsigned long)g_job.bytesTotal);
-        ota_progressPrint(0u, g_job.bytesTotal, true, false);
+#endif
 
         WiFiClient *stream = g_job.http.getStreamPtr();
         if (!stream)
@@ -2690,9 +2855,11 @@ static void ota_tick(DeviceState *state)
         ota_trace("header_probe_ok", "magic=0x%02X bytes=%u",
                   (unsigned int)headerProbe[0],
                   (unsigned int)headerProbeLen);
+#if CFG_OTA_DEV_LOGS
         LOG_INFO(LogDomain::OTA, "Image header probe ok first_byte=0x%02X bytes=%u",
                  (unsigned int)headerProbe[0],
                  (unsigned int)headerProbeLen);
+#endif
 
         g_job.targetPartition = esp_ota_get_next_update_partition(nullptr);
         if (g_job.targetPartition == nullptr)
@@ -2705,11 +2872,23 @@ static void ota_tick(DeviceState *state)
         const size_t updateSize =
             (g_job.bytesTotal > 0) ? (size_t)g_job.bytesTotal : (size_t)OTA_SIZE_UNKNOWN;
 
+#if !CFG_OTA_DEV_LOGS
+        char freeBuf[24] = {0};
+        char imageBuf[24] = {0};
+        ota_formatSizeCompact((uint32_t)ESP.getFreeSketchSpace(), freeBuf, sizeof(freeBuf));
+        ota_formatSizeCompact((uint32_t)updateSize, imageBuf, sizeof(imageBuf));
+        LOG_INFO(LogDomain::OTA, "Installing... %s free=%s image=%s",
+                 g_job.targetPartition->label,
+                 freeBuf,
+                 imageBuf);
+#endif
+#if CFG_OTA_DEV_LOGS
         LOG_INFO(LogDomain::OTA, "esp_ota_begin partition=%s@0x%08lx size=%s (%lu)",
                  g_job.targetPartition->label,
                  (unsigned long)g_job.targetPartition->address,
                  (g_job.bytesTotal > 0) ? "known" : "unknown",
                  (unsigned long)updateSize);
+#endif
         ota_trace("ota_begin_start", "partition=%s@0x%08lx size=%lu",
                   g_job.targetPartition->label,
                   (unsigned long)g_job.targetPartition->address,
@@ -2724,11 +2903,13 @@ static void ota_tick(DeviceState *state)
         }
         ota_trace("ota_begin_ok", "handle=%lu", (unsigned long)g_job.otaHandle);
         ota_logRuntimeHealth("ota_begin_ok");
+#if CFG_OTA_DEV_LOGS
         LOG_INFO(LogDomain::OTA,
                  "esp_ota_begin ok expected_len=%lu handle=%lu free_heap=%lu",
                  (unsigned long)g_job.bytesTotal,
                  (unsigned long)g_job.otaHandle,
                  (unsigned long)ESP.getFreeHeap());
+#endif
         ota_logPartitionSnapshot("after_update_begin");
         mbedtls_sha256_init(&g_job.shaCtx);
         mbedtls_sha256_starts(&g_job.shaCtx, 0);
@@ -2921,14 +3102,17 @@ static void ota_tick(DeviceState *state)
     ota_trace("download_complete", "bytes=%lu/%lu", (unsigned long)g_job.bytesWritten, (unsigned long)g_job.bytesTotal);
     ota_logRuntimeHealth("download_complete");
 
+#if CFG_OTA_DEV_LOGS
     LOG_INFO(LogDomain::OTA,
              "OTA stream complete bytes_written=%lu bytes_total=%lu stream_connected=%s stream_avail=%d",
              (unsigned long)g_job.bytesWritten,
              (unsigned long)g_job.bytesTotal,
              stream->connected() ? "true" : "false",
              stream->available());
+#endif
 
     // Step C: finalize update
+    LOG_INFO(LogDomain::OTA, "Verifying... SHA256");
     if (state)
     {
         ota_setStatus(state, OtaStatus::VERIFYING);
@@ -2977,20 +3161,28 @@ static void ota_tick(DeviceState *state)
         {
             if (lowerHexChar(g_job.sha256[i]) != hex[i])
             {
+#if CFG_OTA_DEV_LOGS
                 LOG_WARN(LogDomain::OTA, "Pull OTA SHA256 mismatch exp_prefix=%.12s got_prefix=%.12s",
                          g_job.sha256, hex);
+#else
+                LOG_ERROR(LogDomain::OTA, "Verifying... SHA256 mismatch");
+#endif
                 ota_trace("sha_fail", "sha_mismatch");
                 ota_abort(state, "sha_mismatch");
                 return;
             }
         }
         ota_trace("sha_ok", "prefix=%.12s", hex);
+#if CFG_OTA_DEV_LOGS
         LOG_INFO(LogDomain::OTA,
                  "Pull OTA SHA256 verify result=match expected_prefix=%.12s got_prefix=%.12s",
                  g_job.sha256,
                  hex);
         LOG_INFO(LogDomain::OTA, "Pull OTA SHA256 ok (prefix)=%c%c%c%c%c%c%c%c%c%c%c%c",
                  hex[0], hex[1], hex[2], hex[3], hex[4], hex[5], hex[6], hex[7], hex[8], hex[9], hex[10], hex[11]);
+#else
+        LOG_INFO(LogDomain::OTA, "Verifying... SHA256 OK");
+#endif
     }
 
     if (state)
@@ -3005,17 +3197,23 @@ static void ota_tick(DeviceState *state)
     ota_reattachCurrentTaskWdt(wdtDetachedEnd, "update_end");
     g_job.otaHandle = 0;
     g_job.updateBegun = false;
+#if CFG_OTA_DEV_LOGS
     LOG_INFO(LogDomain::OTA,
              "esp_ota_end err=%d bytes_written=%lu bytes_total=%lu free_heap=%lu",
              (int)otaEndErr,
              (unsigned long)g_job.bytesWritten,
              (unsigned long)g_job.bytesTotal,
              (unsigned long)ESP.getFreeHeap());
+#endif
     ota_logPartitionSnapshot("after_update_end");
     const esp_partition_t *bootAfter = esp_ota_get_boot_partition();
+#if CFG_OTA_DEV_LOGS
     LOG_INFO(LogDomain::OTA, "Boot partition AFTER esp_ota_end: %s@0x%08lx",
              bootAfter ? bootAfter->label : "<null>",
              (unsigned long)(bootAfter ? bootAfter->address : 0));
+#else
+    (void)bootAfter;
+#endif
     if (!ota_requireEspOk(state, "esp_ota_end", otaEndErr))
     {
         return;
@@ -3029,10 +3227,12 @@ static void ota_tick(DeviceState *state)
         return;
     }
     const esp_err_t setBootErr = esp_ota_set_boot_partition(g_job.targetPartition);
+#if CFG_OTA_DEV_LOGS
     LOG_INFO(LogDomain::OTA, "esp_ota_set_boot_partition target=%s@0x%08lx err=%d",
              g_job.targetPartition->label,
              (unsigned long)g_job.targetPartition->address,
              (int)setBootErr);
+#endif
     if (!ota_requireEspOk(state, "esp_ota_set_boot_partition", setBootErr))
     {
         return;
