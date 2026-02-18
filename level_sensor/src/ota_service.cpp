@@ -1895,9 +1895,11 @@ static void ota_finishSuccess(DeviceState *state)
         }
         storage_saveRebootIntent((uint8_t)RebootIntent::OTA);
         LOG_INFO(LogDomain::OTA, "Saved reboot intent=ota");
+        LOG_WARN(LogDomain::OTA, "REBOOTING... reason=ota_apply_success intent=ota delay_ms=2250");
         delay(250);
         LOG_INFO(LogDomain::OTA, "Restarting into new firmware...");
         delay(2000);
+        Serial.flush();
         ESP.restart();
     }
 }

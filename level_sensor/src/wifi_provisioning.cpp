@@ -383,5 +383,8 @@ void wifi_wipeCredentialsAndReboot()
     LOG_WARN(LogDomain::WIFI, "Wiping WiFi credentials and rebooting");
     WiFi.disconnect(true, true);
     wifiPrefs.putBool(PREF_KEY_FORCE_PORTAL, true);
+    LOG_WARN(LogDomain::WIFI, "REBOOTING... reason=wifi_credentials_wiped intent=wifi_wipe");
+    Serial.flush();
+    delay(100);
     ESP.restart();
 }

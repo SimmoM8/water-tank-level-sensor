@@ -192,6 +192,10 @@ static char s_emptyStr[1] = {0};
 static bool s_goodBootMarked = false;
 static bool s_bootRollbackDiagPending = false;
 static char s_bootRollbackDiag[192] = {0};
+static bool s_bootRebootDiagPending = false;
+static char s_bootRebootDiag[192] = {0};
+
+enum class BootClassification : uint8_t;
 
 static void applyConfigFromCache(bool logValues);
 static bool reloadConfigIfDirty(bool logValues);
@@ -204,6 +208,7 @@ static void windowCompute();
 static void windowStateMeta();
 static void windowMqtt();
 static void maybeConfirmOtaRollback();
+static void logBootRebootEvent(const char *resetReason, esp_reset_reason_t reasonCode, uint8_t rebootIntent, BootClassification cls);
 static void setCalibrationDryValue(int32_t value, const char *sourceMsg = nullptr);
 static void setCalibrationWetValue(int32_t value, const char *sourceMsg = nullptr);
 
@@ -386,6 +391,49 @@ static const char *bootClassificationLabel(BootClassification cls)
     return "neutral";
   }
   return "neutral";
+}
+
+static void logBootRebootEvent(const char *resetReason, esp_reset_reason_t reasonCode, uint8_t rebootIntent, BootClassification cls)
+{
+  const char *reason = resetReason ? resetReason : "other";
+  const char *intent = rebootIntentLabel(rebootIntent);
+  const char *classification = bootClassificationLabel(cls);
+
+  if (cls == BootClassification::BAD)
+  {
+    LOG_ERROR(LogDomain::SYSTEM,
+              "PREVIOUS REBOOT DETECTED... reason=unexpected_reset_detected reset_reason=%s code=%d reboot_intent=%s class=%s",
+              reason,
+              (int)reasonCode,
+              intent,
+              classification);
+    snprintf(s_bootRebootDiag, sizeof(s_bootRebootDiag),
+             "PREVIOUS REBOOT DETECTED... reason=unexpected_reset_detected reset_reason=%s code=%d reboot_intent=%s class=%s",
+             reason,
+             (int)reasonCode,
+             intent,
+             classification);
+    s_bootRebootDiagPending = true;
+    return;
+  }
+
+  if (cls == BootClassification::INTENTIONAL)
+  {
+    LOG_INFO(LogDomain::SYSTEM,
+             "PREVIOUS REBOOT DETECTED... reason=intentional_reset_detected reset_reason=%s code=%d reboot_intent=%s class=%s",
+             reason,
+             (int)reasonCode,
+             intent,
+             classification);
+    return;
+  }
+
+  LOG_INFO(LogDomain::SYSTEM,
+           "PREVIOUS REBOOT DETECTED... reason=boot_detected reset_reason=%s code=%d reboot_intent=%s class=%s",
+           reason,
+           (int)reasonCode,
+           intent,
+           classification);
 }
 
 static void applySafeModeState(bool enabled, const char *reason)
@@ -1015,6 +1063,13 @@ static void windowMqtt()
       s_bootRollbackDiagPending = false;
     }
   }
+  if (s_bootRebootDiagPending && mqtt_isConnected())
+  {
+    if (mqtt_publishLog("system/reboot", s_bootRebootDiag, false))
+    {
+      s_bootRebootDiagPending = false;
+    }
+  }
 }
 
 static void handleSerialCommands()
@@ -1291,12 +1346,15 @@ static LoopWindow g_windows[] = {
 // Contract: call once after boot. Initializes subsystems, state, and MQTT/OTA handlers.
 void appSetup()
 {
+  Serial.begin(115200);
+  Serial.println("STARTING UP...");
+  Serial.flush();
+
   const esp_reset_reason_t resetReasonCode = esp_reset_reason();
   const char *bootReason = mapResetReason(resetReasonCode);
   strncpy(g_state.reset_reason, bootReason, sizeof(g_state.reset_reason));
   g_state.reset_reason[sizeof(g_state.reset_reason) - 1] = '\0';
 
-  Serial.begin(115200);
   delay(1500);
   logger_begin(BASE_TOPIC, true, true);
   logger_setHighFreqEnabled(false);
@@ -1353,6 +1411,7 @@ void appSetup()
 
     const BootClassification cls = classifyBoot(g_state.reset_reason, rebootIntent);
     const bool badBoot = (cls == BootClassification::BAD);
+    logBootRebootEvent(g_state.reset_reason, resetReasonCode, rebootIntent, cls);
     LOG_INFO(LogDomain::SYSTEM,
              "Boot classification reset_reason=%s(code=%d) reboot_intent=%s(raw=%u norm=%u) class=%s bad_boot=%s",
              g_state.reset_reason,
