@@ -95,6 +95,9 @@ DeviceState g_state;
 #ifndef CFG_SERIAL_CMD_BUF
 #define CFG_SERIAL_CMD_BUF 256u
 #endif
+#ifndef CFG_LOG_HIGH_FREQ_DEFAULT
+#define CFG_LOG_HIGH_FREQ_DEFAULT 1
+#endif
 
 // =============================================================================
 // Dad's Smart Home — Water Level Sensor (ESP32 touch) → MQTT → Home Assistant
@@ -1474,7 +1477,7 @@ void appSetup()
 
   delay(1500);
   logger_begin(BASE_TOPIC, true, true);
-  logger_setHighFreqEnabled(false);
+  logger_setHighFreqEnabled(CFG_LOG_HIGH_FREQ_DEFAULT != 0);
   quality_init(probeQualityRt);
   logBootCrashDiagnostics(resetReasonCode, bootReason);
   LOG_INFO(LogDomain::SYSTEM, "BOOT water_level_sensor starting...");

@@ -23,6 +23,9 @@
 #ifndef CFG_LOG_COLOR
 #define CFG_LOG_COLOR 0 // ANSI colorized Serial logs (0=off, 1=on)
 #endif
+#ifndef CFG_LOG_HIGH_FREQ_DEFAULT
+#define CFG_LOG_HIGH_FREQ_DEFAULT 1 // High-frequency DEBUG/trace logs at boot (0=off, 1=on)
+#endif
 
 // — Tank Volume Number entity (display/input) —
 #define CFG_TANK_VOLUME_UNIT "L" // "L" or "mL"
