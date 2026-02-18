@@ -16,5 +16,13 @@ struct HaDiscoveryConfig
     bool (*publish)(const char *, const char *, bool);
 };
 
+enum class HaDiscoveryResult : uint8_t
+{
+    NOT_INITIALIZED = 0,
+    ALREADY_PUBLISHED,
+    PUBLISHED,
+    FAILED
+};
+
 void ha_discovery_begin(const HaDiscoveryConfig &cfg);
-void ha_discovery_publishAll();
+HaDiscoveryResult ha_discovery_publishAll();

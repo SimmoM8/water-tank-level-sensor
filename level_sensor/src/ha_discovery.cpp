@@ -7,6 +7,19 @@
 #include "logger.h"
 #include "telemetry_registry.h"
 
+#ifdef __has_include
+#if __has_include("config.h")
+#include "config.h"
+#endif
+#endif
+
+#ifndef CFG_LOG_DEV
+#define CFG_LOG_DEV 0
+#endif
+#ifndef CFG_OTA_DEV_LOGS
+#define CFG_OTA_DEV_LOGS CFG_LOG_DEV
+#endif
+
 static HaDiscoveryConfig s_cfg{};
 static bool s_initialized = false;
 static bool s_published = false;
@@ -20,6 +33,65 @@ static const char *PAYLOAD_AVAILABLE = "online";
 static const char *PAYLOAD_NOT_AVAILABLE = "offline";
 static const char *DEVICE_MANUFACTURER = "Dads Smart Home";
 static const char *ORIGIN_NAME = "dads-smart-home-water-tank";
+static const uint32_t HA_WARN_INTERVAL_MS = 60000;
+
+static bool ha_devLogsEnabled()
+{
+    return (CFG_LOG_DEV != 0) || (CFG_OTA_DEV_LOGS != 0);
+}
+
+static void logHaPayloadTooLarge(const char *entity)
+{
+    if (ha_devLogsEnabled())
+    {
+        logger_logEvery("ha_disc_payload_too_large", HA_WARN_INTERVAL_MS, LogLevel::WARN, LogDomain::MQTT,
+                        "HA discovery payload too large entity=%s", entity ? entity : "(unknown)");
+    }
+    else
+    {
+        logger_logEvery("ha_disc_payload_too_large", HA_WARN_INTERVAL_MS, LogLevel::WARN, LogDomain::MQTT,
+                        "MQTT: Home Assistant discovery payload too large (enable dev logs)");
+    }
+}
+
+static void logHaPublishFailed(const char *entity, const char *topic)
+{
+    if (ha_devLogsEnabled())
+    {
+        logger_logEvery("ha_disc_publish_failed", HA_WARN_INTERVAL_MS, LogLevel::WARN, LogDomain::MQTT,
+                        "HA discovery publish failed entity=%s topic=%s",
+                        entity ? entity : "(unknown)",
+                        topic ? topic : "(null)");
+    }
+    else
+    {
+        logger_logEvery("ha_disc_publish_failed", HA_WARN_INTERVAL_MS, LogLevel::WARN, LogDomain::MQTT,
+                        "MQTT: Home Assistant discovery failed (will retry)");
+    }
+}
+
+static bool publishDiscoveryPayload(const char *entity, const char *topic, const char *payload, size_t payloadLen)
+{
+    if (!payload || payloadLen == 0)
+    {
+        logHaPayloadTooLarge(entity);
+        return false;
+    }
+    const bool ok = s_cfg.publish(topic, payload, true);
+    if (!ok)
+    {
+        logHaPublishFailed(entity, topic);
+        return false;
+    }
+    if (ha_devLogsEnabled())
+    {
+        LOG_DEBUG(LogDomain::MQTT, "HA publish entity=%s topic=%s bytes=%u retained=true",
+                  entity ? entity : "(unknown)",
+                  topic ? topic : "(null)",
+                  (unsigned)payloadLen);
+    }
+    return true;
+}
 
 static const char *buildUniqId(const char *objectId, const char *overrideId)
 {
@@ -113,16 +185,10 @@ static bool publishSensor(const TelemetryFieldDef &s)
     const size_t n = serializeJson(doc, buf, sizeof(buf));
     if (n == 0 || n >= sizeof(buf))
     {
-        LOG_WARN(LogDomain::MQTT, "HA discovery sensor too large %s", s.objectId);
+        logHaPayloadTooLarge(s.objectId);
         return false;
     }
-
-    const bool ok = s_cfg.publish(topic, buf, true);
-    if (!ok)
-    {
-        LOG_WARN(LogDomain::MQTT, "Failed HA discovery sensor %s", topic);
-    }
-    return ok;
+    return publishDiscoveryPayload(s.objectId, topic, buf, n);
 }
 
 static bool publishBinarySensor(const TelemetryFieldDef &s)
@@ -155,16 +221,10 @@ static bool publishBinarySensor(const TelemetryFieldDef &s)
     const size_t n = serializeJson(doc, buf, sizeof(buf));
     if (n == 0 || n >= sizeof(buf))
     {
-        LOG_WARN(LogDomain::MQTT, "HA discovery binary sensor too large %s", s.objectId);
+        logHaPayloadTooLarge(s.objectId);
         return false;
     }
-
-    const bool ok = s_cfg.publish(topic, buf, true);
-    if (!ok)
-    {
-        LOG_WARN(LogDomain::MQTT, "Failed HA discovery binary sensor %s", topic);
-    }
-    return ok;
+    return publishDiscoveryPayload(s.objectId, topic, buf, n);
 }
 
 static bool publishControlButton(const ControlDef &b)
@@ -196,16 +256,10 @@ static bool publishControlButton(const ControlDef &b)
     const size_t n = serializeJson(doc, buf, sizeof(buf));
     if (n == 0 || n >= sizeof(buf))
     {
-        LOG_WARN(LogDomain::MQTT, "HA discovery button too large %s", b.objectId);
+        logHaPayloadTooLarge(b.objectId);
         return false;
     }
-
-    const bool ok = s_cfg.publish(topic, buf, true);
-    if (!ok)
-    {
-        LOG_WARN(LogDomain::MQTT, "Failed HA discovery button %s", topic);
-    }
-    return ok;
+    return publishDiscoveryPayload(b.objectId, topic, buf, n);
 }
 
 static bool publishNumber(const ControlDef &nSpec)
@@ -250,16 +304,10 @@ static bool publishNumber(const ControlDef &nSpec)
     const size_t n = serializeJson(doc, buf, sizeof(buf));
     if (n == 0 || n >= sizeof(buf))
     {
-        LOG_WARN(LogDomain::MQTT, "HA discovery number too large %s", nSpec.objectId);
+        logHaPayloadTooLarge(nSpec.objectId);
         return false;
     }
-
-    const bool ok = s_cfg.publish(topic, buf, true);
-    if (!ok)
-    {
-        LOG_WARN(LogDomain::MQTT, "Failed HA discovery number %s", topic);
-    }
-    return ok;
+    return publishDiscoveryPayload(nSpec.objectId, topic, buf, n);
 }
 
 static bool publishSwitch(const ControlDef &s)
@@ -289,16 +337,10 @@ static bool publishSwitch(const ControlDef &s)
     const size_t n = serializeJson(doc, buf, sizeof(buf));
     if (n == 0 || n >= sizeof(buf))
     {
-        LOG_WARN(LogDomain::MQTT, "HA discovery switch too large %s", s.objectId);
+        logHaPayloadTooLarge(s.objectId);
         return false;
     }
-
-    const bool ok = s_cfg.publish(topic, buf, true);
-    if (!ok)
-    {
-        LOG_WARN(LogDomain::MQTT, "Failed HA discovery switch %s", topic);
-    }
-    return ok;
+    return publishDiscoveryPayload(s.objectId, topic, buf, n);
 }
 
 static bool publishSelect(const ControlDef &s)
@@ -341,16 +383,10 @@ static bool publishSelect(const ControlDef &s)
     const size_t n = serializeJson(doc, buf, sizeof(buf));
     if (n == 0 || n >= sizeof(buf))
     {
-        LOG_WARN(LogDomain::MQTT, "HA discovery select too large %s", s.objectId);
+        logHaPayloadTooLarge(s.objectId);
         return false;
     }
-
-    const bool ok = s_cfg.publish(topic, buf, true);
-    if (!ok)
-    {
-        LOG_WARN(LogDomain::MQTT, "Failed HA discovery select %s", topic);
-    }
-    return ok;
+    return publishDiscoveryPayload(s.objectId, topic, buf, n);
 }
 
 static bool publishOnlineEntity()
@@ -377,16 +413,10 @@ static bool publishOnlineEntity()
     const size_t n = serializeJson(doc, buf, sizeof(buf));
     if (n == 0 || n >= sizeof(buf))
     {
-        LOG_WARN(LogDomain::MQTT, "HA discovery online entity too large");
+        logHaPayloadTooLarge("online");
         return false;
     }
-
-    const bool ok = s_cfg.publish(topic, buf, true);
-    if (!ok)
-    {
-        LOG_WARN(LogDomain::MQTT, "Failed HA discovery online entity");
-    }
-    return ok;
+    return publishDiscoveryPayload("online", topic, buf, n);
 }
 
 static bool publishUpdateEntity()
@@ -417,16 +447,10 @@ static bool publishUpdateEntity()
     const size_t n = serializeJson(doc, buf, sizeof(buf));
     if (n == 0 || n >= sizeof(buf))
     {
-        LOG_WARN(LogDomain::MQTT, "HA discovery update too large");
+        logHaPayloadTooLarge("firmware_update");
         return false;
     }
-
-    const bool ok = s_cfg.publish(topic, buf, true);
-    if (!ok)
-    {
-        LOG_WARN(LogDomain::MQTT, "Failed HA discovery update %s", topic);
-    }
-    return ok;
+    return publishDiscoveryPayload("firmware_update", topic, buf, n);
 }
 
 static bool publishOtaProgressEntity()
@@ -453,16 +477,10 @@ static bool publishOtaProgressEntity()
     const size_t n = serializeJson(doc, buf, sizeof(buf));
     if (n == 0 || n >= sizeof(buf))
     {
-        LOG_WARN(LogDomain::MQTT, "HA discovery OTA progress too large");
+        logHaPayloadTooLarge("ota_progress");
         return false;
     }
-
-    const bool ok = s_cfg.publish(topic, buf, true);
-    if (!ok)
-    {
-        LOG_WARN(LogDomain::MQTT, "Failed HA discovery OTA progress %s", topic);
-    }
-    return ok;
+    return publishDiscoveryPayload("ota_progress", topic, buf, n);
 }
 
 static bool publishOtaStatusEntity()
@@ -488,16 +506,10 @@ static bool publishOtaStatusEntity()
     const size_t n = serializeJson(doc, buf, sizeof(buf));
     if (n == 0 || n >= sizeof(buf))
     {
-        LOG_WARN(LogDomain::MQTT, "HA discovery OTA status too large");
+        logHaPayloadTooLarge("ota_status");
         return false;
     }
-
-    const bool ok = s_cfg.publish(topic, buf, true);
-    if (!ok)
-    {
-        LOG_WARN(LogDomain::MQTT, "Failed HA discovery OTA status %s", topic);
-    }
-    return ok;
+    return publishDiscoveryPayload("ota_status", topic, buf, n);
 }
 
 static bool publishDeviceInfo()
@@ -521,16 +533,10 @@ static bool publishDeviceInfo()
     const size_t n = serializeJson(doc, buf, sizeof(buf));
     if (n == 0 || n >= sizeof(buf))
     {
-        LOG_WARN(LogDomain::MQTT, "HA device_info payload too large");
+        logHaPayloadTooLarge("device_info");
         return false;
     }
-
-    const bool ok = s_cfg.publish(topic, buf, true);
-    if (!ok)
-    {
-        LOG_WARN(LogDomain::MQTT, "Failed device_info publish %s", topic);
-    }
-    return ok;
+    return publishDiscoveryPayload("device_info", topic, buf, n);
 }
 
 static bool publishOtaExtras()
@@ -559,29 +565,32 @@ void ha_discovery_begin(const HaDiscoveryConfig &cfg)
     s_cfg = cfg;
     s_initialized = cfg.publish != nullptr && cfg.baseTopic != nullptr && cfg.deviceId != nullptr;
     s_published = false;
-
-    LOG_INFO(LogDomain::MQTT, "HA discovery begin: initialized=%s baseTopic=%s deviceId=%s",
-             s_initialized ? "true" : "false",
-             (s_cfg.baseTopic ? s_cfg.baseTopic : "(null)"),
-             (s_cfg.deviceId ? s_cfg.deviceId : "(null)"));
+    if (ha_devLogsEnabled())
+    {
+        LOG_DEBUG(LogDomain::MQTT, "HA discovery begin initialized=%s baseTopic=%s deviceId=%s",
+                  s_initialized ? "true" : "false",
+                  (s_cfg.baseTopic ? s_cfg.baseTopic : "(null)"),
+                  (s_cfg.deviceId ? s_cfg.deviceId : "(null)"));
+    }
 }
 
-void ha_discovery_publishAll()
+HaDiscoveryResult ha_discovery_publishAll()
 {
     if (!s_initialized)
     {
-        LOG_WARN(LogDomain::MQTT, "HA discovery publishAll skipped: not initialized");
-        return;
+        if (ha_devLogsEnabled())
+        {
+            LOG_DEBUG(LogDomain::MQTT, "HA discovery skipped: not initialized");
+        }
+        return HaDiscoveryResult::NOT_INITIALIZED;
     }
     if (s_published)
     {
-        static bool s_loggedAlreadyPublished = false;
-        if (!s_loggedAlreadyPublished)
+        if (ha_devLogsEnabled())
         {
-            LOG_INFO(LogDomain::MQTT, "HA discovery publishAll skipped: already published");
-            s_loggedAlreadyPublished = true;
+            LOG_DEBUG(LogDomain::MQTT, "HA discovery skipped: already published");
         }
-        return;
+        return HaDiscoveryResult::ALREADY_PUBLISHED;
     }
 
     bool anyOk = false;
@@ -635,11 +644,8 @@ void ha_discovery_publishAll()
     if (anyOk)
     {
         s_published = true;
-        LOG_INFO(LogDomain::MQTT, "HA discovery publishAll complete");
+        return HaDiscoveryResult::PUBLISHED;
     }
-    else
-    {
-        // keep false so callers can retry once MQTT is actually connected
-        LOG_WARN(LogDomain::MQTT, "HA discovery publishAll failed: no config published (will retry)");
-    }
+    // Keep false so callers can retry once MQTT is actually connected.
+    return HaDiscoveryResult::FAILED;
 }
