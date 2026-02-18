@@ -31,3 +31,5 @@ Thumbs.db
 *.bak
 *.log
 
+# Configuration files that may contain sensitive information
+secrets.h

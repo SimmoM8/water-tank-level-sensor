@@ -109,9 +109,7 @@ DeviceState g_state;
 // 1) Connects to Wi‑Fi
 // 2) Connects to your MQTT broker (Home Assistant / Mosquitto)
 // 3) Reads a capacitive "touch" value from the probe on A6 (GPIO13)
-// 4) Publishes the raw value to an MQTT topic once per second
-// 5) Optionally publishes a smoothed percent value and HA discovery payloads
-// 6) Allows calibration via the Serial Monitor (no code edits needed)
+// 4) Publishes the raw value to an MQTT topic
 // =============================================================================
 
 // --------- MQTT credentials (secrets.h) ---------
