@@ -86,6 +86,13 @@
 #ifndef CFG_OTA_PROGRESS_BYTES_STEP
 #define CFG_OTA_PROGRESS_BYTES_STEP 49152u
 #endif
+#ifndef CFG_OTA_ANSI_COLORS
+#ifdef CFG_LOG_COLOR
+#define CFG_OTA_ANSI_COLORS CFG_LOG_COLOR
+#else
+#define CFG_OTA_ANSI_COLORS 1
+#endif
+#endif
 
 static constexpr uint8_t MAX_OTA_RETRIES = 3u;
 static constexpr uint32_t BASE_RETRY_DELAY_MS = 5000u;
@@ -158,6 +165,12 @@ static uint32_t s_blockAttemptId = 1u;
 static uint32_t s_lastBlockedAttemptId = 0u;
 static char s_lastBlockedPhase[24] = {0};
 static char s_lastBlockedReason[48] = {0};
+static constexpr uint8_t OTA_DEFERRED_WARN_MAX = 6u;
+static constexpr size_t OTA_DEFERRED_WARN_LEN = 128u;
+static char s_deferredWarn[OTA_DEFERRED_WARN_MAX][OTA_DEFERRED_WARN_LEN] = {{0}};
+static uint8_t s_deferredWarnHead = 0u;
+static uint8_t s_deferredWarnCount = 0u;
+static bool s_flushingDeferredWarn = false;
 
 static inline bool ota_isInOtaTaskContext()
 {
@@ -300,10 +313,12 @@ static void ota_progressPrint(uint32_t bytesWritten, uint32_t bytesTotal, bool f
 static void ota_progressFail(const char *reason);
 static void ota_nextBlockAttempt();
 static void ota_logBlocked(const char *phase, const char *reason, const char *fmt, ...);
+static void ota_logWarnMaybeDeferred(const char *fmt, ...);
+static void ota_flushDeferredWarnings();
 static const char *ota_sourceFromRequestId(const char *requestId);
 static void ota_formatSizeCompact(uint32_t bytes, char *out, size_t outLen);
 static void ota_logSuccessBanner(const char *version, uint32_t elapsedMs);
-static void ota_logFailureBanner(const char *reason, const char *version, uint32_t elapsedMs);
+static void ota_logFailBanner(const char *reason, const char *version, uint32_t elapsedMs);
 static void ota_clearActive(DeviceState *state);
 static void ota_emitCancelledResult(const char *reason);
 static const char *ota_imgStateToString(esp_ota_img_states_t state);
@@ -413,10 +428,74 @@ static void ota_progressEnsureLineBreak()
     logger_serialEnsureLineBreak();
 }
 
+static bool ota_shouldDeferWarnings()
+{
+#if CFG_OTA_DEV_LOGS
+    return false;
+#else
+    if (CFG_OTA_PROGRESS_NEWLINES != 0 || s_flushingDeferredWarn)
+    {
+        return false;
+    }
+    return g_job.active && g_job.progressStarted && !g_job.progressCompleted;
+#endif
+}
+
+static void ota_logWarnMaybeDeferred(const char *fmt, ...)
+{
+    char msg[OTA_DEFERRED_WARN_LEN] = {0};
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(msg, sizeof(msg), fmt ? fmt : "", args);
+    va_end(args);
+    msg[sizeof(msg) - 1] = '\0';
+
+    if (!ota_shouldDeferWarnings())
+    {
+        LOG_WARN(LogDomain::OTA, "%s", msg);
+        return;
+    }
+
+    uint8_t idx = 0u;
+    if (s_deferredWarnCount < OTA_DEFERRED_WARN_MAX)
+    {
+        idx = (uint8_t)((s_deferredWarnHead + s_deferredWarnCount) % OTA_DEFERRED_WARN_MAX);
+        ++s_deferredWarnCount;
+    }
+    else
+    {
+        idx = s_deferredWarnHead;
+        s_deferredWarnHead = (uint8_t)((s_deferredWarnHead + 1u) % OTA_DEFERRED_WARN_MAX);
+    }
+    strncpy(s_deferredWarn[idx], msg, OTA_DEFERRED_WARN_LEN);
+    s_deferredWarn[idx][OTA_DEFERRED_WARN_LEN - 1] = '\0';
+}
+
+static void ota_flushDeferredWarnings()
+{
+    if (s_deferredWarnCount == 0u)
+    {
+        return;
+    }
+    s_flushingDeferredWarn = true;
+    for (uint8_t i = 0u; i < s_deferredWarnCount; ++i)
+    {
+        const uint8_t idx = (uint8_t)((s_deferredWarnHead + i) % OTA_DEFERRED_WARN_MAX);
+        if (s_deferredWarn[idx][0] != '\0')
+        {
+            LOG_WARN(LogDomain::OTA, "%s", s_deferredWarn[idx]);
+        }
+        s_deferredWarn[idx][0] = '\0';
+    }
+    s_deferredWarnHead = 0u;
+    s_deferredWarnCount = 0u;
+    s_flushingDeferredWarn = false;
+}
+
 static void ota_progressPrint(uint32_t bytesWritten, uint32_t bytesTotal, bool force, bool completed)
 {
     constexpr uint32_t kMinUpdateIntervalMs = 125u; // cap at ~8 Hz
-    constexpr size_t kProgressLineWidth = 108u;
+    constexpr size_t kProgressLineWidth = 96u;
     const bool newlineMode = (CFG_OTA_DEV_LOGS != 0) || (CFG_OTA_PROGRESS_NEWLINES != 0);
     const bool hasTotal = bytesTotal > 0u;
     const uint32_t nowMs = millis();
@@ -634,6 +713,11 @@ static void ota_progressPrint(uint32_t bytesWritten, uint32_t bytesTotal, bool f
         g_job.progressLastLineLen = 0u;
     }
     logger_serialUnlock();
+    if (completed)
+    {
+        ota_progressEnsureLineBreak();
+        ota_flushDeferredWarnings();
+    }
 }
 
 static void ota_progressFail(const char *reason)
@@ -652,6 +736,8 @@ static void ota_progressFail(const char *reason)
     g_job.progressLastLineLen = 0u;
     logger_serialUnlock();
     g_job.progressCompleted = true;
+    ota_progressEnsureLineBreak();
+    ota_flushDeferredWarnings();
 }
 
 static void ota_nextBlockAttempt()
@@ -686,7 +772,7 @@ static void ota_logBlocked(const char *phase, const char *reason, const char *fm
     vsnprintf(msg, sizeof(msg), fmt, args);
     va_end(args);
     msg[sizeof(msg) - 1] = '\0';
-    LOG_WARN(LogDomain::OTA, "%s", msg);
+    ota_logWarnMaybeDeferred("%s", msg);
 }
 
 static const char *ota_sourceFromRequestId(const char *requestId)
@@ -737,7 +823,7 @@ static void ota_logSuccessBanner(const char *version, uint32_t elapsedMs)
     const char *v = (version && version[0] != '\0') ? version : "<unknown>";
     ota_progressEnsureLineBreak();
     logger_serialLock();
-#if CFG_LOG_COLOR
+#if CFG_OTA_ANSI_COLORS
     Serial.print("=====[ OTA UPDATE ");
     Serial.print("\x1B[1m\x1B[32mSUCCESS\x1B[0m");
     Serial.print(" ]===== ");
@@ -756,29 +842,25 @@ static void ota_logSuccessBanner(const char *version, uint32_t elapsedMs)
     logger_serialUnlock();
 }
 
-static void ota_logFailureBanner(const char *reason, const char *version, uint32_t elapsedMs)
+static void ota_logFailBanner(const char *reason, const char *version, uint32_t elapsedMs)
 {
     const uint32_t seconds = elapsedMs / 1000u;
     const uint32_t mins = seconds / 60u;
     const uint32_t secs = seconds % 60u;
     const char *r = (reason && reason[0] != '\0') ? reason : "error";
-    const char *v = (version && version[0] != '\0') ? version : "<unknown>";
+    (void)version;
     ota_progressEnsureLineBreak();
     logger_serialLock();
-#if CFG_LOG_COLOR
+#if CFG_OTA_ANSI_COLORS
     Serial.print("=====[ OTA UPDATE ");
     Serial.print("\x1B[1m\x1B[31mFAILED\x1B[0m");
     Serial.print(" ]====== ");
     Serial.print(r);
-    Serial.print(" (\x1B[36m");
-    Serial.print(v);
-    Serial.print("\x1B[0m) after ");
+    Serial.print(" after ");
 #else
     Serial.print("=====[ OTA UPDATE FAILED ]====== ");
     Serial.print(r);
-    Serial.print(" (");
-    Serial.print(v);
-    Serial.print(") after ");
+    Serial.print(" after ");
 #endif
     char dur[8];
     snprintf(dur, sizeof(dur), "%02lu:%02lu", (unsigned long)mins, (unsigned long)secs);
@@ -957,10 +1039,10 @@ static bool ota_detachCurrentTaskWdt(const char *phase)
         return false;
     }
 
-    LOG_WARN(LogDomain::OTA, "WDT detach skipped phase=%s err=%d name=%s",
-             phase ? phase : "",
-             (int)err,
-             esp_err_to_name(err));
+    ota_logWarnMaybeDeferred("WDT detach skipped phase=%s err=%d name=%s",
+                             phase ? phase : "",
+                             (int)err,
+                             esp_err_to_name(err));
     return false;
 }
 
@@ -1578,12 +1660,11 @@ static bool ota_scheduleRetry(DeviceState *state, const char *reason)
     g_job.retryAtMs = millis() + backoffMs;
     ota_progressReset();
 
-    LOG_WARN(LogDomain::OTA,
-             "OTA network retry scheduled reason=%s attempt=%u/%u backoff_ms=%lu",
-             msg,
-             (unsigned int)g_job.netRetryCount,
-             (unsigned int)CFG_OTA_HTTP_MAX_RETRIES,
-             (unsigned long)backoffMs);
+    ota_logWarnMaybeDeferred("OTA network retry scheduled reason=%s attempt=%u/%u backoff_ms=%lu",
+                             msg,
+                             (unsigned int)g_job.netRetryCount,
+                             (unsigned int)CFG_OTA_HTTP_MAX_RETRIES,
+                             (unsigned long)backoffMs);
 
     if (state)
     {
@@ -2377,12 +2458,11 @@ static void ota_abort(DeviceState *state, const char *reason)
             ota_requestPublish();
         }
 
-        LOG_WARN(LogDomain::OTA,
-                 "Pull OTA retry scheduled reason=%s attempt=%u/%u backoff_ms=%lu",
-                 reason ? reason : "",
-                 (unsigned int)g_job.retryCount,
-                 (unsigned int)MAX_OTA_RETRIES,
-                 (unsigned long)backoffMs);
+        ota_logWarnMaybeDeferred("Pull OTA retry scheduled reason=%s attempt=%u/%u backoff_ms=%lu",
+                                 reason ? reason : "",
+                                 (unsigned int)g_job.retryCount,
+                                 (unsigned int)MAX_OTA_RETRIES,
+                                 (unsigned long)backoffMs);
         return;
     }
 
@@ -2423,9 +2503,10 @@ static void ota_abort(DeviceState *state, const char *reason)
     LOG_ERROR(LogDomain::OTA, "ota_failed_no_reboot reason=%s", reason ? reason : "");
     LOG_WARN(LogDomain::OTA, "Pull OTA aborted reason=%s", reason ? reason : "");
 #else
-    ota_logFailureBanner(reason ? reason : "error",
-                         g_job.version[0] ? g_job.version : nullptr,
-                         elapsedMs);
+    ota_logFailBanner(reason ? reason : "error",
+                      g_job.version[0] ? g_job.version : nullptr,
+                      elapsedMs);
+    LOG_ERROR(LogDomain::OTA, "OTA failed: %s", reason ? reason : "error");
 #endif
 }
 
