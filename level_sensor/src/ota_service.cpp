@@ -67,6 +67,18 @@
 #ifndef CFG_OTA_DOWNLOAD_HEARTBEAT_MS
 #define CFG_OTA_DOWNLOAD_HEARTBEAT_MS 1000u
 #endif
+#ifndef CFG_OTA_DEV_LOGS
+#define CFG_OTA_DEV_LOGS 0
+#endif
+#ifndef CFG_OTA_PROGRESS_NEWLINES
+#define CFG_OTA_PROGRESS_NEWLINES 0
+#endif
+#ifndef CFG_OTA_PROGRESS_PCT_STEP
+#define CFG_OTA_PROGRESS_PCT_STEP 2u
+#endif
+#ifndef CFG_OTA_PROGRESS_BYTES_STEP
+#define CFG_OTA_PROGRESS_BYTES_STEP 49152u
+#endif
 
 static constexpr uint8_t MAX_OTA_RETRIES = 3u;
 static constexpr uint32_t BASE_RETRY_DELAY_MS = 5000u;
@@ -96,6 +108,10 @@ struct PullOtaJob
     uint32_t bytesTotal = 0;
     uint32_t bytesWritten = 0;
     uint32_t bytesAtLastWriteLog = 0;
+    uint32_t progressLastBytesPrinted = 0;
+    int16_t progressLastPctPrinted = -1;
+    bool progressStarted = false;
+    bool progressCompleted = false;
     uint32_t noDataSinceMs = 0;
     uint8_t zeroReadStreak = 0;
     uint8_t netRetryCount = 0;
@@ -259,6 +275,9 @@ static void ota_setFlat(DeviceState *state,
                         const char *error,
                         const char *targetVersion,
                         bool stamp);
+static void ota_progressReset();
+static void ota_progressEnsureLineBreak();
+static void ota_progressPrint(uint32_t bytesWritten, uint32_t bytesTotal, bool force, bool completed);
 static void ota_clearActive(DeviceState *state);
 static void ota_emitCancelledResult(const char *reason);
 static const char *ota_imgStateToString(esp_ota_img_states_t state);
@@ -300,6 +319,7 @@ static inline void ota_resetTlsError()
 
 static void ota_trace(const char *step, const char *fmt, ...)
 {
+#if CFG_OTA_DEV_LOGS
     char detail[256] = {0};
     if (fmt && fmt[0] != '\0')
     {
@@ -312,10 +332,15 @@ static void ota_trace(const char *step, const char *fmt, ...)
     LOG_INFO(LogDomain::OTA, "[TRACE] step=%s %s",
              step ? step : "",
              detail[0] ? detail : "");
+#else
+    (void)step;
+    (void)fmt;
+#endif
 }
 
 static void ota_logRuntimeHealth(const char *step)
 {
+#if CFG_OTA_DEV_LOGS
     const UBaseType_t hwmWords = uxTaskGetStackHighWaterMark(nullptr);
     const uint32_t hwmBytes = (uint32_t)hwmWords * (uint32_t)sizeof(StackType_t);
     const uint32_t freeHeap = (uint32_t)ESP.getFreeHeap();
@@ -338,6 +363,120 @@ static void ota_logRuntimeHealth(const char *step)
                  step ? step : "",
                  (unsigned int)hwmBytes);
     }
+#else
+    (void)step;
+#endif
+}
+
+static void ota_progressReset()
+{
+    g_job.progressLastBytesPrinted = 0;
+    g_job.progressLastPctPrinted = -1;
+    g_job.progressStarted = false;
+    g_job.progressCompleted = false;
+}
+
+static void ota_progressEnsureLineBreak()
+{
+#if !CFG_OTA_DEV_LOGS && !CFG_OTA_PROGRESS_NEWLINES
+    if (g_job.progressStarted && !g_job.progressCompleted)
+    {
+        Serial.println();
+    }
+#endif
+}
+
+static void ota_progressPrint(uint32_t bytesWritten, uint32_t bytesTotal, bool force, bool completed)
+{
+#if CFG_OTA_DEV_LOGS
+    (void)bytesWritten;
+    (void)bytesTotal;
+    (void)force;
+    (void)completed;
+    return;
+#else
+    const bool hasTotal = bytesTotal > 0u;
+    const uint32_t clampedBytes = (hasTotal && bytesWritten > bytesTotal) ? bytesTotal : bytesWritten;
+    uint32_t pct = 0u;
+    if (hasTotal)
+    {
+        pct = (clampedBytes * 100u) / bytesTotal;
+        if (pct > 100u)
+        {
+            pct = 100u;
+        }
+    }
+    if (completed && hasTotal)
+    {
+        pct = 100u;
+    }
+
+    bool shouldPrint = force || !g_job.progressStarted;
+    if (!shouldPrint)
+    {
+        bool pctAdvanced = false;
+        if (hasTotal && g_job.progressLastPctPrinted >= 0)
+        {
+            const uint32_t pctStep = (uint32_t)CFG_OTA_PROGRESS_PCT_STEP;
+            const uint32_t lastPct = (uint32_t)g_job.progressLastPctPrinted;
+            pctAdvanced = pct >= (lastPct + pctStep);
+        }
+        const bool bytesAdvanced = clampedBytes >= (g_job.progressLastBytesPrinted + (uint32_t)CFG_OTA_PROGRESS_BYTES_STEP);
+        shouldPrint = pctAdvanced || bytesAdvanced;
+    }
+
+    if (!shouldPrint)
+    {
+        return;
+    }
+
+    constexpr size_t kBarWidth = 25u;
+    char line[96] = {0};
+    if (hasTotal)
+    {
+        char bar[kBarWidth + 1] = {0};
+        const size_t fill = (size_t)((pct * kBarWidth) / 100u);
+        for (size_t i = 0; i < kBarWidth; ++i)
+        {
+            bar[i] = (i < fill) ? '=' : ' ';
+        }
+        bar[kBarWidth] = '\0';
+        snprintf(line, sizeof(line),
+                 "Download        [%-25s] %3lu%% %12lu bytes",
+                 bar,
+                 (unsigned long)pct,
+                 (unsigned long)clampedBytes);
+    }
+    else
+    {
+        snprintf(line, sizeof(line),
+                 "Download        [%-25s]     %12lu bytes",
+                 "size unknown",
+                 (unsigned long)clampedBytes);
+    }
+    line[sizeof(line) - 1] = '\0';
+
+#if CFG_OTA_PROGRESS_NEWLINES
+    Serial.println(line);
+#else
+    Serial.print('\r');
+    Serial.print(line);
+    if (completed)
+    {
+        Serial.println();
+    }
+#endif
+
+    g_job.progressStarted = true;
+    g_job.progressLastBytesPrinted = clampedBytes;
+    g_job.progressLastPctPrinted = hasTotal ? (int16_t)pct : -1;
+
+    if (completed && !g_job.progressCompleted)
+    {
+        Serial.println("Download done.");
+        g_job.progressCompleted = true;
+    }
+#endif
 }
 
 static void ota_logPartitionSnapshot(const char *phase)
@@ -480,9 +619,20 @@ static bool ota_detachCurrentTaskWdt(const char *phase)
     const esp_err_t err = esp_task_wdt_delete(nullptr);
     if (err == ESP_OK)
     {
-        LOG_INFO(LogDomain::OTA, "WDT detached for phase=%s", phase ? phase : "");
+#if CFG_OTA_DEV_LOGS
+        LOG_DEBUG(LogDomain::OTA, "WDT detached for phase=%s", phase ? phase : "");
+#endif
         return true;
     }
+
+    if (err == ESP_ERR_INVALID_STATE)
+    {
+#if CFG_OTA_DEV_LOGS
+        LOG_DEBUG(LogDomain::OTA, "WDT detach benign skip phase=%s err=%d", phase ? phase : "", (int)err);
+#endif
+        return false;
+    }
+
     LOG_WARN(LogDomain::OTA, "WDT detach skipped phase=%s err=%d", phase ? phase : "", (int)err);
     return false;
 }
@@ -496,7 +646,16 @@ static void ota_reattachCurrentTaskWdt(bool detached, const char *phase)
     const esp_err_t err = esp_task_wdt_add(nullptr);
     if (err == ESP_OK)
     {
-        LOG_INFO(LogDomain::OTA, "WDT reattached for phase=%s", phase ? phase : "");
+#if CFG_OTA_DEV_LOGS
+        LOG_DEBUG(LogDomain::OTA, "WDT reattached for phase=%s", phase ? phase : "");
+#endif
+        return;
+    }
+    if (err == ESP_ERR_INVALID_STATE)
+    {
+#if CFG_OTA_DEV_LOGS
+        LOG_DEBUG(LogDomain::OTA, "WDT reattach benign skip phase=%s err=%d", phase ? phase : "", (int)err);
+#endif
         return;
     }
     LOG_ERROR(LogDomain::OTA, "WDT reattach failed phase=%s err=%d", phase ? phase : "", (int)err);
@@ -1031,6 +1190,7 @@ static void ota_setFlat(DeviceState *state,
 static bool ota_scheduleRetry(DeviceState *state, const char *reason)
 {
     const char *msg = (reason && reason[0] != '\0') ? reason : "retry";
+    ota_progressEnsureLineBreak();
     ota_trace("schedule_retry", "reason=%s retry_count=%u/%u",
               msg,
               (unsigned int)g_job.netRetryCount,
@@ -1055,6 +1215,7 @@ static bool ota_scheduleRetry(DeviceState *state, const char *reason)
         backoffMs = (uint32_t)CFG_OTA_HTTP_RETRY_MAX_BACKOFF_MS;
     }
     g_job.retryAtMs = millis() + backoffMs;
+    ota_progressReset();
 
     LOG_WARN(LogDomain::OTA,
              "OTA network retry scheduled reason=%s attempt=%u/%u backoff_ms=%lu",
@@ -1119,6 +1280,7 @@ static void ota_resetRuntimeJob()
     g_job.bytesTotal = 0;
     g_job.bytesWritten = 0;
     g_job.bytesAtLastWriteLog = 0;
+    ota_progressReset();
     g_job.noDataSinceMs = 0;
     g_job.zeroReadStreak = 0;
     g_job.netRetryCount = 0;
@@ -1772,6 +1934,7 @@ bool ota_checkManifest(DeviceState *state, char *errBuf, size_t errBufLen)
 
 static void ota_abort(DeviceState *state, const char *reason)
 {
+    ota_progressEnsureLineBreak();
     ota_trace("abort", "reason=%s", reason ? reason : "");
     LOG_WARN(LogDomain::OTA,
              "OTA abort detail reason=%s bytes_written=%lu bytes_total=%lu update_begun=%s http_begun=%s free_heap=%lu",
@@ -1815,6 +1978,7 @@ static void ota_abort(DeviceState *state, const char *reason)
         g_job.zeroReadStreak = 0;
         g_job.netRetryCount = 0;
         g_job.retryAtMs = 0;
+        ota_progressReset();
 
         if (state)
         {
@@ -1862,6 +2026,7 @@ static void ota_abort(DeviceState *state, const char *reason)
     }
 
     g_job.active = false;
+    ota_progressReset();
     LOG_ERROR(LogDomain::OTA, "ota_failed_no_reboot reason=%s", reason ? reason : "");
     LOG_WARN(LogDomain::OTA, "Pull OTA aborted reason=%s", reason ? reason : "");
 }
@@ -2007,6 +2172,7 @@ void ota_processPullJobInTask(DeviceState *state, const OtaTaskJob &job)
 
     while (g_job.active)
     {
+#if CFG_OTA_DEV_LOGS
         logger_logEvery("ota_task_loop", 2000u, LogLevel::DEBUG, LogDomain::OTA,
                         "[TRACE] step=task_loop active=%s http=%s update=%s written=%lu total=%lu retry=%u",
                         g_job.active ? "true" : "false",
@@ -2015,6 +2181,7 @@ void ota_processPullJobInTask(DeviceState *state, const OtaTaskJob &job)
                         (unsigned long)g_job.bytesWritten,
                         (unsigned long)g_job.bytesTotal,
                         (unsigned int)g_job.retryCount);
+#endif
         char cancelReason[OTA_ERROR_MAX] = {0};
         if (ota_taskTakeCancelReason(cancelReason, sizeof(cancelReason)))
         {
@@ -2037,11 +2204,14 @@ static void ota_tick(DeviceState *state)
 {
     if (!g_job.active)
     {
+#if CFG_OTA_DEV_LOGS
         logger_logEvery("ota_tick_idle", 3000u, LogLevel::DEBUG, LogDomain::OTA, "[TRACE] step=tick_idle");
+#endif
         return;
     }
 
     const uint32_t nowMs = millis();
+#if CFG_OTA_DEV_LOGS
     logger_logEvery("ota_tick_active", 1500u, LogLevel::DEBUG, LogDomain::OTA,
                     "[TRACE] step=tick active=true http=%s update=%s bytes=%lu/%lu retry_at=%lu next_retry_at=%lu",
                     g_job.httpBegun ? "true" : "false",
@@ -2050,12 +2220,15 @@ static void ota_tick(DeviceState *state)
                     (unsigned long)g_job.bytesTotal,
                     (unsigned long)g_job.retryAtMs,
                     (unsigned long)g_job.nextRetryAtMs);
+#endif
     if (g_job.nextRetryAtMs != 0 && !ota_timeReached(nowMs, g_job.nextRetryAtMs))
     {
+#if CFG_OTA_DEV_LOGS
         logger_logEvery("ota_wait_next_retry", 1000u, LogLevel::DEBUG, LogDomain::OTA,
                         "[TRACE] step=wait_next_retry now=%lu target=%lu",
                         (unsigned long)nowMs,
                         (unsigned long)g_job.nextRetryAtMs);
+#endif
         return;
     }
     if (g_job.nextRetryAtMs != 0 && ota_timeReached(nowMs, g_job.nextRetryAtMs))
@@ -2115,10 +2288,12 @@ static void ota_tick(DeviceState *state)
 
     if (!g_job.httpBegun && g_job.retryAtMs != 0 && !ota_timeReached(nowMs, g_job.retryAtMs))
     {
+#if CFG_OTA_DEV_LOGS
         logger_logEvery("ota_wait_http_retry", 1000u, LogLevel::DEBUG, LogDomain::OTA,
                         "[TRACE] step=wait_http_retry now=%lu target=%lu",
                         (unsigned long)nowMs,
                         (unsigned long)g_job.retryAtMs);
+#endif
         return;
     }
     if (!g_job.httpBegun && g_job.retryAtMs != 0 && ota_timeReached(nowMs, g_job.retryAtMs))
@@ -2272,6 +2447,7 @@ static void ota_tick(DeviceState *state)
         }
 
         LOG_INFO(LogDomain::OTA, "HTTP len=%d -> bytesTotal=%lu", len, (unsigned long)g_job.bytesTotal);
+        ota_progressPrint(0u, g_job.bytesTotal, true, false);
 
         WiFiClient *stream = g_job.http.getStreamPtr();
         if (!stream)
@@ -2380,6 +2556,7 @@ static void ota_tick(DeviceState *state)
         g_job.bytesWritten = (uint32_t)headerProbeLen;
         g_job.bytesAtLastWriteLog = g_job.bytesWritten;
         ota_trace("ota_write_header_ok", "bytes=%u", (unsigned int)headerProbeLen);
+        ota_progressPrint(g_job.bytesWritten, g_job.bytesTotal, false, false);
 
         if (state)
         {
@@ -2450,7 +2627,9 @@ static void ota_tick(DeviceState *state)
         g_job.bytesWritten += (uint32_t)n;
         processed += (size_t)n;
         g_job.lastProgressMs = millis();
+        ota_progressPrint(g_job.bytesWritten, g_job.bytesTotal, false, false);
 
+#if CFG_OTA_DEV_LOGS
         const uint32_t nowWriteMs = millis();
         const uint32_t bytesSinceLog = g_job.bytesWritten - g_job.bytesAtLastWriteLog;
         if ((uint32_t)(nowWriteMs - g_job.lastWriteLogMs) >= 250u || bytesSinceLog >= 32768u)
@@ -2474,10 +2653,12 @@ static void ota_tick(DeviceState *state)
             g_job.lastWriteLogMs = nowWriteMs;
             g_job.bytesAtLastWriteLog = g_job.bytesWritten;
         }
+#endif
     }
 
     uint32_t now = millis();
 
+#if CFG_OTA_DEV_LOGS
     if (s_otaHeartbeatEnabled && (uint32_t)(now - g_job.lastDiagMs) >= (uint32_t)CFG_OTA_DOWNLOAD_HEARTBEAT_MS)
     {
         g_job.lastDiagMs = now;
@@ -2502,6 +2683,7 @@ static void ota_tick(DeviceState *state)
                  (unsigned int)CFG_OTA_HTTP_MAX_RETRIES,
                  (unsigned long)ESP.getFreeHeap());
     }
+#endif
 
     if (state && (now - g_job.lastReportMs) >= 500u)
     {
@@ -2545,6 +2727,7 @@ static void ota_tick(DeviceState *state)
         }
         return;
     }
+    ota_progressPrint(g_job.bytesWritten, g_job.bytesTotal, true, true);
     ota_trace("download_complete", "bytes=%lu/%lu", (unsigned long)g_job.bytesWritten, (unsigned long)g_job.bytesTotal);
     ota_logRuntimeHealth("download_complete");
 

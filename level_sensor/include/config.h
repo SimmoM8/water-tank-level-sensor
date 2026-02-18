@@ -45,6 +45,12 @@
 // — OTA —
 #define CFG_OTA_MANIFEST_URL "https://github.com/SimmoM8/water-tank-level-sensor/releases/latest/download/dev.json"
 #define CFG_OTA_TLS_PREFER_CRT_BUNDLE 1 // default 1 uses embedded fallback CA chain
+#ifndef CFG_OTA_DEV_LOGS
+#define CFG_OTA_DEV_LOGS 0 // OTA verbose trace/health/chunk logs (0=normal production logs, 1=dev verbose)
+#endif
+#ifndef CFG_OTA_PROGRESS_NEWLINES
+#define CFG_OTA_PROGRESS_NEWLINES 0 // OTA progress style (0=in-place carriage return, 1=print each update on new line)
+#endif
 // — Time sync (non-blocking NTP) —
 // #define CFG_TIME_SYNC_TIMEOUT_MS 20000u
 // #define CFG_TIME_SYNC_RETRY_MIN_MS 5000u
