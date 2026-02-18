@@ -495,7 +495,6 @@ static void ota_flushDeferredWarnings()
 static void ota_progressPrint(uint32_t bytesWritten, uint32_t bytesTotal, bool force, bool completed)
 {
     constexpr uint32_t kMinUpdateIntervalMs = 125u; // cap at ~8 Hz
-    constexpr size_t kProgressLineWidth = 96u;
     const bool newlineMode = (CFG_OTA_DEV_LOGS != 0) || (CFG_OTA_PROGRESS_NEWLINES != 0);
     const bool hasTotal = bytesTotal > 0u;
     const uint32_t nowMs = millis();
@@ -656,18 +655,8 @@ static void ota_progressPrint(uint32_t bytesWritten, uint32_t bytesTotal, bool f
                  etaBuf);
     }
     lineRaw[sizeof(lineRaw) - 1] = '\0';
-    const size_t rawLen = strlen(lineRaw);
-    if (rawLen >= kProgressLineWidth)
-    {
-        memcpy(line, lineRaw, kProgressLineWidth);
-        line[kProgressLineWidth] = '\0';
-    }
-    else
-    {
-        memcpy(line, lineRaw, rawLen);
-        memset(line + rawLen, ' ', kProgressLineWidth - rawLen);
-        line[kProgressLineWidth] = '\0';
-    }
+    strncpy(line, lineRaw, sizeof(line));
+    line[sizeof(line) - 1] = '\0';
 
     logger_serialLock();
     if (!newlineMode && !g_job.progressStarted)
@@ -685,7 +674,8 @@ static void ota_progressPrint(uint32_t bytesWritten, uint32_t bytesTotal, bool f
     {
         Serial.print('\r');
         Serial.print(line);
-        g_job.progressLastLineLen = (uint32_t)kProgressLineWidth;
+        Serial.print("\033[K");
+        g_job.progressLastLineLen = (uint32_t)strlen(line);
         if (completed)
         {
             Serial.println();
@@ -2959,7 +2949,7 @@ static void ota_tick(DeviceState *state)
         char freeBuf[24] = {0};
         ota_formatSizeCompact(g_job.bytesTotal, sizeBuf, sizeof(sizeBuf));
         ota_formatSizeCompact((uint32_t)ESP.getFreeSketchSpace(), freeBuf, sizeof(freeBuf));
-        LOG_INFO(LogDomain::OTA, "Updating to %s (%s) • Free: %s",
+        LOG_INFO(LogDomain::OTA, "Updating to %s (%s) • Free storage: %s",
                  g_job.version[0] ? g_job.version : "<unknown>",
                  sizeBuf,
                  freeBuf);
