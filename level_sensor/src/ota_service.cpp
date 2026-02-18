@@ -2074,6 +2074,14 @@ static void ota_tick(DeviceState *state)
                 ota_abort(state, "bad_content_type");
                 return;
             }
+            if (lower.indexOf("application/octet-stream") < 0)
+            {
+                LOG_WARN(LogDomain::OTA, "Unexpected content-type for firmware: %s", ctype.c_str());
+            }
+        }
+        else
+        {
+            LOG_WARN(LogDomain::OTA, "Missing Content-Type header for firmware response");
         }
 
         int len = g_job.http.getSize();
@@ -2082,25 +2090,73 @@ static void ota_tick(DeviceState *state)
 
         if (len <= 0)
         {
-            g_job.bytesTotal = 0; // unknown
+            ota_abort(state, "missing_content_length");
+            return;
         }
-        else
+        g_job.bytesTotal = (uint32_t)len;
+        if (len < OTA_MIN_BYTES)
         {
-            g_job.bytesTotal = (uint32_t)len;
-            if (len > 0 && len < OTA_MIN_BYTES)
-            {
-                ota_abort(state, "content_too_small");
-                return;
-            }
+            ota_abort(state, "content_too_small");
+            return;
+        }
 
-            if (g_job.bytesTotal > ESP.getFreeSketchSpace())
-            {
-                ota_abort(state, "not_enough_space");
-                return;
-            }
+        if (g_job.bytesTotal > ESP.getFreeSketchSpace())
+        {
+            ota_abort(state, "not_enough_space");
+            return;
         }
 
         LOG_INFO(LogDomain::OTA, "HTTP len=%d -> bytesTotal=%lu", len, (unsigned long)g_job.bytesTotal);
+
+        WiFiClient *stream = g_job.http.getStreamPtr();
+        if (!stream)
+        {
+            ota_abort(state, "no_stream");
+            return;
+        }
+
+        uint8_t headerProbe[32] = {0};
+        size_t headerProbeLen = 0;
+        const uint32_t probeStartMs = millis();
+        while (headerProbeLen == 0)
+        {
+            const int avail = stream->available();
+            if (avail > 0)
+            {
+                size_t toRead = (size_t)avail;
+                if (toRead > sizeof(headerProbe))
+                {
+                    toRead = sizeof(headerProbe);
+                }
+                const int n = stream->read(headerProbe, toRead);
+                if (n > 0)
+                {
+                    headerProbeLen = (size_t)n;
+                    break;
+                }
+            }
+
+            if (!stream->connected() || (uint32_t)(millis() - probeStartMs) > 2000u)
+            {
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+
+        if (headerProbeLen == 0)
+        {
+            ota_abort(state, "invalid image header (empty)");
+            return;
+        }
+        if (headerProbe[0] != 0xE9)
+        {
+            LOG_ERROR(LogDomain::OTA, "Invalid image header first_byte=0x%02X", (unsigned int)headerProbe[0]);
+            ota_abort(state, "invalid image header (magic != 0xE9)");
+            return;
+        }
+        LOG_INFO(LogDomain::OTA, "Image header probe ok first_byte=0x%02X bytes=%u",
+                 (unsigned int)headerProbe[0],
+                 (unsigned int)headerProbeLen);
 
         g_job.targetPartition = esp_ota_get_next_update_partition(nullptr);
         if (g_job.targetPartition == nullptr)
@@ -2136,6 +2192,16 @@ static void ota_tick(DeviceState *state)
         mbedtls_sha256_starts(&g_job.shaCtx, 0);
         g_job.shaInit = true;
         g_job.updateBegun = true;
+
+        if (g_job.shaInit)
+        {
+            mbedtls_sha256_update(&g_job.shaCtx, headerProbe, headerProbeLen);
+        }
+        if (!ota_requireEspOk(state, "esp_ota_write", esp_ota_write(g_job.otaHandle, headerProbe, headerProbeLen)))
+        {
+            return;
+        }
+        g_job.bytesWritten = (uint32_t)headerProbeLen;
 
         if (state)
         {
