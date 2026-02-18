@@ -2956,10 +2956,13 @@ static void ota_tick(DeviceState *state)
         }
 
         char sizeBuf[24] = {0};
+        char freeBuf[24] = {0};
         ota_formatSizeCompact(g_job.bytesTotal, sizeBuf, sizeof(sizeBuf));
-        LOG_INFO(LogDomain::OTA, "Updating to %s (%s)",
+        ota_formatSizeCompact((uint32_t)ESP.getFreeSketchSpace(), freeBuf, sizeof(freeBuf));
+        LOG_INFO(LogDomain::OTA, "Updating to %s (%s) • Free: %s",
                  g_job.version[0] ? g_job.version : "<unknown>",
-                 sizeBuf);
+                 sizeBuf,
+                 freeBuf);
 #if CFG_OTA_DEV_LOGS
         LOG_INFO(LogDomain::OTA, "HTTP len=%d -> bytesTotal=%lu", len, (unsigned long)g_job.bytesTotal);
 #endif
